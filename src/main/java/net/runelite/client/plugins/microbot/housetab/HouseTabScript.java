@@ -22,7 +22,6 @@ import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2RunePouch;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
-import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
 import net.runelite.client.plugins.microbot.util.magic.Rs2Staff;
 import net.runelite.client.plugins.microbot.util.magic.Runes;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
@@ -31,6 +30,7 @@ import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -99,6 +99,7 @@ public class HouseTabScript extends Script {
     private final Set<String> blacklistedAdvertisedHouses = new HashSet<>();
     private long lastCraftGateLogAt = 0;
     private String lastCraftGateLogReason = "";
+    private long lastLecternScrollAttemptAt = 0;
 
     private boolean hasSoftClay() {
         return Rs2Inventory.hasItem(1761);
@@ -168,7 +169,34 @@ public class HouseTabScript extends Script {
         int itemId = staff.getItemID();
         return Rs2Equipment.isWearing(itemId)
                 || Rs2Inventory.hasItem(itemId)
-                || (Rs2Bank.isOpen() && Rs2Bank.hasBankItem(itemId, 1));
+                || (Rs2Bank.isOpen() && hasBankStaffItem(itemId));
+    }
+
+    private boolean hasBankStaffItem(int itemId) {
+        if (!Rs2Bank.isOpen()) {
+            return false;
+        }
+        try {
+            return Rs2Bank.bankItems().stream()
+                    .anyMatch(item -> item.getId() == itemId && item.getQuantity() >= 1);
+        } catch (Exception ex) {
+            return Rs2Bank.hasBankItem(itemId, 1);
+        }
+    }
+
+    private String bankStaffDebug(int itemId) {
+        if (!Rs2Bank.isOpen()) {
+            return "bankClosed";
+        }
+        try {
+            return Rs2Bank.bankItems().stream()
+                    .filter(item -> item.getId() == itemId)
+                    .findFirst()
+                    .map(item -> "bankCache=true qty=" + item.getQuantity() + " name=" + item.getName())
+                    .orElse("bankCache=false hasBankItem=" + Rs2Bank.hasBankItem(itemId, 1));
+        } catch (Exception ex) {
+            return "bankError=" + ex.getClass().getSimpleName() + " hasBankItem=" + Rs2Bank.hasBankItem(itemId, 1);
+        }
     }
 
     private Rs2Staff equippedStaffFor(HouseTablet tablet) {
@@ -328,37 +356,59 @@ public class HouseTabScript extends Script {
                 .orElse(false);
     }
 
-    private void depositMismatchedWeaponFor(HouseTablet tablet, boolean allowPartial) {
-        if (!Rs2Bank.isOpen()) return;
+    private boolean depositMismatchedWeaponFor(HouseTablet tablet, boolean allowPartial) {
+        if (!Rs2Bank.isOpen()) return false;
 
         Rs2Staff bestStaff = bestAvailableStaffFor(tablet, allowPartial);
         if (bestStaff == Rs2Staff.NONE) {
             Microbot.log("HouseTab: no replacement staff available; keeping current weapon equipped.");
-            return;
+            return false;
         }
 
         if (!Rs2Equipment.isWearing(bestStaff.getItemID()) && Rs2Equipment.get(EquipmentInventorySlot.WEAPON) != null) {
             Microbot.log("HouseTab: unequipping current weapon before progressive staff setup for " + tablet.getName());
             Rs2Equipment.unEquip(EquipmentInventorySlot.WEAPON);
             sleepUntil(() -> Rs2Equipment.get(EquipmentInventorySlot.WEAPON) == null, 3000);
+            return true;
         }
+        return false;
     }
 
     private boolean equippedStaffProvides(Runes rune) {
-        return Rs2Magic.findStavesByRunes(List.of(rune)).stream()
+        return Arrays.stream(Rs2Staff.values())
+                .filter(staff -> staff != Rs2Staff.NONE)
+                .filter(staff -> staff.getRunes().contains(rune))
                 .map(Rs2Staff::getItemID)
                 .anyMatch(Rs2Equipment::isWearing);
+    }
+
+    private int inventoryRuneCount(Runes rune) {
+        int count = Rs2Inventory.itemQuantity(rune.getItemId());
+        for (Runes comboRune : Runes.getComboRunes(rune)) {
+            count += Rs2Inventory.itemQuantity(comboRune.getItemId());
+        }
+        return count;
     }
 
     private boolean hasRune(Runes rune, int amount) {
         if (Rs2Inventory.hasRunePouch()) {Rs2RunePouch.fullUpdate();}
         if (equippedStaffProvides(rune)) return true;
-        return Rs2Inventory.count(rune.getItemId()) >= amount || (Rs2Inventory.hasRunePouch() && Rs2RunePouch.contains(rune));
+        return inventoryRuneCount(rune) >= amount || (Rs2Inventory.hasRunePouch() && Rs2RunePouch.contains(rune));
     }
 
     private boolean hasRequiredRunes() {
         return selectedTablet.getRuneRequirements().entrySet().stream()
                 .allMatch(entry -> hasRune(entry.getKey(), entry.getValue()));
+    }
+
+    private String missingRuneDebug() {
+        return selectedTablet.getRuneRequirements().entrySet().stream()
+                .filter(entry -> !hasRune(entry.getKey(), entry.getValue()))
+                .map(entry -> entry.getKey().name().toLowerCase()
+                        + " need=" + entry.getValue()
+                        + " inv=" + inventoryRuneCount(entry.getKey())
+                        + " staff=" + equippedStaffProvides(entry.getKey()))
+                .collect(Collectors.joining(", "));
     }
 
     private boolean hasValidProgressiveLoadout(HouseTabConfig config) {
@@ -399,6 +449,7 @@ public class HouseTabScript extends Script {
             }
             int itemId = rune.getItemId();
             if (!Rs2Bank.hasBankItem(itemId, amount)) {
+                Microbot.log("HouseTab: missing rune from bank setup: " + missingRuneDebug());
                 stop("Missing " + rune.name().toLowerCase() + " runes for " + selectedTablet.getName());
                 return false;
             }
@@ -440,17 +491,21 @@ public class HouseTabScript extends Script {
         if (!config.useCombinationStaff()) return true;
         if (isBestAvailableStaffEquipped(selectedTablet, false)) return true;
         if (!Rs2Bank.isOpen() && hasStaffFor(selectedTablet) && ensureStaffEquipped(selectedTablet)) return true;
+        if (!Rs2Bank.isOpen()) {
+            Microbot.log("HouseTab: staff setup skipped bank scan because bank is closed.");
+        }
 
         if (Rs2Bank.isOpen()) {
             List<Rs2Staff> staves = rankedStavesFor(selectedTablet, false);
-            Microbot.log("HouseTab: staff candidates for " + selectedTablet.getName() + ": "
-                    + staves.stream()
-                    .map(staff -> staff.name()
-                            + "#" + staff.getItemID()
-                            + " bank=" + Rs2Bank.hasBankItem(staff.getItemID(), 1)
-                            + " inv=" + Rs2Inventory.hasItem(staff.getItemID())
-                            + " worn=" + Rs2Equipment.isWearing(staff.getItemID()))
-                    .collect(Collectors.joining(", ")));
+            Microbot.log("HouseTab: " + staves.size() + " full staff candidates for " + selectedTablet.getName());
+            for (Rs2Staff staff : staves) {
+                Microbot.log("HouseTab: staff candidate "
+                        + staff.name()
+                        + "#" + staff.getItemID()
+                        + " " + bankStaffDebug(staff.getItemID())
+                        + " inv=" + Rs2Inventory.hasItem(staff.getItemID())
+                        + " worn=" + Rs2Equipment.isWearing(staff.getItemID()));
+            }
             for (Rs2Staff staff : staves) {
                 if (Rs2Equipment.isWearing(staff.getItemID())) {
                     return true;
@@ -459,7 +514,7 @@ public class HouseTabScript extends Script {
                     sleepUntil(() -> Rs2Equipment.isWearing(staff.getItemID()), 3000);
                     return Rs2Equipment.isWearing(staff.getItemID());
                 }
-                if (Rs2Bank.hasBankItem(staff.getItemID(), 1)) {
+                if (hasBankStaffItem(staff.getItemID())) {
                     if (Rs2Bank.withdrawAndEquip(staff.getItemID())) {
                         sleepUntil(() -> Rs2Equipment.isWearing(staff.getItemID()), 3000);
                         if (Rs2Equipment.isWearing(staff.getItemID())) {
@@ -489,16 +544,13 @@ public class HouseTabScript extends Script {
         if (!config.progressive()) {
             return false;
         }
-        if (lastPreparedTablet != selectedTablet) {
+        if (!hasAnySoftClay() || !hasRequiredRunes()) {
             return true;
         }
-        if (!hasAnySoftClay()) {
-            return true;
+        if (!hasSoftClay() && hasSoftClayNoted()) {
+            return false;
         }
         if (config.useCombinationStaff() && !hasStaffFor(selectedTablet)) {
-            return true;
-        }
-        if (!hasRequiredRunes()) {
             return true;
         }
         return false;
@@ -508,11 +560,11 @@ public class HouseTabScript extends Script {
         if (!config.progressive()) {
             return false;
         }
-        if (lastPreparedTablet != selectedTablet) {
-            return true;
-        }
         if (!hasAnySoftClay()) {
             return true;
+        }
+        if (!hasSoftClay() && hasSoftClayNoted()) {
+            return false;
         }
         return config.useCombinationStaff() && !hasStaffFor(selectedTablet);
     }
@@ -560,7 +612,7 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isAtGrandExchange() {
-        boolean atGrandExchange = isNearGrandExchangeByPosition();
+        boolean atGrandExchange = isNearGrandExchangeByPosition() || hasVisibleGrandExchangeBankBooth();
         if (atGrandExchange) {
             assumeInsidePlayerHouse = false;
         }
@@ -605,13 +657,26 @@ public class HouseTabScript extends Script {
                 return false;
             }
             return location.getPlane() == 0
-                    && location.getX() >= 3130
-                    && location.getX() <= 3190
-                    && location.getY() >= 3450
-                    && location.getY() <= 3515;
+                    && location.getX() >= 3120
+                    && location.getX() <= 3195
+                    && location.getY() >= 3440
+                    && location.getY() <= 3525;
         } catch (Exception ex) {
             return false;
         }
+    }
+
+    private boolean hasVisibleGrandExchangeBankBooth() {
+        try {
+            for (int boothId : GRAND_EXCHANGE_BOOTH_OBJECTS) {
+                if (Microbot.getRs2TileObjectCache().query().withId(boothId).nearest() != null) {
+                    return true;
+                }
+            }
+        } catch (Exception ex) {
+            return false;
+        }
+        return false;
     }
 
     private boolean isGameSceneReady() {
@@ -707,7 +772,6 @@ public class HouseTabScript extends Script {
             sleep(250, 450);
         }
 
-        depositMismatchedWeaponFor(selectedTablet, false);
         depositCraftedTeleportStacksForProgressive();
 
         Rs2Bank.depositAllExcept(
@@ -717,6 +781,24 @@ public class HouseTabScript extends Script {
                 1762);
         sleep(600, 900);
 
+        if (!ensureGrandExchangeBankOpen("staff setup after inventory deposit")) {
+            return false;
+        }
+
+        if (depositMismatchedWeaponFor(selectedTablet, false)) {
+            if (!ensureGrandExchangeBankOpen("staff setup after unequipping old weapon")) {
+                return false;
+            }
+            Rs2Bank.depositAllExcept(
+                    ItemID.POH_TABLET_TELEPORTTOHOUSE,
+                    ItemID.COINS,
+                    ItemID.LAWRUNE,
+                    1762);
+            sleep(500, 750);
+            if (!ensureGrandExchangeBankOpen("staff setup after depositing old weapon")) {
+                return false;
+            }
+        }
         if (!hasRequiredStaffOrFallback(config)) {
             return false;
         }
@@ -728,6 +810,18 @@ public class HouseTabScript extends Script {
         Rs2Bank.closeBank();
         sleepUntil(() -> !Rs2Bank.isOpen(), 3000);
         return returnToHousePortalFromGrandExchange();
+    }
+
+    private boolean ensureGrandExchangeBankOpen(String reason) {
+        if (Rs2Bank.isOpen()) {
+            return true;
+        }
+        Microbot.log("HouseTab: bank closed before " + reason + "; reopening GE bank.");
+        if (!openGrandExchangeBank() || !sleepUntil(Rs2Bank::isOpen, 5000)) {
+            Microbot.log("HouseTab: failed to reopen GE bank before " + reason + ".");
+            return false;
+        }
+        return true;
     }
 
     private boolean returnToHousePortalFromGrandExchange() {
@@ -961,8 +1055,8 @@ public class HouseTabScript extends Script {
         int HOUSE_ADVERTISEMENT_ENTER_HOUSE_PARENT_INTERFACE = 3407891;
         Widget houseAdvertisementEnterHouseWidget = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_ENTER_HOUSE_PARENT_INTERFACE);
         if (houseAdvertisementEnterHouseWidget == null) return;
-        if (houseIndexToJoin < 0 && houseAdvertisementEnterHouseWidget.getChildren() != null) {
-            int visibleEnterHouseRows = 0;
+        List<Integer> visibleEnterHouseRows = new ArrayList<>();
+        if (houseAdvertisementEnterHouseWidget.getChildren() != null) {
             for (int i = 0; i < houseAdvertisementEnterHouseWidget.getChildren().length; i++) {
                 Widget child = houseAdvertisementEnterHouseWidget.getChild(i);
                 if (child != null && child.getActions() != null && Arrays.stream(child.getActions()).anyMatch("Enter House"::equalsIgnoreCase)) {
@@ -970,13 +1064,17 @@ public class HouseTabScript extends Script {
                     if (isAdvertisedHouseBlacklisted(houseName)) {
                         continue;
                     }
-                    if (visibleEnterHouseRows >= advertisedHouseSkipCount) {
-                        houseIndexToJoin = i;
-                        break;
-                    }
-                    visibleEnterHouseRows++;
+                    visibleEnterHouseRows.add(i);
                 }
             }
+            visibleEnterHouseRows.sort(Comparator.comparingInt(index -> {
+                Widget child = houseAdvertisementEnterHouseWidget.getChild(index);
+                return child == null || child.getBounds() == null ? Integer.MAX_VALUE : child.getBounds().y;
+            }));
+        }
+        if (houseIndexToJoin < 0 && !visibleEnterHouseRows.isEmpty()) {
+            int visibleIndex = Math.min(advertisedHouseSkipCount, visibleEnterHouseRows.size() - 1);
+            houseIndexToJoin = visibleEnterHouseRows.get(visibleIndex);
         }
         if (houseIndexToJoin < 0) {
             stop("No advertised house entry is visible");
@@ -1159,6 +1257,9 @@ public class HouseTabScript extends Script {
         lecternStudyAttemptedAt = 0;
         if (!hasSoftClay() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null)
             return;
+        if (!ensureSelectedTabletVisible()) {
+            return;
+        }
         if (!ensureQuantityMode(config.quantityMode())) {
             return;
         }
@@ -1187,6 +1288,46 @@ public class HouseTabScript extends Script {
         Rs2Widget.clickWidget(InterfaceID.TeletabsCraftIf.CONFIRM);
         maybeLecternAntiban();
         updateTabletCount();
+    }
+
+    private boolean ensureSelectedTabletVisible() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Widget target = Microbot.getClient().getWidget(lecternTabletWidgetId);
+            Widget viewport = Microbot.getClient().getWidget(InterfaceID.TeletabsCraftIf.TABLETS_INNER);
+            if (target == null || viewport == null || target.isHidden() || viewport.isHidden()) {
+                return false;
+            }
+
+            java.awt.Rectangle targetBounds = target.getBounds();
+            java.awt.Rectangle viewportBounds = viewport.getBounds();
+            if (targetBounds == null || viewportBounds == null || targetBounds.width <= 0 || targetBounds.height <= 0) {
+                return false;
+            }
+
+            boolean visible = targetBounds.y >= viewportBounds.y
+                    && targetBounds.y + targetBounds.height <= viewportBounds.y + viewportBounds.height;
+            if (visible) {
+                return true;
+            }
+
+            long now = System.currentTimeMillis();
+            if (now - lastLecternScrollAttemptAt < 450) {
+                return false;
+            }
+            lastLecternScrollAttemptAt = now;
+
+            int x = (int) viewportBounds.getCenterX() + Rs2Random.between(-35, 35);
+            int y = (int) viewportBounds.getCenterY() + Rs2Random.between(-35, 35);
+            Point scrollPoint = new Point(x, y);
+            if (targetBounds.y + targetBounds.height > viewportBounds.y + viewportBounds.height) {
+                Microbot.log("HouseTabScript: scrolling lectern tablet list down for " + selectedTablet.getName() + ".");
+                Microbot.getMouse().scrollDown(scrollPoint);
+            } else {
+                Microbot.log("HouseTabScript: scrolling lectern tablet list up for " + selectedTablet.getName() + ".");
+                Microbot.getMouse().scrollUp(scrollPoint);
+            }
+            return false;
+        }).orElse(false);
     }
 
     private boolean ensureQuantityMode(TabletQuantityMode quantityMode) {
@@ -1581,9 +1722,16 @@ public class HouseTabScript extends Script {
                     + " selected=" + selectedTablet.getName()
                     + " " + materialDebug());
         }
+        boolean isInHouse = getHouseLectern() != null;
+        if (!isInHouse && !hasSoftClay() && hasSoftClayNoted()) {
+            Microbot.status = "Unnoting soft clay";
+            if (unnoteClay()) {
+                return;
+            }
+        }
         if (unnotedSoftClayCount() <= 3) {
             Microbot.log("HouseTabScript: low-clay classic loop. loop=" + debugLoopCount
-                    + " insideHouse=" + (getHouseLectern() != null)
+                    + " insideHouse=" + isInHouse
                     + " clay=" + unnotedSoftClayCount()
                     + " output=" + Rs2Inventory.count(selectedTablet.getItemId())
                     + " gainingXp=" + Microbot.isGainingExp);
@@ -1591,7 +1739,6 @@ public class HouseTabScript extends Script {
         if (!hasRequiredStaffOrFallback(config)) {
             return;
         }
-        boolean isInHouse = getHouseLectern() != null;
         if (isInHouse && !hasSoftClay()) {
             if (shouldWaitForFinalTabletCraft()) {
                 return;
@@ -1605,6 +1752,9 @@ public class HouseTabScript extends Script {
             return;
         }
         if (!hasAnySoftClay() || !hasRequiredRunes()) {
+            if (hasAnySoftClay()) {
+                Microbot.log("HouseTab: missing classic runes: " + missingRuneDebug());
+            }
             stop(!hasAnySoftClay() ? "Missing soft clay" : "Missing runes for " + selectedTablet.getName());
             return;
         }
@@ -1627,7 +1777,6 @@ public class HouseTabScript extends Script {
             createHouseTablet(config);
             leaveHouse();
         } else if (config.useAdvertisementBoard()
-                && enteredAdvertisedHouse
                 && Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
             leaveBadAdvertisedHouse();
         } else {
