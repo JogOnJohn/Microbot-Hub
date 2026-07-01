@@ -86,8 +86,10 @@ public class HouseTabScript extends Script {
     private long phialsUnnoteAttemptedAt = 0;
     private boolean lecternStudyPending = false;
     private long lecternStudyAttemptedAt = 0;
+    private boolean assumeInsidePlayerHouse = false;
     private long lastLecternCraftAttemptAt = 0;
     private long lastAdvertisementViewAttemptAt = 0;
+    private long lastProgressivePrepLogAt = 0;
     private long lastWorldHopAttemptAt = 0;
     private int worldHopAttempts = 0;
     private int lastObservedMagicXp = -1;
@@ -239,7 +241,9 @@ public class HouseTabScript extends Script {
         phialsUnnoteAttemptedAt = 0;
         lecternStudyPending = false;
         lecternStudyAttemptedAt = 0;
+        assumeInsidePlayerHouse = false;
         lastLecternCraftAttemptAt = 0;
+        lastProgressivePrepLogAt = 0;
         lastWorldHopAttemptAt = 0;
         worldHopAttempts = 0;
         lastObservedMagicXp = startMagicXp;
@@ -515,8 +519,12 @@ public class HouseTabScript extends Script {
 
     private void enterHouseForProgressivePrep(HouseTabConfig config) {
         Microbot.status = "Entering house for GE setup";
-        Microbot.log("HouseTabScript: progressive prep needed outside house; entering house before GE travel. "
-                + fastMaterialDebug());
+        long now = System.currentTimeMillis();
+        if (now - lastProgressivePrepLogAt > 5000) {
+            lastProgressivePrepLogAt = now;
+            Microbot.log("HouseTabScript: progressive prep needed outside house; entering house before GE travel. "
+                    + fastMaterialDebug());
+        }
 
         if (config.useAdvertisementBoard()) {
             if (config.useLastHouse() && visitLastAdvertisedHouse(false)) {
@@ -529,12 +537,14 @@ public class HouseTabScript extends Script {
 
         if (config.ownHouse()) {
             if (Microbot.getRs2TileObjectCache().query().interact(ObjectID.POH_RIMMINGTON_PORTAL, "Home")) {
+                assumeInsidePlayerHouse = true;
                 sleep(800, 1200);
             }
             return;
         }
 
         if (Microbot.getRs2TileObjectCache().query().interact(ObjectID.POH_RIMMINGTON_PORTAL, "Friend's house")) {
+            assumeInsidePlayerHouse = true;
             sleepUntil(() -> Rs2Widget.hasWidget("Enter name"), 5000);
             if (!config.housePlayerName().isBlank() && Rs2Widget.hasWidget(config.housePlayerName())) {
                 Rs2Widget.clickWidget(config.housePlayerName());
@@ -550,7 +560,11 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isAtGrandExchange() {
-        return isNearGrandExchangeByPosition();
+        boolean atGrandExchange = isNearGrandExchangeByPosition();
+        if (atGrandExchange) {
+            assumeInsidePlayerHouse = false;
+        }
+        return atGrandExchange;
     }
 
     private boolean isNearRimmingtonAdvertisementByPosition() {
@@ -567,12 +581,15 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isInsidePlayerHouse() {
+        if (assumeInsidePlayerHouse) {
+            return true;
+        }
         try {
             if (Microbot.getClient().getLocalPlayer() == null) {
                 return false;
             }
             WorldPoint location = Microbot.getClient().getLocalPlayer().getWorldLocation();
-            return location != null && location.getX() >= 10000;
+            return location != null && (location.getX() >= 10000 || location.getY() >= 10000);
         } catch (Exception ex) {
             return false;
         }
@@ -722,6 +739,7 @@ public class HouseTabScript extends Script {
         if (!Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Outside")) {
             Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Break");
         }
+        assumeInsidePlayerHouse = false;
         return sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null, 10000);
     }
 
@@ -779,6 +797,7 @@ public class HouseTabScript extends Script {
             advertisedHouseSkipCount = 0;
             enteredAdvertisedHouse = true;
             hasSelectedAdvertisedHouse = true;
+            assumeInsidePlayerHouse = true;
         }
         return enteredHouse;
     }
@@ -977,6 +996,7 @@ public class HouseTabScript extends Script {
                 skipVisitLastHouse = false;
                 enteredAdvertisedHouse = true;
                 hasSelectedAdvertisedHouse = true;
+                assumeInsidePlayerHouse = true;
                 Microbot.log("HouseTabScript: entered advertised house"
                         + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
                 transitionPause("entered advertised house");
@@ -1285,6 +1305,7 @@ public class HouseTabScript extends Script {
         if (!Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Outside")) {
             Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Break");
         }
+        assumeInsidePlayerHouse = false;
         return sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null, 10000);
     }
 
@@ -1300,6 +1321,7 @@ public class HouseTabScript extends Script {
             sleep(180, 420);
             if (Microbot.getRs2TileObjectCache().query().interact(HOUSE_PORTAL_OBJECT, "Enter")
                     && sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000)) {
+                assumeInsidePlayerHouse = false;
                 transitionPause("leaving house");
                 return true;
             }
