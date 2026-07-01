@@ -500,22 +500,30 @@ public class HouseTabScript extends Script {
         return false;
     }
 
+    private boolean needsProgressiveBankPrepFast(HouseTabConfig config) {
+        if (!config.progressive()) {
+            return false;
+        }
+        if (lastPreparedTablet != selectedTablet) {
+            return true;
+        }
+        if (!hasAnySoftClay()) {
+            return true;
+        }
+        return config.useCombinationStaff() && !hasStaffFor(selectedTablet);
+    }
+
     private void enterHouseForProgressivePrep(HouseTabConfig config) {
         Microbot.status = "Entering house for GE setup";
         Microbot.log("HouseTabScript: progressive prep needed outside house; entering house before GE travel. "
                 + fastMaterialDebug());
 
-        if (!hasAnySoftClay()) {
-            stop("Missing soft clay for progressive setup");
-            return;
-        }
-
         if (config.useAdvertisementBoard()) {
-            if (config.useLastHouse() && visitLastAdvertisedHouse()) {
+            if (config.useLastHouse() && visitLastAdvertisedHouse(false)) {
                 return;
             }
-            lookForHouseAdvertisementObject();
-            lookForPlayerHouse(config);
+            lookForHouseAdvertisementObject(false);
+            lookForPlayerHouse(config, false);
             return;
         }
 
@@ -724,9 +732,16 @@ public class HouseTabScript extends Script {
     }
 
     private void lookForHouseAdvertisementObject() {
+        lookForHouseAdvertisementObject(true);
+    }
+
+    private void lookForHouseAdvertisementObject(boolean requireUnnotedClay) {
         Widget houseAdvertisementPanel = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE);
-        if (!hasSoftClay() || houseAdvertisementPanel != null || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null)
+        if ((requireUnnotedClay && !hasSoftClay())
+                || houseAdvertisementPanel != null
+                || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
             return;
+        }
 
         long now = System.currentTimeMillis();
         if (now - lastAdvertisementViewAttemptAt < 2500) {
@@ -742,10 +757,15 @@ public class HouseTabScript extends Script {
     }
 
     private boolean visitLastAdvertisedHouse() {
+        return visitLastAdvertisedHouse(true);
+    }
+
+    private boolean visitLastAdvertisedHouse(boolean requireUnnotedClay) {
         if (skipVisitLastHouse || !hasSelectedAdvertisedHouse) {
             return false;
         }
-        if (!hasSoftClay() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
+        if ((requireUnnotedClay && !hasSoftClay())
+                || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
             return false;
         }
 
@@ -883,9 +903,13 @@ public class HouseTabScript extends Script {
     }
 
     private void lookForPlayerHouse(HouseTabConfig config) {
+        lookForPlayerHouse(config, true);
+    }
+
+    private void lookForPlayerHouse(HouseTabConfig config, boolean requireUnnotedClay) {
         Widget houseAdvertisementNameWidget = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE);
         if (houseAdvertisementNameWidget == null || houseAdvertisementNameWidget.getChildren() == null) return;
-        if (!hasSoftClay())
+        if (requireUnnotedClay && !hasSoftClay())
             return;
         if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null)
             return;
@@ -1436,21 +1460,10 @@ public class HouseTabScript extends Script {
                     + " hasNotedClay=" + hasSoftClayNoted());
         }
         boolean insidePlayerHouse = isInsidePlayerHouse();
-        if (insidePlayerHouse && !hasSoftClay()) {
-            if (shouldWaitForFinalTabletCraft()) {
-                return;
-            }
-            Microbot.status = "Leaving house";
-            Microbot.log("HouseTabScript: progressive exit branch leaving house. loop=" + debugLoopCount
-                    + " clay=" + unnotedSoftClayCount()
-                    + " noted=" + notedSoftClayCount()
-                    + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
-            leaveHousePortal();
-            return;
-        }
-
         boolean atGrandExchange = isAtGrandExchange();
-        boolean progressiveBankPrepNeeded = needsProgressiveBankPrep(config);
+        boolean progressiveBankPrepNeeded = atGrandExchange
+                ? needsProgressiveBankPrep(config)
+                : needsProgressiveBankPrepFast(config);
         boolean validProgressiveLoadout = atGrandExchange
                 ? hasValidProgressiveLoadout(config)
                 : !progressiveBankPrepNeeded;
@@ -1458,6 +1471,7 @@ public class HouseTabScript extends Script {
             Microbot.log("HouseTabScript: progressive loop=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
                     + " atGE=" + atGrandExchange
+                    + " insideHouse=" + insidePlayerHouse
                     + " validLoadout=" + validProgressiveLoadout
                     + " prepNeeded=" + progressiveBankPrepNeeded
                     + " " + (atGrandExchange ? materialDebug() : fastMaterialDebug()));
@@ -1472,9 +1486,30 @@ public class HouseTabScript extends Script {
             }
             return;
         }
-        if (progressiveBankPrepNeeded
-                && insidePlayerHouse
-                && travelToGrandExchangeFromHouse()) {
+        if (progressiveBankPrepNeeded && insidePlayerHouse && hasSoftClay() && isTabletCraftingActive()) {
+            Microbot.status = "Finishing current inventory before progressive setup";
+            updateTabletCount();
+            return;
+        }
+        if (progressiveBankPrepNeeded && insidePlayerHouse) {
+            Microbot.status = "Travelling to GE for progressive setup";
+            if (travelToGrandExchangeFromHouse()) {
+                return;
+            }
+            Microbot.log("HouseTabScript: progressive prep needed inside house but no jewellery box route was available; leaving to find another advertised house.");
+            leaveHousePortal();
+            return;
+        }
+        if (insidePlayerHouse && !hasSoftClay()) {
+            if (shouldWaitForFinalTabletCraft()) {
+                return;
+            }
+            Microbot.status = "Leaving house";
+            Microbot.log("HouseTabScript: progressive exit branch leaving house. loop=" + debugLoopCount
+                    + " clay=" + unnotedSoftClayCount()
+                    + " noted=" + notedSoftClayCount()
+                    + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
+            leaveHousePortal();
             return;
         }
         if (progressiveBankPrepNeeded) {
