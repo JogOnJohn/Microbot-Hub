@@ -71,9 +71,11 @@ public class HouseTabScript extends Script {
     private int tabletsMade = 0;
     private int lastKnownOutputCount = 0;
     private boolean dumpedCurrentTabletInterface = false;
+    private HouseTablet dumpedTabletInterfaceFor = null;
     private boolean skipVisitLastHouse = false;
     private int advertisedHouseSkipCount = 0;
     private boolean enteredAdvertisedHouse = false;
+    private boolean hasSelectedAdvertisedHouse = false;
     private TabletQuantityMode confirmedQuantityMode = null;
     private int lecternCraftActions = 0;
     private HouseTablet lastPreparedTablet = null;
@@ -84,6 +86,8 @@ public class HouseTabScript extends Script {
     private long lecternStudyAttemptedAt = 0;
     private long lastLecternCraftAttemptAt = 0;
     private long lastAdvertisementViewAttemptAt = 0;
+    private long lastWorldHopAttemptAt = 0;
+    private int worldHopAttempts = 0;
 
     private boolean hasSoftClay() {
         return Rs2Inventory.hasItem(1761);
@@ -211,6 +215,7 @@ public class HouseTabScript extends Script {
         lastKnownOutputCount = Rs2Inventory.count(selectedTablet.getItemId());
         stopReason = "";
         dumpedCurrentTabletInterface = false;
+        dumpedTabletInterfaceFor = null;
         confirmedQuantityMode = null;
         lecternCraftActions = 0;
         lastPreparedTablet = null;
@@ -219,18 +224,20 @@ public class HouseTabScript extends Script {
         lecternStudyPending = false;
         lecternStudyAttemptedAt = 0;
         lastLecternCraftAttemptAt = 0;
+        lastWorldHopAttemptAt = 0;
+        worldHopAttempts = 0;
     }
 
     private void dumpTabletWidgetsOnce(HouseTabConfig config) {
         if (!config.debugWidgetDump()) return;
         Widget root = Microbot.getClientThread().runOnClientThreadOptional(
                 () -> Microbot.getClient().getWidget(InterfaceID.TeletabsCraftIf.UNIVERSE)).orElse(null);
-        if (root == null) {
-            dumpedCurrentTabletInterface = false;
-            return;
-        }
+        if (root == null) return;
+        if (dumpedTabletInterfaceFor == selectedTablet) return;
+        dumpedCurrentTabletInterface = false;
         if (dumpedCurrentTabletInterface) return;
         dumpedCurrentTabletInterface = true;
+        dumpedTabletInterfaceFor = selectedTablet;
 
         Microbot.log("HouseTab widget dump: TeletabsCraftIf");
         for (int child = 0; child <= 0x28; child++) {
@@ -710,7 +717,7 @@ public class HouseTabScript extends Script {
     }
 
     private boolean visitLastAdvertisedHouse() {
-        if (skipVisitLastHouse) {
+        if (skipVisitLastHouse || !hasSelectedAdvertisedHouse) {
             return false;
         }
         if (!hasSoftClay() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
@@ -726,6 +733,7 @@ public class HouseTabScript extends Script {
             skipVisitLastHouse = false;
             advertisedHouseSkipCount = 0;
             enteredAdvertisedHouse = true;
+            hasSelectedAdvertisedHouse = true;
         }
         return enteredHouse;
     }
@@ -878,6 +886,7 @@ public class HouseTabScript extends Script {
             if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
                 skipVisitLastHouse = false;
                 enteredAdvertisedHouse = true;
+                hasSelectedAdvertisedHouse = true;
             } else {
                 advertisedHouseSkipCount++;
                 skipVisitLastHouse = true;
@@ -911,7 +920,7 @@ public class HouseTabScript extends Script {
             stop("No compatible lectern found for " + selectedTablet.getName());
             return;
         }
-        if (!hasSoftClay() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null || Microbot.isGainingExp)
+        if (!hasSoftClay() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null || isTabletCraftingActive())
             return;
 
         Widget houseTabInterface = Microbot.getClient().getWidget(lecternTabletWidgetId);
@@ -933,6 +942,19 @@ public class HouseTabScript extends Script {
             lecternStudyPending = true;
             lecternStudyAttemptedAt = System.currentTimeMillis();
         }
+    }
+
+    private boolean isTabletCraftingActive() {
+        if (!hasSoftClay()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (Microbot.isGainingExp || now - lastLecternCraftAttemptAt < 10000) {
+            return true;
+        }
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                Microbot.getClient().getLocalPlayer() != null
+                        && Microbot.getClient().getLocalPlayer().getAnimation() == 4068).orElse(false);
     }
 
     public void createHouseTablet(HouseTabConfig config) {
@@ -967,11 +989,10 @@ public class HouseTabScript extends Script {
             return;
         }
 
-        long now = System.currentTimeMillis();
-        if (now - lastLecternCraftAttemptAt < 2500 || Microbot.isGainingExp) {
+        if (isTabletCraftingActive()) {
             return;
         }
-        lastLecternCraftAttemptAt = now;
+        lastLecternCraftAttemptAt = System.currentTimeMillis();
         Microbot.log("HouseTabScript: selecting " + selectedTablet.getName() + " on lectern.");
         Microbot.getMouse().click(houseTabInterface.getCanvasLocation());
         sleep(250, 500);
@@ -1040,7 +1061,7 @@ public class HouseTabScript extends Script {
     }
 
     public void leaveHouse() {
-        if (hasSoftClay() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null)
+        if (hasSoftClay() || isTabletCraftingActive() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null)
             return;
 
         leaveHousePortal();
@@ -1155,8 +1176,7 @@ public class HouseTabScript extends Script {
                     if (shouldLogLoop) Microbot.log("HouseTabScript: waiting for game scene. loop=" + debugLoopCount);
                     return;
                 }
-                if (config.targetWorld() > 0 && Microbot.getClient().getWorld() != config.targetWorld()) {
-                    stop("Wrong world: " + Microbot.getClient().getWorld() + " (target " + config.targetWorld() + ")");
+                if (!ensureTargetWorld(config.targetWorld())) {
                     return;
                 }
                 ScriptHeartbeatRegistry.recordHeartbeat(this.getClass().getName());
@@ -1183,6 +1203,37 @@ public class HouseTabScript extends Script {
             }
         }, 0, 600, TimeUnit.MILLISECONDS);
         return true;
+    }
+
+    private boolean ensureTargetWorld(int targetWorld) {
+        if (targetWorld <= 0) {
+            return true;
+        }
+        int currentWorld = Microbot.getClient().getWorld();
+        if (currentWorld == targetWorld) {
+            worldHopAttempts = 0;
+            lastWorldHopAttemptAt = 0;
+            return true;
+        }
+
+        Microbot.status = "Hopping to world " + targetWorld + " from " + currentWorld;
+        long now = System.currentTimeMillis();
+        if (now - lastWorldHopAttemptAt < 15000) {
+            return false;
+        }
+
+        worldHopAttempts++;
+        lastWorldHopAttemptAt = now;
+        Microbot.log("HouseTabScript: wrong world " + currentWorld + "; hopping to " + targetWorld
+                + " attempt=" + worldHopAttempts);
+        boolean hopStarted = Microbot.hopToWorld(targetWorld);
+        if (!hopStarted) {
+            Microbot.log("HouseTabScript: hop to world " + targetWorld + " did not start; will retry.");
+            return false;
+        }
+
+        sleepUntilOnClientThread(() -> Microbot.getClient().getWorld() == targetWorld, 12000);
+        return false;
     }
 
     private void runProgressiveLoop(HouseTabConfig config, boolean shouldLogLoop) {
@@ -1280,6 +1331,10 @@ public class HouseTabScript extends Script {
         if (isInHouse) {
             advertisedHouseSkipCount = 0;
             enteredAdvertisedHouse = false;
+            if (isTabletCraftingActive()) {
+                updateTabletCount();
+                return;
+            }
             lookForLectern();
             createHouseTablet(config);
             leaveHouse();
