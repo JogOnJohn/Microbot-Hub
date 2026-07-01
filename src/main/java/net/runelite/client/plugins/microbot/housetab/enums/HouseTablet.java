@@ -27,7 +27,7 @@ public enum HouseTablet {
     CIVITAS_ILLA_FORTIS_TELEPORT("Civitas illa fortis teleport", ItemID.POH_TABLET_FORTISTELEPORT, 54, 64.0, LecternFamily.EAGLE, 0x0193_001f,
             Map.of(Runes.EARTH, 1, Runes.FIRE, 1, Runes.LAW, 2), List.of(Runes.EARTH, Runes.FIRE)),
     WATCHTOWER_TELEPORT("Watchtower teleport", ItemID.POH_TABLET_WATCHTOWERTELEPORT, 58, 68.0, LecternFamily.EAGLE, 0x0193_0021,
-            Map.of(Runes.EARTH, 2, Runes.LAW, 2), List.of(Runes.EARTH));
+            Map.of(Runes.EARTH, 2, Runes.LAW, 2), List.of(Runes.EARTH), false);
 
     private final String name;
     private final int itemId;
@@ -37,9 +37,15 @@ public enum HouseTablet {
     private final int widgetId;
     private final Map<Runes, Integer> runeRequirements;
     private final List<Runes> preferredStaffRunes;
+    private final boolean progressive;
 
     HouseTablet(String name, int itemId, int magicLevel, double magicXp, LecternFamily lecternFamily, int widgetId,
                 Map<Runes, Integer> runeRequirements, List<Runes> preferredStaffRunes) {
+        this(name, itemId, magicLevel, magicXp, lecternFamily, widgetId, runeRequirements, preferredStaffRunes, true);
+    }
+
+    HouseTablet(String name, int itemId, int magicLevel, double magicXp, LecternFamily lecternFamily, int widgetId,
+                Map<Runes, Integer> runeRequirements, List<Runes> preferredStaffRunes, boolean progressive) {
         this.name = name;
         this.itemId = itemId;
         this.magicLevel = magicLevel;
@@ -48,6 +54,7 @@ public enum HouseTablet {
         this.widgetId = widgetId;
         this.runeRequirements = runeRequirements;
         this.preferredStaffRunes = preferredStaffRunes;
+        this.progressive = progressive;
     }
 
     public String getName() {
@@ -82,13 +89,17 @@ public enum HouseTablet {
         return preferredStaffRunes;
     }
 
+    public boolean isProgressive() {
+        return progressive;
+    }
+
     public boolean supportsLectern(int objectId) {
         return lecternFamily.supports(objectId);
     }
 
     public static HouseTablet highestXpForLevel(int magicLevel) {
         return Arrays.stream(values())
-                .filter(tablet -> tablet.magicLevel <= magicLevel)
+                .filter(tablet -> tablet.progressive && tablet.magicLevel <= magicLevel)
                 .max(Comparator.comparingDouble(HouseTablet::getMagicXp))
                 .orElse(VARROCK_TELEPORT);
     }
