@@ -95,6 +95,8 @@ public class HouseTabScript extends Script {
     private long lastCraftProgressAt = 0;
     private String currentAdvertisedHouseName = "";
     private final Set<String> blacklistedAdvertisedHouses = new HashSet<>();
+    private long lastCraftGateLogAt = 0;
+    private String lastCraftGateLogReason = "";
 
     private boolean hasSoftClay() {
         return Rs2Inventory.hasItem(1761);
@@ -237,6 +239,8 @@ public class HouseTabScript extends Script {
         lastObservedUnnotedClay = unnotedSoftClayCount();
         lastCraftProgressAt = 0;
         currentAdvertisedHouseName = "";
+        lastCraftGateLogAt = 0;
+        lastCraftGateLogReason = "";
     }
 
     private void dumpTabletWidgetsOnce(HouseTabConfig config) {
@@ -996,13 +1000,29 @@ public class HouseTabScript extends Script {
         long now = System.currentTimeMillis();
         int unnotedClay = unnotedSoftClayCount();
         boolean recentCraftProgress = now - lastCraftProgressAt < 1800;
+        boolean animationActive = isTabletCraftingAnimationActive();
+        long sinceCraftClick = now - lastLecternCraftAttemptAt;
+        long sinceCraftProgress = now - lastCraftProgressAt;
+        String reason;
+        boolean active;
         if (unnotedClay <= 0) {
-            return recentCraftProgress && isTabletCraftingAnimationActive();
+            active = recentCraftProgress && animationActive;
+            reason = active ? "zero-clay-recent-progress-animation" : "zero-clay-finished";
+            logCraftGate(reason, active, unnotedClay, sinceCraftClick, sinceCraftProgress, animationActive);
+            return active;
         }
-        if (now - lastLecternCraftAttemptAt < 3000 || recentCraftProgress) {
-            return true;
+        if (sinceCraftClick < 3000) {
+            active = true;
+            reason = "recent-lectern-click";
+        } else if (recentCraftProgress) {
+            active = true;
+            reason = "recent-xp-or-clay-progress";
+        } else {
+            active = animationActive;
+            reason = animationActive ? "animation-active" : "not-crafting";
         }
-        return isTabletCraftingAnimationActive();
+        logCraftGate(reason, active, unnotedClay, sinceCraftClick, sinceCraftProgress, animationActive);
+        return active;
     }
 
     private boolean isTabletCraftingAnimationActive() {
@@ -1017,9 +1037,34 @@ public class HouseTabScript extends Script {
         if ((lastObservedMagicXp >= 0 && currentMagicXp > lastObservedMagicXp)
                 || (lastObservedUnnotedClay >= 0 && currentUnnotedClay < lastObservedUnnotedClay)) {
             lastCraftProgressAt = System.currentTimeMillis();
+            if (currentUnnotedClay <= 3) {
+                Microbot.log("HouseTab craft progress: xp=" + lastObservedMagicXp + "->" + currentMagicXp
+                        + " clay=" + lastObservedUnnotedClay + "->" + currentUnnotedClay
+                        + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
+            }
         }
         lastObservedMagicXp = currentMagicXp;
         lastObservedUnnotedClay = currentUnnotedClay;
+    }
+
+    private void logCraftGate(String reason, boolean active, int unnotedClay, long sinceCraftClick, long sinceCraftProgress, boolean animationActive) {
+        if (unnotedClay > 3 && active) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (reason.equals(lastCraftGateLogReason) && now - lastCraftGateLogAt < 2500) {
+            return;
+        }
+        lastCraftGateLogReason = reason;
+        lastCraftGateLogAt = now;
+        Microbot.log("HouseTab craft gate: active=" + active
+                + " reason=" + reason
+                + " clay=" + unnotedClay
+                + " sinceClickMs=" + sinceCraftClick
+                + " sinceProgressMs=" + sinceCraftProgress
+                + " animation=" + animationActive
+                + " gainingXp=" + Microbot.isGainingExp
+                + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
     }
 
     public void createHouseTablet(HouseTabConfig config) {
@@ -1126,9 +1171,21 @@ public class HouseTabScript extends Script {
     }
 
     public void leaveHouse() {
-        if (hasSoftClay() || isTabletCraftingActive() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null)
+        boolean hasClay = hasSoftClay();
+        boolean craftingActive = isTabletCraftingActive();
+        boolean portalVisible = Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null;
+        if (hasClay || craftingActive || !portalVisible) {
+            if (!hasClay && unnotedSoftClayCount() <= 3) {
+                Microbot.log("HouseTabScript: leaveHouse blocked. hasClay=" + hasClay
+                        + " craftingActive=" + craftingActive
+                        + " portalVisible=" + portalVisible
+                        + " clay=" + unnotedSoftClayCount());
+            }
             return;
+        }
 
+        Microbot.log("HouseTabScript: leaveHouse clicking portal. clay=" + unnotedSoftClayCount()
+                + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
         leaveHousePortal();
     }
 
@@ -1329,6 +1386,10 @@ public class HouseTabScript extends Script {
         boolean insidePlayerHouse = isInsidePlayerHouse();
         if (insidePlayerHouse && !hasSoftClay() && !isTabletCraftingActive()) {
             Microbot.status = "Leaving house";
+            Microbot.log("HouseTabScript: progressive exit branch leaving house. loop=" + debugLoopCount
+                    + " clay=" + unnotedSoftClayCount()
+                    + " noted=" + notedSoftClayCount()
+                    + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
             leaveHouse();
             return;
         }
@@ -1398,6 +1459,13 @@ public class HouseTabScript extends Script {
             Microbot.log("HouseTabScript: classic loop=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
                     + " " + materialDebug());
+        }
+        if (unnotedSoftClayCount() <= 3) {
+            Microbot.log("HouseTabScript: low-clay classic loop. loop=" + debugLoopCount
+                    + " insideHouse=" + (getHouseLectern() != null)
+                    + " clay=" + unnotedSoftClayCount()
+                    + " output=" + Rs2Inventory.count(selectedTablet.getItemId())
+                    + " gainingXp=" + Microbot.isGainingExp);
         }
         if (!hasRequiredStaffOrFallback(config)) {
             return;
