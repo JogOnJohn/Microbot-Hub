@@ -3,6 +3,7 @@ package net.runelite.client.plugins.microbot.housetab;
 import com.google.inject.Provides;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
+import net.runelite.api.GameState;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameTick;
 import net.runelite.client.config.ConfigManager;
@@ -30,7 +31,7 @@ import java.awt.*;
 )
 @Slf4j
 public class HouseTabPlugin extends Plugin {
-    public static final String version = "1.0.23";
+    public static final String version = "1.0.26";
 
     @Inject
     private HouseTabConfig config;
@@ -48,14 +49,16 @@ public class HouseTabPlugin extends Plugin {
     private HouseTabScript houseTabScript;
     private int loggedInTicks = 0;
     private boolean overlayAdded = false;
+    private long startupAt = 0;
 
     @Override
     protected void startUp() throws AWTException {
-        Microbot.log("HouseTabPlugin: startUp invoked; script will start after login.");
+        startupAt = System.currentTimeMillis();
+        Microbot.log("HouseTabPlugin: startUp invoked; script will wait for stable logged-in game state.");
     }
 
     private void startScriptIfLoggedIn() {
-        if (!Microbot.isLoggedIn()) {
+        if (Microbot.getClient().getGameState() != GameState.LOGGED_IN || !Microbot.isLoggedIn()) {
             loggedInTicks = 0;
             return;
         }
@@ -64,7 +67,16 @@ public class HouseTabPlugin extends Plugin {
             Microbot.log("HouseTabPlugin: login detected, waiting for local player before script start.");
             return;
         }
-        if (loggedInTicks < 5) {
+        if (Microbot.getClient().getLocalPlayer().getWorldLocation() == null) {
+            loggedInTicks = 0;
+            Microbot.log("HouseTabPlugin: login detected, waiting for player world location before script start.");
+            return;
+        }
+        if (System.currentTimeMillis() - startupAt < 12000) {
+            loggedInTicks = 0;
+            return;
+        }
+        if (loggedInTicks < 20) {
             loggedInTicks++;
             return;
         }
