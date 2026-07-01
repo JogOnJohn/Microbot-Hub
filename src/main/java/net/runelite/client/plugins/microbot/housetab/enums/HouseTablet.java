@@ -20,8 +20,12 @@ public enum HouseTablet {
             Map.of(Runes.AIR, 1, Runes.EARTH, 1, Runes.LAW, 1), List.of(Runes.AIR, Runes.EARTH)),
     CAMELOT_TELEPORT("Camelot teleport", ItemID.POH_TABLET_CAMELOTTELEPORT, 45, 55.5, LecternFamily.EAGLE, 0x0193_001a,
             Map.of(Runes.AIR, 5, Runes.LAW, 1), List.of(Runes.AIR)),
+    KOUREND_CASTLE_TELEPORT("Kourend castle teleport", ItemID.POH_TABLET_KOURENDTELEPORT, 48, 58.0, LecternFamily.EAGLE, 0x0193_001b,
+            Map.of(Runes.FIRE, 1, Runes.WATER, 1, Runes.LAW, 2), List.of(Runes.FIRE, Runes.WATER)),
     ARDOUGNE_TELEPORT("Ardougne teleport", ItemID.POH_TABLET_ARDOUGNETELEPORT, 51, 61.0, LecternFamily.EAGLE, 0x0193_001d,
             Map.of(Runes.WATER, 2, Runes.LAW, 2), List.of(Runes.WATER)),
+    CIVITAS_ILLA_FORTIS_TELEPORT("Civitas illa fortis teleport", ItemID.POH_TABLET_FORTISTELEPORT, 54, 64.0, LecternFamily.EAGLE, 0x0193_001f,
+            Map.of(Runes.EARTH, 1, Runes.FIRE, 1, Runes.LAW, 2), List.of(Runes.EARTH, Runes.FIRE)),
     WATCHTOWER_TELEPORT("Watchtower teleport", ItemID.POH_TABLET_WATCHTOWERTELEPORT, 58, 68.0, LecternFamily.EAGLE, 0x0193_0021,
             Map.of(Runes.EARTH, 2, Runes.LAW, 2), List.of(Runes.EARTH));
 
