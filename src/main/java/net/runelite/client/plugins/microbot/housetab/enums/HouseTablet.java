@@ -26,6 +26,8 @@ public enum HouseTablet {
             Map.of(Runes.WATER, 2, Runes.LAW, 2), List.of(Runes.WATER)),
     CIVITAS_ILLA_FORTIS_TELEPORT("Civitas illa fortis teleport", ItemID.POH_TABLET_FORTISTELEPORT, 54, 64.0, LecternFamily.EAGLE, 0x0193_001f,
             Map.of(Runes.EARTH, 1, Runes.FIRE, 1, Runes.LAW, 2), List.of(Runes.EARTH, Runes.FIRE)),
+    TELEPORT_TO_BOAT("Teleport to Boat", ItemID.POH_TABLET_TELEPORTMETOBOAT, 67, 76.0, LecternFamily.EAGLE, 0x0193_0023,
+            Map.of(Runes.EARTH, 1, Runes.WATER, 1, Runes.LAW, 2), List.of(Runes.EARTH, Runes.WATER)),
     WATCHTOWER_TELEPORT("Watchtower teleport", ItemID.POH_TABLET_WATCHTOWERTELEPORT, 58, 68.0, LecternFamily.EAGLE, 0x0193_0021,
             Map.of(Runes.EARTH, 2, Runes.LAW, 2), List.of(Runes.EARTH), false);
 
