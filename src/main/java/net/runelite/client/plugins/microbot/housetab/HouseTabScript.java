@@ -478,11 +478,11 @@ public class HouseTabScript extends Script {
         if (!config.progressive()) {
             return false;
         }
-        if (!hasAnySoftClay() || !hasRequiredRunes()) {
+        if (!hasAnySoftClay()) {
             return true;
         }
-        if (!hasSoftClay() && hasSoftClayNoted()) {
-            return false;
+        if (!hasRequiredRunes()) {
+            return true;
         }
         return config.useCombinationStaff() && !hasStaffFor(selectedTablet);
     }
@@ -492,12 +492,7 @@ public class HouseTabScript extends Script {
         Microbot.log("HouseTabScript: progressive prep needed outside house; entering house before GE travel. "
                 + materialDebug());
 
-        if (!hasSoftClay()) {
-            if (hasSoftClayNoted()) {
-                Microbot.log("HouseTabScript: progressive prep has noted clay but no unnoted clay; unnoting once before house entry.");
-                unnoteClay();
-                return;
-            }
+        if (!hasAnySoftClay()) {
             stop("Missing soft clay for progressive setup");
             return;
         }
@@ -1440,12 +1435,6 @@ public class HouseTabScript extends Script {
             leaveHousePortal();
             return;
         }
-        if (!insidePlayerHouse && !hasSoftClay() && hasSoftClayNoted()) {
-            Microbot.status = "Unnoting soft clay";
-            if (unnoteClay()) {
-                return;
-            }
-        }
 
         boolean atGrandExchange = isAtGrandExchange();
         boolean validProgressiveLoadout = hasValidProgressiveLoadout(config);
@@ -1476,6 +1465,13 @@ public class HouseTabScript extends Script {
         if (progressiveBankPrepNeeded) {
             enterHouseForProgressivePrep(config);
             return;
+        }
+
+        if (!insidePlayerHouse && !hasSoftClay() && hasSoftClayNoted()) {
+            Microbot.status = "Unnoting soft clay";
+            if (unnoteClay()) {
+                return;
+            }
         }
 
         if (hasSoftClay()
