@@ -1446,22 +1446,6 @@ public class HouseTabScript extends Script {
                 return;
             }
         }
-        if (hasSoftClay()
-                && !insidePlayerHouse) {
-            Microbot.status = "Entering advertised house";
-            if (config.useAdvertisementBoard()) {
-                if (config.useLastHouse() && visitLastAdvertisedHouse()) {
-                    return;
-                }
-                lookForHouseAdvertisementObject();
-                lookForPlayerHouse(config);
-                return;
-            }
-        }
-        if (insidePlayerHouse && hasSoftClay()) {
-            runClassicLoop(config, shouldLogLoop);
-            return;
-        }
 
         boolean atGrandExchange = isAtGrandExchange();
         boolean validProgressiveLoadout = hasValidProgressiveLoadout(config);
@@ -1484,11 +1468,6 @@ public class HouseTabScript extends Script {
             }
             return;
         }
-        if (!insidePlayerHouse && !hasSoftClay() && hasSoftClayNoted()) {
-            if (unnoteClay()) {
-                return;
-            }
-        }
         if (progressiveBankPrepNeeded
                 && insidePlayerHouse
                 && travelToGrandExchangeFromHouse()) {
@@ -1497,6 +1476,29 @@ public class HouseTabScript extends Script {
         if (progressiveBankPrepNeeded) {
             enterHouseForProgressivePrep(config);
             return;
+        }
+
+        if (hasSoftClay()
+                && !insidePlayerHouse) {
+            Microbot.status = "Entering advertised house";
+            if (config.useAdvertisementBoard()) {
+                if (config.useLastHouse() && visitLastAdvertisedHouse()) {
+                    return;
+                }
+                lookForHouseAdvertisementObject();
+                lookForPlayerHouse(config);
+                return;
+            }
+        }
+        if (insidePlayerHouse && hasSoftClay()) {
+            runClassicLoop(config, shouldLogLoop);
+            return;
+        }
+
+        if (!insidePlayerHouse && !hasSoftClay() && hasSoftClayNoted()) {
+            if (unnoteClay()) {
+                return;
+            }
         }
         runClassicLoop(config, shouldLogLoop);
     }
