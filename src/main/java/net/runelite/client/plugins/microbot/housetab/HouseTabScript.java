@@ -550,19 +550,7 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isAtGrandExchange() {
-        if (isNearGrandExchangeByPosition()) {
-            return true;
-        }
-
-        try {
-            return Microbot.getRs2TileObjectCache().query()
-                    .withNameContains("Grand Exchange booth")
-                    .within(30)
-                    .nearest() != null;
-        } catch (Exception ex) {
-            Microbot.log("HouseTab: GE detection skipped while scene cache is not ready.");
-            return false;
-        }
+        return isNearGrandExchangeByPosition();
     }
 
     private boolean isNearRimmingtonAdvertisementByPosition() {
@@ -580,30 +568,33 @@ public class HouseTabScript extends Script {
 
     private boolean isInsidePlayerHouse() {
         try {
-            return Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null
-                    || Microbot.getRs2TileObjectCache().query().withId(ORNATE_JEWELLERY_BOX_OBJECT).nearest() != null
-                    || getHouseLectern() != null;
+            if (Microbot.getClient().getLocalPlayer() == null) {
+                return false;
+            }
+            WorldPoint location = Microbot.getClient().getLocalPlayer().getWorldLocation();
+            return location != null && location.getX() >= 10000;
         } catch (Exception ex) {
-            Microbot.log("HouseTabScript: house scene detection skipped while client thread is busy.");
             return false;
         }
     }
 
     private boolean isNearGrandExchangeByPosition() {
-        WorldPoint location = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+        try {
             if (Microbot.getClient().getLocalPlayer() == null) {
-                return null;
+                return false;
             }
-            return Microbot.getClient().getLocalPlayer().getWorldLocation();
-        }).orElse(null);
-        if (location == null) {
+            WorldPoint location = Microbot.getClient().getLocalPlayer().getWorldLocation();
+            if (location == null) {
+                return false;
+            }
+            return location.getPlane() == 0
+                    && location.getX() >= 3150
+                    && location.getX() <= 3175
+                    && location.getY() >= 3475
+                    && location.getY() <= 3505;
+        } catch (Exception ex) {
             return false;
         }
-        return location.getPlane() == 0
-                && location.getX() >= 3150
-                && location.getX() <= 3175
-                && location.getY() >= 3475
-                && location.getY() <= 3505;
     }
 
     private boolean isGameSceneReady() {
@@ -644,15 +635,24 @@ public class HouseTabScript extends Script {
             return true;
         }
 
+        Rs2TileObjectModel box = Microbot.getRs2TileObjectCache().query()
+                .withId(ORNATE_JEWELLERY_BOX_OBJECT)
+                .nearest();
+        if (box == null) {
+            Microbot.log("HouseTabScript: no ornate jewellery box found for GE travel.");
+            return false;
+        }
+
+        Microbot.status = "Using jewellery box to GE";
+        Microbot.log("HouseTabScript: using ornate jewellery box Grand Exchange action.");
+        if (Microbot.getRs2TileObjectCache().query().interact(ORNATE_JEWELLERY_BOX_OBJECT, "Grand Exchange")
+                && sleepUntil(this::isAtGrandExchange, 12000)) {
+            return true;
+        }
+
         if (Microbot.getClient().getWidget(ORNATE_JEWELLERY_BOX_GE_WIDGET) == null) {
-            Rs2TileObjectModel box = Microbot.getRs2TileObjectCache().query()
-                    .withId(ORNATE_JEWELLERY_BOX_OBJECT)
-                    .nearest();
-            if (box == null) {
-                return false;
-            }
-            if (!Microbot.getRs2TileObjectCache().query().interact(ORNATE_JEWELLERY_BOX_OBJECT, "Teleport")) {
-                Microbot.getRs2TileObjectCache().query().interact(ORNATE_JEWELLERY_BOX_OBJECT, "Rub");
+            if (!Microbot.getRs2TileObjectCache().query().interact(ORNATE_JEWELLERY_BOX_OBJECT, "Teleport Menu")) {
+                Microbot.getRs2TileObjectCache().query().interact(ORNATE_JEWELLERY_BOX_OBJECT, "Teleport");
             }
             sleepUntilOnClientThread(() -> Microbot.getClient().getWidget(ORNATE_JEWELLERY_BOX_GE_WIDGET) != null, 5000);
         }
