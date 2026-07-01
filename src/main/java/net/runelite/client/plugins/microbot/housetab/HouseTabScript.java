@@ -702,6 +702,7 @@ public class HouseTabScript extends Script {
             stop("Missing house tablet to return from GE");
             return false;
         }
+        transitionPause("returning from GE");
         if (!Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Outside")) {
             Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Break");
         }
@@ -728,6 +729,7 @@ public class HouseTabScript extends Script {
                 .interact(HOUSE_ADVERTISEMENT_OBJECT, "View");
         if (success) {
             lastAdvertisementViewAttemptAt = now;
+            transitionPause("opening house advertisement");
         }
     }
 
@@ -771,7 +773,10 @@ public class HouseTabScript extends Script {
         }
 
         Microbot.log("HouseTab: right-clicking House Advertisement to select Visit-last.");
+        Microbot.getMouse().move(clickPoint);
+        sleep(220, 520);
         Microbot.getMouse().click(clickPoint, true);
+        sleep(260, 620);
         sleepUntilOnClientThread(() -> Microbot.getClient().isMenuOpen(), 2000);
         if (!Microbot.getClientThread().runOnClientThreadOptional(() -> Microbot.getClient().isMenuOpen()).orElse(false)) {
             return false;
@@ -784,7 +789,9 @@ public class HouseTabScript extends Script {
             return false;
         }
 
+        sleep(240, 680);
         Microbot.getMouse().click(menuPoint);
+        transitionPause("visit-last selected");
         return true;
     }
 
@@ -930,6 +937,7 @@ public class HouseTabScript extends Script {
                 Microbot.getMouse().scrollDown(new Point(x, y));
             }, () -> buttonRelativeY <= (mainWindow.getScrollY() + mainWindow.getHeight()), 500);
         } else {
+            transitionPause("selecting advertised house");
             Microbot.getMouse()
                     .click(enterHouseButton.getCanvasLocation());
             sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null, 10000);
@@ -939,6 +947,7 @@ public class HouseTabScript extends Script {
                 hasSelectedAdvertisedHouse = true;
                 Microbot.log("HouseTabScript: entered advertised house"
                         + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
+                transitionPause("entered advertised house");
             } else {
                 advertisedHouseSkipCount++;
                 skipVisitLastHouse = true;
@@ -1183,6 +1192,21 @@ public class HouseTabScript extends Script {
         }
     }
 
+    private void transitionPause(String reason) {
+        int pause = Rs2Random.between(320, 860);
+        if (Rs2Random.between(1, 100) <= 8) {
+            pause += Rs2Random.between(500, 1100);
+        }
+        Microbot.log("HouseTabScript: transition pause after " + reason + " for " + pause + "ms.");
+        sleep(pause, pause + 80);
+        if (Rs2Random.between(1, 100) <= 12) {
+            Microbot.getMouse().move(new Point(Rs2Random.between(120, 720), Rs2Random.between(120, 460)));
+        }
+        if (Rs2Random.between(1, 100) <= 5) {
+            Rs2Camera.setAngle(Rs2Random.between(0, 359), 30);
+        }
+    }
+
     public void leaveHouse() {
         boolean hasClay = hasSoftClay();
         boolean craftingActive = isTabletCraftingActive();
@@ -1241,8 +1265,10 @@ public class HouseTabScript extends Script {
         }
 
         try {
+            sleep(180, 420);
             if (Microbot.getRs2TileObjectCache().query().interact(HOUSE_PORTAL_OBJECT, "Enter")
                     && sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000)) {
+                transitionPause("leaving house");
                 return true;
             }
         } catch (Exception ex) {
@@ -1258,7 +1284,11 @@ public class HouseTabScript extends Script {
         }
 
         Microbot.getMouse().click(clickPoint);
-        return sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000);
+        boolean leftHouse = sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000);
+        if (leftHouse) {
+            transitionPause("leaving house");
+        }
+        return leftHouse;
     }
 
     public boolean unnoteClay() {
@@ -1304,6 +1334,7 @@ public class HouseTabScript extends Script {
             sleep(300, 380);
             phialsUnnotePending = false;
             phialsUnnoteAttemptedAt = 0;
+            transitionPause("Phials unnote");
             return true;
         }
         return false;
