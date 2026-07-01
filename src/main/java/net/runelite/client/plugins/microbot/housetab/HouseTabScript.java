@@ -92,6 +92,7 @@ public class HouseTabScript extends Script {
     private long lastAdvertisementViewAttemptAt = 0;
     private long lastProgressivePrepLogAt = 0;
     private long lastWorldHopAttemptAt = 0;
+    private long lastInsideHouseDetectedAt = 0;
     private int worldHopAttempts = 0;
     private int lastObservedMagicXp = -1;
     private int lastObservedUnnotedClay = -1;
@@ -638,11 +639,27 @@ public class HouseTabScript extends Script {
             return true;
         }
         try {
+            if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null
+                    || Microbot.getRs2TileObjectCache().query().withId(ORNATE_JEWELLERY_BOX_OBJECT).nearest() != null
+                    || Microbot.getRs2TileObjectCache().query().withIds(lecternToHouseTabButton.keySet().stream().mapToInt(Integer::intValue).toArray()).nearest() != null) {
+                assumeInsidePlayerHouse = true;
+                if (lastInsideHouseDetectedAt == 0) {
+                    lastInsideHouseDetectedAt = System.currentTimeMillis();
+                }
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+        try {
             if (Microbot.getClient().getLocalPlayer() == null) {
                 return false;
             }
             WorldPoint location = Microbot.getClient().getLocalPlayer().getWorldLocation();
-            return location != null && (location.getX() >= 10000 || location.getY() >= 10000);
+            boolean inside = location != null && (location.getX() >= 10000 || location.getY() >= 10000);
+            if (inside && lastInsideHouseDetectedAt == 0) {
+                lastInsideHouseDetectedAt = System.currentTimeMillis();
+            }
+            return inside;
         } catch (Exception ex) {
             return false;
         }
@@ -897,6 +914,7 @@ public class HouseTabScript extends Script {
             enteredAdvertisedHouse = true;
             hasSelectedAdvertisedHouse = true;
             assumeInsidePlayerHouse = true;
+            lastInsideHouseDetectedAt = System.currentTimeMillis();
         }
         return enteredHouse;
     }
@@ -1101,6 +1119,7 @@ public class HouseTabScript extends Script {
                 enteredAdvertisedHouse = true;
                 hasSelectedAdvertisedHouse = true;
                 assumeInsidePlayerHouse = true;
+                lastInsideHouseDetectedAt = System.currentTimeMillis();
                 Microbot.log("HouseTabScript: entered advertised house"
                         + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
                 transitionPause("entered advertised house");
@@ -1461,6 +1480,7 @@ public class HouseTabScript extends Script {
             Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Break");
         }
         assumeInsidePlayerHouse = false;
+        lastInsideHouseDetectedAt = 0;
         return sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null, 10000);
     }
 
@@ -1477,6 +1497,7 @@ public class HouseTabScript extends Script {
             if (Microbot.getRs2TileObjectCache().query().interact(HOUSE_PORTAL_OBJECT, "Enter")
                     && sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000)) {
                 assumeInsidePlayerHouse = false;
+                lastInsideHouseDetectedAt = 0;
                 transitionPause("leaving house");
                 return true;
             }
@@ -1495,6 +1516,8 @@ public class HouseTabScript extends Script {
         Microbot.getMouse().click(clickPoint);
         boolean leftHouse = sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000);
         if (leftHouse) {
+            assumeInsidePlayerHouse = false;
+            lastInsideHouseDetectedAt = 0;
             transitionPause("leaving house");
         }
         return leftHouse;
@@ -1714,7 +1737,10 @@ public class HouseTabScript extends Script {
             }
         }
         if (insidePlayerHouse && hasSoftClay()) {
-            if (config.useAdvertisementBoard() && getHouseLectern() == null) {
+            if (config.useAdvertisementBoard()
+                    && getHouseLectern() == null
+                    && lastInsideHouseDetectedAt > 0
+                    && System.currentTimeMillis() - lastInsideHouseDetectedAt > 8000) {
                 leaveBadAdvertisedHouse();
                 return;
             }
