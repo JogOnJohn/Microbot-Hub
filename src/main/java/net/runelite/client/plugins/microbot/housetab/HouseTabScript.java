@@ -1,5 +1,6 @@
 package net.runelite.client.plugins.microbot.housetab;
 
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Point;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.EquipmentInventorySlot;
@@ -44,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.awt.event.KeyEvent;
 
+@Slf4j
 public class HouseTabScript extends Script {
     private final int RIMMINGTON_PORTAL_OBJECT = 15478;
     private final int HOUSE_PORTAL_OBJECT = 4525;
@@ -455,7 +457,7 @@ public class HouseTabScript extends Script {
                 stop("Missing " + rune.name().toLowerCase() + " runes for " + selectedTablet.getName());
                 return false;
             }
-            if (!Rs2Bank.withdrawX(itemId, amount)) {
+            if (!Rs2Bank.withdrawAll(itemId)) {
                 stop("Unable to withdraw " + rune.name().toLowerCase() + " runes");
                 return false;
             }
@@ -464,6 +466,32 @@ public class HouseTabScript extends Script {
         }
 
         return hasRequiredRunes();
+    }
+
+    private boolean ensureSoftClayFromBank() {
+        if (hasAnySoftClay()) {
+            return true;
+        }
+        if (!Rs2Bank.isOpen()) {
+            return false;
+        }
+        if (Rs2Bank.hasBankItem(1762, 1)) {
+            if (!Rs2Bank.withdrawAll(1762)) {
+                stop("Unable to withdraw noted soft clay");
+                return false;
+            }
+            return sleepUntil(this::hasSoftClayNoted, 3000);
+        }
+        if (Rs2Bank.hasBankItem(1761, 1)) {
+            if (!Rs2Bank.withdrawAll(1761)) {
+                stop("Unable to withdraw soft clay");
+                return false;
+            }
+            return sleepUntil(this::hasSoftClay, 3000);
+        }
+
+        stop("Missing soft clay");
+        return false;
     }
 
     private void depositCraftedTeleportStacksForProgressive() {
@@ -562,7 +590,7 @@ public class HouseTabScript extends Script {
         if (!config.progressive()) {
             return false;
         }
-        if (!hasAnySoftClay()) {
+        if (!hasAnySoftClay() || !hasRequiredRunes()) {
             return true;
         }
         if (!hasSoftClay() && hasSoftClayNoted()) {
@@ -816,6 +844,9 @@ public class HouseTabScript extends Script {
             if (!ensureGrandExchangeBankOpen("staff setup after depositing old weapon")) {
                 return false;
             }
+        }
+        if (!ensureSoftClayFromBank()) {
+            return false;
         }
         if (!hasRequiredStaffOrFallback(config)) {
             return false;
@@ -1180,7 +1211,7 @@ public class HouseTabScript extends Script {
         if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null) return;
 
         if (lecternStudyPending && System.currentTimeMillis() - lecternStudyAttemptedAt < 8000) {
-            Microbot.log("HouseTabScript: waiting for lectern interface.");
+            log.debug("HouseTabScript: waiting for lectern interface.");
             return;
         }
 
@@ -1247,7 +1278,7 @@ public class HouseTabScript extends Script {
             lastCraftProgressAt = System.currentTimeMillis();
             updateTabletCount();
             if (currentUnnotedClay <= 3) {
-                Microbot.log("HouseTab craft progress: xp=" + lastObservedMagicXp + "->" + currentMagicXp
+                log.debug("HouseTab craft progress: xp=" + lastObservedMagicXp + "->" + currentMagicXp
                         + " clay=" + lastObservedUnnotedClay + "->" + currentUnnotedClay
                         + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
             }
@@ -1266,7 +1297,7 @@ public class HouseTabScript extends Script {
         }
         lastCraftGateLogReason = reason;
         lastCraftGateLogAt = now;
-        Microbot.log("HouseTab craft gate: active=" + active
+        log.debug("HouseTab craft gate: active=" + active
                 + " reason=" + reason
                 + " clay=" + unnotedClay
                 + " sinceClickMs=" + sinceCraftClick
@@ -1427,7 +1458,7 @@ public class HouseTabScript extends Script {
         if (Rs2Random.between(1, 100) <= 8) {
             pause += Rs2Random.between(500, 1100);
         }
-        Microbot.log("HouseTabScript: transition pause after " + reason + " for " + pause + "ms.");
+        log.debug("HouseTabScript: transition pause after " + reason + " for " + pause + "ms.");
         sleep(pause, pause + 80);
         if (Rs2Random.between(1, 100) <= 12) {
             Microbot.getMouse().move(new Point(Rs2Random.between(120, 720), Rs2Random.between(120, 460)));
@@ -1583,11 +1614,11 @@ public class HouseTabScript extends Script {
                 debugLoopCount++;
                 boolean shouldLogLoop = debugLoopCount <= 10 || debugLoopCount % 25 == 0;
                 if (!Microbot.isLoggedIn()) {
-                    if (shouldLogLoop) Microbot.log("HouseTabScript: waiting for login. loop=" + debugLoopCount);
+                    if (shouldLogLoop) log.debug("HouseTabScript: waiting for login. loop=" + debugLoopCount);
                     return;
                 }
                 if (!isGameSceneReady()) {
-                    if (shouldLogLoop) Microbot.log("HouseTabScript: waiting for game scene. loop=" + debugLoopCount);
+                    if (shouldLogLoop) log.debug("HouseTabScript: waiting for game scene. loop=" + debugLoopCount);
                     return;
                 }
                 if (!ensureTargetWorld(config.targetWorld())) {
@@ -1613,7 +1644,7 @@ public class HouseTabScript extends Script {
             } finally {
                 long elapsed = System.currentTimeMillis() - loopStartedAt;
                 if (elapsed > 5000) {
-                    Microbot.log("HouseTabScript: loop=" + debugLoopCount + " took " + elapsed + "ms.");
+                    log.debug("HouseTabScript: loop=" + debugLoopCount + " took " + elapsed + "ms.");
                 }
             }
         }, 0, 600, TimeUnit.MILLISECONDS);
@@ -1653,7 +1684,7 @@ public class HouseTabScript extends Script {
 
     private void runProgressiveLoop(HouseTabConfig config, boolean shouldLogLoop) {
         if (shouldLogLoop) {
-            Microbot.log("HouseTabScript: progressive tick=" + debugLoopCount
+            log.debug("HouseTabScript: progressive tick=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
                     + " atRimmington=" + isNearRimmingtonAdvertisementByPosition()
                     + " hasUnnotedClay=" + hasSoftClay()
@@ -1668,7 +1699,7 @@ public class HouseTabScript extends Script {
                 ? hasValidProgressiveLoadout(config)
                 : !progressiveBankPrepNeeded;
         if (shouldLogLoop) {
-            Microbot.log("HouseTabScript: progressive loop=" + debugLoopCount
+            log.debug("HouseTabScript: progressive loop=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
                     + " atGE=" + atGrandExchange
                     + " insideHouse=" + insidePlayerHouse
@@ -1758,7 +1789,7 @@ public class HouseTabScript extends Script {
 
     private void runClassicLoop(HouseTabConfig config, boolean shouldLogLoop) {
         if (shouldLogLoop) {
-            Microbot.log("HouseTabScript: classic loop=" + debugLoopCount
+            log.debug("HouseTabScript: classic loop=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
                     + " " + materialDebug());
         }
@@ -1770,7 +1801,7 @@ public class HouseTabScript extends Script {
             }
         }
         if (unnotedSoftClayCount() <= 3) {
-            Microbot.log("HouseTabScript: low-clay classic loop. loop=" + debugLoopCount
+            log.debug("HouseTabScript: low-clay classic loop. loop=" + debugLoopCount
                     + " insideHouse=" + isInHouse
                     + " clay=" + unnotedSoftClayCount()
                     + " output=" + Rs2Inventory.count(selectedTablet.getItemId())
