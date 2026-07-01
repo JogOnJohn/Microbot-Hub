@@ -3,10 +3,8 @@ package net.runelite.client.plugins.microbot.housetab;
 import com.google.inject.Provides;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
-import net.runelite.api.GameState;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameTick;
-import net.runelite.api.events.GameStateChanged;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -32,7 +30,7 @@ import java.awt.*;
 )
 @Slf4j
 public class HouseTabPlugin extends Plugin {
-    public static final String version = "1.0.17";
+    public static final String version = "1.0.20";
 
     @Inject
     private HouseTabConfig config;
@@ -49,15 +47,11 @@ public class HouseTabPlugin extends Plugin {
 
     private HouseTabScript houseTabScript;
     private int loggedInTicks = 0;
+    private boolean overlayAdded = false;
 
     @Override
     protected void startUp() throws AWTException {
-		Microbot.pauseAllScripts.compareAndSet(true, false);
-        if (overlayManager != null) {
-            overlayManager.add(houseTabOverlay);
-        }
         Microbot.log("HouseTabPlugin: startUp invoked; script will start after login.");
-        startScriptIfLoggedIn();
     }
 
     private void startScriptIfLoggedIn() {
@@ -73,6 +67,10 @@ public class HouseTabPlugin extends Plugin {
         if (loggedInTicks < 5) {
             loggedInTicks++;
             return;
+        }
+        if (!overlayAdded && overlayManager != null) {
+            overlayManager.add(houseTabOverlay);
+            overlayAdded = true;
         }
         if (houseTabScript != null && houseTabScript.isRunning()) {
             return;
@@ -92,9 +90,11 @@ public class HouseTabPlugin extends Plugin {
         if (houseTabScript != null) {
             houseTabScript.shutdown();
         }
-        if (overlayManager != null) {
+        if (overlayManager != null && overlayAdded) {
             overlayManager.remove(houseTabOverlay);
+            overlayAdded = false;
         }
+        loggedInTicks = 0;
     }
 
     HouseTabScript getHouseTabScript() {
@@ -109,14 +109,6 @@ public class HouseTabPlugin extends Plugin {
             if (houseTabScript != null) {
                 houseTabScript.handlePlayerHouseOffline(config.useAdvertisementBoard());
             }
-        }
-    }
-
-    @Subscribe
-    public void onGameStateChanged(GameStateChanged event)
-    {
-        if (event.getGameState() == GameState.LOGGED_IN) {
-            startScriptIfLoggedIn();
         }
     }
 
