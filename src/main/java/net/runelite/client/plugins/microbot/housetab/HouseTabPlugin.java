@@ -3,7 +3,10 @@ package net.runelite.client.plugins.microbot.housetab;
 import com.google.inject.Provides;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
+import net.runelite.api.GameState;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.GameTick;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -29,7 +32,7 @@ import java.awt.*;
 )
 @Slf4j
 public class HouseTabPlugin extends Plugin {
-    public static final String version = "1.0.9";
+    public static final String version = "1.0.17";
 
     @Inject
     private HouseTabConfig config;
@@ -44,8 +47,8 @@ public class HouseTabPlugin extends Plugin {
     @Inject
     private HouseTabOverlay houseTabOverlay;
 
-    private final HouseTabScript houseTabScript = new HouseTabScript(HOUSETABS_CONFIG.FRIENDS_HOUSE,
-            new String[]{"xGrace", "workless", "Lego Batman", "Batman 321", "Batman Chest"});
+    private HouseTabScript houseTabScript;
+    private int loggedInTicks = 0;
 
     @Override
     protected void startUp() throws AWTException {
@@ -53,12 +56,49 @@ public class HouseTabPlugin extends Plugin {
         if (overlayManager != null) {
             overlayManager.add(houseTabOverlay);
         }
-        houseTabScript.run(config);
+        Microbot.log("HouseTabPlugin: startUp invoked; script will start after login.");
+        startScriptIfLoggedIn();
+    }
+
+    private void startScriptIfLoggedIn() {
+        if (!Microbot.isLoggedIn()) {
+            loggedInTicks = 0;
+            return;
+        }
+        if (Microbot.getClient().getLocalPlayer() == null) {
+            loggedInTicks = 0;
+            Microbot.log("HouseTabPlugin: login detected, waiting for local player before script start.");
+            return;
+        }
+        if (loggedInTicks < 5) {
+            loggedInTicks++;
+            return;
+        }
+        if (houseTabScript != null && houseTabScript.isRunning()) {
+            return;
+        }
+        if (houseTabScript != null && !houseTabScript.getStopReason().isBlank()) {
+            return;
+        }
+        Microbot.log("HouseTabPlugin: logged in, creating fresh script instance.");
+        houseTabScript = new HouseTabScript(HOUSETABS_CONFIG.FRIENDS_HOUSE,
+                new String[]{"xGrace", "workless", "Lego Batman", "Batman 321", "Batman Chest"});
+        boolean started = houseTabScript.run(config);
+        Microbot.log("HouseTabPlugin: script run returned " + started);
     }
 
     protected void shutDown() {
-        houseTabScript.shutdown();
-        overlayManager.remove(houseTabOverlay);
+        Microbot.log("HouseTabPlugin: shutDown invoked.");
+        if (houseTabScript != null) {
+            houseTabScript.shutdown();
+        }
+        if (overlayManager != null) {
+            overlayManager.remove(houseTabOverlay);
+        }
+    }
+
+    HouseTabScript getHouseTabScript() {
+        return houseTabScript;
     }
 
     @Subscribe
@@ -66,7 +106,23 @@ public class HouseTabPlugin extends Plugin {
     {
         if (event.getType() == ChatMessageType.GAMEMESSAGE && event.getMessage().contains("That player is offline")) {
             Microbot.showMessage("Player is offline.");
-            houseTabScript.shutdown();
+            if (houseTabScript != null) {
+                houseTabScript.handlePlayerHouseOffline(config.useAdvertisementBoard());
+            }
         }
+    }
+
+    @Subscribe
+    public void onGameStateChanged(GameStateChanged event)
+    {
+        if (event.getGameState() == GameState.LOGGED_IN) {
+            startScriptIfLoggedIn();
+        }
+    }
+
+    @Subscribe
+    public void onGameTick(GameTick event)
+    {
+        startScriptIfLoggedIn();
     }
 }
