@@ -50,6 +50,7 @@ public class HouseTabScript extends Script {
 
     private final int HOUSE_ADVERTISEMENT_OBJECT = 29091;
     private final int ORNATE_JEWELLERY_BOX_OBJECT = 29156;
+    private final int LIVE_ADVERTISED_HOUSE_LECTERN_OBJECT = 37349;
     private final List<Integer> GRAND_EXCHANGE_BOOTH_OBJECTS = List.of(10060, 10061, 30389);
 
     private final int HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE = 3407881;
@@ -57,7 +58,8 @@ public class HouseTabScript extends Script {
 
     private final Map<Integer, Integer> lecternToHouseTabButton = Map.of(
             ObjectID.POH_LECTERN_6, 26411031,
-            ObjectID.POH_LECTERN_8, 26411033
+            ObjectID.POH_LECTERN_8, 26411033,
+            LIVE_ADVERTISED_HOUSE_LECTERN_OBJECT, 26411033
     );
 
     private final HOUSETABS_CONFIG houseTabConfig;
