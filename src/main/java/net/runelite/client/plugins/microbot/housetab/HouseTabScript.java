@@ -42,6 +42,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.awt.event.KeyEvent;
 
 public class HouseTabScript extends Script {
     private final int RIMMINGTON_PORTAL_OBJECT = 15478;
@@ -1077,7 +1078,8 @@ public class HouseTabScript extends Script {
             houseIndexToJoin = visibleEnterHouseRows.get(visibleIndex);
         }
         if (houseIndexToJoin < 0) {
-            stop("No advertised house entry is visible");
+            Microbot.log("HouseTabScript: advertisement board open but no visible Enter House rows; reopening board next loop.");
+            closeHouseAdvertisementInterface();
             return;
         }
         Widget enterHouseButton = houseAdvertisementEnterHouseWidget.getChild(houseIndexToJoin);
@@ -1103,12 +1105,24 @@ public class HouseTabScript extends Script {
                         + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
                 transitionPause("entered advertised house");
             } else {
+                blacklistCurrentAdvertisedHouse("entry timed out");
                 advertisedHouseSkipCount++;
                 skipVisitLastHouse = true;
+                hasSelectedAdvertisedHouse = false;
+                closeHouseAdvertisementInterface();
                 Microbot.log("HouseTabScript: advertised house entry timed out; will try next listing. skipCount=" + advertisedHouseSkipCount);
             }
             sleep(2000, 3000);
         }
+    }
+
+    private void closeHouseAdvertisementInterface() {
+        if (Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE) == null) {
+            return;
+        }
+        Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
+        sleepUntilOnClientThread(() -> Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE) == null, 1500);
+        lastAdvertisementViewAttemptAt = 0;
     }
 
     private Integer getHouseLectern() {
@@ -1424,10 +1438,6 @@ public class HouseTabScript extends Script {
     }
 
     private void leaveBadAdvertisedHouse() {
-        if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null) {
-            return;
-        }
-
         advertisedHouseSkipCount++;
         enteredAdvertisedHouse = false;
         hasSelectedAdvertisedHouse = false;
@@ -1704,6 +1714,10 @@ public class HouseTabScript extends Script {
             }
         }
         if (insidePlayerHouse && hasSoftClay()) {
+            if (config.useAdvertisementBoard() && getHouseLectern() == null) {
+                leaveBadAdvertisedHouse();
+                return;
+            }
             runClassicLoop(config, shouldLogLoop);
             return;
         }
