@@ -32,8 +32,10 @@ import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -88,6 +90,11 @@ public class HouseTabScript extends Script {
     private long lastAdvertisementViewAttemptAt = 0;
     private long lastWorldHopAttemptAt = 0;
     private int worldHopAttempts = 0;
+    private int lastObservedMagicXp = -1;
+    private int lastObservedUnnotedClay = -1;
+    private long lastCraftProgressAt = 0;
+    private String currentAdvertisedHouseName = "";
+    private final Set<String> blacklistedAdvertisedHouses = new HashSet<>();
 
     private boolean hasSoftClay() {
         return Rs2Inventory.hasItem(1761);
@@ -226,6 +233,10 @@ public class HouseTabScript extends Script {
         lastLecternCraftAttemptAt = 0;
         lastWorldHopAttemptAt = 0;
         worldHopAttempts = 0;
+        lastObservedMagicXp = startMagicXp;
+        lastObservedUnnotedClay = unnotedSoftClayCount();
+        lastCraftProgressAt = 0;
+        currentAdvertisedHouseName = "";
     }
 
     private void dumpTabletWidgetsOnce(HouseTabConfig config) {
@@ -815,6 +826,32 @@ public class HouseTabScript extends Script {
         return value.replaceAll("<[^>]*>", "");
     }
 
+    private String normalizeHouseName(String value) {
+        return stripTags(value).trim();
+    }
+
+    private String getAdvertisedHouseName(Widget houseAdvertisementNameWidget, int index) {
+        if (houseAdvertisementNameWidget == null || houseAdvertisementNameWidget.getChildren() == null) {
+            return "";
+        }
+        Widget nameWidget = houseAdvertisementNameWidget.getChild(index);
+        return nameWidget == null ? "" : normalizeHouseName(nameWidget.getText());
+    }
+
+    private boolean isAdvertisedHouseBlacklisted(String houseName) {
+        return houseName != null
+                && !houseName.isBlank()
+                && blacklistedAdvertisedHouses.contains(houseName.toLowerCase());
+    }
+
+    private void blacklistCurrentAdvertisedHouse(String reason) {
+        if (currentAdvertisedHouseName == null || currentAdvertisedHouseName.isBlank()) {
+            return;
+        }
+        blacklistedAdvertisedHouses.add(currentAdvertisedHouseName.toLowerCase());
+        Microbot.log("HouseTab: blacklisted advertised house '" + currentAdvertisedHouseName + "' for this run: " + reason);
+    }
+
     private String[] getAdvertisedHouseNames(HouseTabConfig config) {
         String configured = config.advertisedHouses();
         if (configured == null || configured.isBlank()) {
@@ -842,7 +879,11 @@ public class HouseTabScript extends Script {
             for (int i = 0; i < houseAdvertisementNameWidget.getChildren().length; i++) {
                 Widget child = houseAdvertisementNameWidget.getChild(i);
                 if (child == null) continue;
-                if (Arrays.stream(preferredHouses).anyMatch(x -> child.getText().equalsIgnoreCase(x))) {
+                String houseName = normalizeHouseName(child.getText());
+                if (isAdvertisedHouseBlacklisted(houseName)) {
+                    continue;
+                }
+                if (Arrays.stream(preferredHouses).anyMatch(x -> houseName.equalsIgnoreCase(x))) {
                     houseIndexToJoin = i;
                     break;
                 }
@@ -859,6 +900,10 @@ public class HouseTabScript extends Script {
             for (int i = 0; i < houseAdvertisementEnterHouseWidget.getChildren().length; i++) {
                 Widget child = houseAdvertisementEnterHouseWidget.getChild(i);
                 if (child != null && child.getActions() != null && Arrays.stream(child.getActions()).anyMatch("Enter House"::equalsIgnoreCase)) {
+                    String houseName = getAdvertisedHouseName(houseAdvertisementNameWidget, i);
+                    if (isAdvertisedHouseBlacklisted(houseName)) {
+                        continue;
+                    }
                     if (visibleEnterHouseRows >= advertisedHouseSkipCount) {
                         houseIndexToJoin = i;
                         break;
@@ -872,6 +917,7 @@ public class HouseTabScript extends Script {
             return;
         }
         Widget enterHouseButton = houseAdvertisementEnterHouseWidget.getChild(houseIndexToJoin);
+        currentAdvertisedHouseName = getAdvertisedHouseName(houseAdvertisementNameWidget, houseIndexToJoin);
         int buttonRelativeY = houseAdvertisementEnterHouseWidget.getChild(houseIndexToJoin).getRelativeY() + enterHouseButtonHeight;
         if (buttonRelativeY > (mainWindow.getScrollY() + mainWindow.getHeight())) {
             keepExecuteUntil(() -> {
@@ -887,6 +933,8 @@ public class HouseTabScript extends Script {
                 skipVisitLastHouse = false;
                 enteredAdvertisedHouse = true;
                 hasSelectedAdvertisedHouse = true;
+                Microbot.log("HouseTabScript: entered advertised house"
+                        + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
             } else {
                 advertisedHouseSkipCount++;
                 skipVisitLastHouse = true;
@@ -945,16 +993,33 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isTabletCraftingActive() {
-        if (!hasSoftClay()) {
-            return false;
-        }
         long now = System.currentTimeMillis();
-        if (Microbot.isGainingExp || now - lastLecternCraftAttemptAt < 10000) {
+        int unnotedClay = unnotedSoftClayCount();
+        boolean recentCraftProgress = now - lastCraftProgressAt < 1800;
+        if (unnotedClay <= 0) {
+            return recentCraftProgress && isTabletCraftingAnimationActive();
+        }
+        if (now - lastLecternCraftAttemptAt < 3000 || recentCraftProgress) {
             return true;
         }
+        return isTabletCraftingAnimationActive();
+    }
+
+    private boolean isTabletCraftingAnimationActive() {
         return Microbot.getClientThread().runOnClientThreadOptional(() ->
                 Microbot.getClient().getLocalPlayer() != null
                         && Microbot.getClient().getLocalPlayer().getAnimation() == 4068).orElse(false);
+    }
+
+    private void refreshCraftProgress() {
+        int currentMagicXp = Microbot.getClient().getSkillExperience(Skill.MAGIC);
+        int currentUnnotedClay = unnotedSoftClayCount();
+        if ((lastObservedMagicXp >= 0 && currentMagicXp > lastObservedMagicXp)
+                || (lastObservedUnnotedClay >= 0 && currentUnnotedClay < lastObservedUnnotedClay)) {
+            lastCraftProgressAt = System.currentTimeMillis();
+        }
+        lastObservedMagicXp = currentMagicXp;
+        lastObservedUnnotedClay = currentUnnotedClay;
     }
 
     public void createHouseTablet(HouseTabConfig config) {
@@ -1074,11 +1139,27 @@ public class HouseTabScript extends Script {
 
         advertisedHouseSkipCount++;
         enteredAdvertisedHouse = false;
+        hasSelectedAdvertisedHouse = false;
         skipVisitLastHouse = true;
         Microbot.status = "No nearby lectern; trying advertised house #" + (advertisedHouseSkipCount + 1);
         Microbot.log("HouseTab: advertised house had no nearby compatible lectern, trying next listing.");
+        blacklistCurrentAdvertisedHouse("no nearby compatible lectern");
 
-        leaveHousePortal();
+        if (!teleportToHousePortal()) {
+            leaveHousePortal();
+        }
+    }
+
+    private boolean teleportToHousePortal() {
+        if (!Rs2Inventory.hasItem(ItemID.POH_TABLET_TELEPORTTOHOUSE)) {
+            Microbot.log("HouseTab: no house tablet available for bad-house recovery; falling back to portal.");
+            return false;
+        }
+        Microbot.log("HouseTab: breaking house tablet to recover from bad advertised house.");
+        if (!Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Outside")) {
+            Rs2Inventory.interact(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Break");
+        }
+        return sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null, 10000);
     }
 
     private boolean leaveHousePortal() {
@@ -1188,6 +1269,7 @@ public class HouseTabScript extends Script {
                             + ", magicLevel=" + startMagicLevel
                             + ", magicXp=" + startMagicXp);
                 }
+                refreshCraftProgress();
                 if (config.progressive()) {
                     runProgressiveLoop(config, shouldLogLoop);
                     return;
@@ -1245,6 +1327,11 @@ public class HouseTabScript extends Script {
                     + " hasNotedClay=" + hasSoftClayNoted());
         }
         boolean insidePlayerHouse = isInsidePlayerHouse();
+        if (insidePlayerHouse && !hasSoftClay() && !isTabletCraftingActive()) {
+            Microbot.status = "Leaving house";
+            leaveHouse();
+            return;
+        }
         if (!insidePlayerHouse && !hasSoftClay() && hasSoftClayNoted()) {
             Microbot.status = "Unnoting soft clay";
             if (unnoteClay()) {
