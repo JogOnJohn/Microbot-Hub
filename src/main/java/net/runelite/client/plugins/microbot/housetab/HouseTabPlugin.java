@@ -30,7 +30,7 @@ import java.awt.*;
 )
 @Slf4j
 public class HouseTabPlugin extends Plugin {
-    public static final String version = "1.0.20";
+    public static final String version = "1.0.22";
 
     @Inject
     private HouseTabConfig config;
