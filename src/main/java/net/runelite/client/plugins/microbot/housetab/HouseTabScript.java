@@ -125,6 +125,13 @@ public class HouseTabScript extends Script {
                 + " staff=" + hasStaffFor(selectedTablet);
     }
 
+    private String fastMaterialDebug() {
+        return "unnotedClay=" + unnotedSoftClayCount()
+                + " notedClay=" + notedSoftClayCount()
+                + " staff=" + hasStaffFor(selectedTablet)
+                + " lastPrepared=" + (lastPreparedTablet == null ? "none" : lastPreparedTablet.getName());
+    }
+
     private boolean hasStaffFor(HouseTablet tablet) {
         if (tablet.getPreferredStaffRunes().isEmpty()) return false;
         int requiredCoverage = tablet.getPreferredStaffRunes().size();
@@ -478,19 +485,25 @@ public class HouseTabScript extends Script {
         if (!config.progressive()) {
             return false;
         }
+        if (lastPreparedTablet != selectedTablet) {
+            return true;
+        }
         if (!hasAnySoftClay()) {
+            return true;
+        }
+        if (config.useCombinationStaff() && !hasStaffFor(selectedTablet)) {
             return true;
         }
         if (!hasRequiredRunes()) {
             return true;
         }
-        return config.useCombinationStaff() && !hasStaffFor(selectedTablet);
+        return false;
     }
 
     private void enterHouseForProgressivePrep(HouseTabConfig config) {
         Microbot.status = "Entering house for GE setup";
         Microbot.log("HouseTabScript: progressive prep needed outside house; entering house before GE travel. "
-                + materialDebug());
+                + fastMaterialDebug());
 
         if (!hasAnySoftClay()) {
             stop("Missing soft clay for progressive setup");
@@ -1437,15 +1450,17 @@ public class HouseTabScript extends Script {
         }
 
         boolean atGrandExchange = isAtGrandExchange();
-        boolean validProgressiveLoadout = hasValidProgressiveLoadout(config);
         boolean progressiveBankPrepNeeded = needsProgressiveBankPrep(config);
+        boolean validProgressiveLoadout = atGrandExchange
+                ? hasValidProgressiveLoadout(config)
+                : !progressiveBankPrepNeeded;
         if (shouldLogLoop) {
             Microbot.log("HouseTabScript: progressive loop=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
                     + " atGE=" + atGrandExchange
                     + " validLoadout=" + validProgressiveLoadout
                     + " prepNeeded=" + progressiveBankPrepNeeded
-                    + " " + materialDebug());
+                    + " " + (atGrandExchange ? materialDebug() : fastMaterialDebug()));
         }
         if (atGrandExchange) {
             if (!validProgressiveLoadout || !Rs2Inventory.hasItem(ItemID.POH_TABLET_TELEPORTTOHOUSE)) {
