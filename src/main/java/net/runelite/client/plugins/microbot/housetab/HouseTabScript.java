@@ -1025,6 +1025,18 @@ public class HouseTabScript extends Script {
         return active;
     }
 
+    private boolean shouldWaitForFinalTabletCraft() {
+        long now = System.currentTimeMillis();
+        int unnotedClay = unnotedSoftClayCount();
+        boolean animationActive = isTabletCraftingAnimationActive();
+        long sinceCraftClick = now - lastLecternCraftAttemptAt;
+        long sinceCraftProgress = now - lastCraftProgressAt;
+        boolean wait = unnotedClay <= 0 && animationActive && sinceCraftProgress < 1200;
+        logCraftGate(wait ? "final-animation-grace" : "zero-clay-ready-to-leave",
+                wait, unnotedClay, sinceCraftClick, sinceCraftProgress, animationActive);
+        return wait;
+    }
+
     private boolean isTabletCraftingAnimationActive() {
         return Microbot.getClientThread().runOnClientThreadOptional(() ->
                 Microbot.getClient().getLocalPlayer() != null
@@ -1037,6 +1049,7 @@ public class HouseTabScript extends Script {
         if ((lastObservedMagicXp >= 0 && currentMagicXp > lastObservedMagicXp)
                 || (lastObservedUnnotedClay >= 0 && currentUnnotedClay < lastObservedUnnotedClay)) {
             lastCraftProgressAt = System.currentTimeMillis();
+            updateTabletCount();
             if (currentUnnotedClay <= 3) {
                 Microbot.log("HouseTab craft progress: xp=" + lastObservedMagicXp + "->" + currentMagicXp
                         + " clay=" + lastObservedUnnotedClay + "->" + currentUnnotedClay
@@ -1384,13 +1397,16 @@ public class HouseTabScript extends Script {
                     + " hasNotedClay=" + hasSoftClayNoted());
         }
         boolean insidePlayerHouse = isInsidePlayerHouse();
-        if (insidePlayerHouse && !hasSoftClay() && !isTabletCraftingActive()) {
+        if (insidePlayerHouse && !hasSoftClay()) {
+            if (shouldWaitForFinalTabletCraft()) {
+                return;
+            }
             Microbot.status = "Leaving house";
             Microbot.log("HouseTabScript: progressive exit branch leaving house. loop=" + debugLoopCount
                     + " clay=" + unnotedSoftClayCount()
                     + " noted=" + notedSoftClayCount()
                     + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
-            leaveHouse();
+            leaveHousePortal();
             return;
         }
         if (!insidePlayerHouse && !hasSoftClay() && hasSoftClayNoted()) {
@@ -1470,6 +1486,19 @@ public class HouseTabScript extends Script {
         if (!hasRequiredStaffOrFallback(config)) {
             return;
         }
+        boolean isInHouse = getHouseLectern() != null;
+        if (isInHouse && !hasSoftClay()) {
+            if (shouldWaitForFinalTabletCraft()) {
+                return;
+            }
+            Microbot.status = "Leaving house";
+            Microbot.log("HouseTabScript: classic no-clay exit before xp gate. loop=" + debugLoopCount
+                    + " clay=" + unnotedSoftClayCount()
+                    + " output=" + Rs2Inventory.count(selectedTablet.getItemId())
+                    + " gainingXp=" + Microbot.isGainingExp);
+            leaveHousePortal();
+            return;
+        }
         if (!hasAnySoftClay() || !hasRequiredRunes()) {
             stop(!hasAnySoftClay() ? "Missing soft clay" : "Missing runes for " + selectedTablet.getName());
             return;
@@ -1482,7 +1511,6 @@ public class HouseTabScript extends Script {
             return;
         }
 
-        boolean isInHouse = getHouseLectern() != null;
         if (isInHouse) {
             advertisedHouseSkipCount = 0;
             enteredAdvertisedHouse = false;
