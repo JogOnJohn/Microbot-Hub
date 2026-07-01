@@ -605,10 +605,10 @@ public class HouseTabScript extends Script {
                 return false;
             }
             return location.getPlane() == 0
-                    && location.getX() >= 3150
-                    && location.getX() <= 3175
-                    && location.getY() >= 3475
-                    && location.getY() <= 3505;
+                    && location.getX() >= 3130
+                    && location.getX() <= 3190
+                    && location.getY() >= 3450
+                    && location.getY() <= 3515;
         } catch (Exception ex) {
             return false;
         }
@@ -662,8 +662,12 @@ public class HouseTabScript extends Script {
 
         Microbot.status = "Using jewellery box to GE";
         Microbot.log("HouseTabScript: using ornate jewellery box Grand Exchange action.");
-        if (Microbot.getRs2TileObjectCache().query().interact(ORNATE_JEWELLERY_BOX_OBJECT, "Grand Exchange")
-                && sleepUntil(this::isAtGrandExchange, 12000)) {
+        if (Microbot.getRs2TileObjectCache().query().interact(ORNATE_JEWELLERY_BOX_OBJECT, "Grand Exchange")) {
+            assumeInsidePlayerHouse = false;
+            if (sleepUntil(this::isAtGrandExchange, 12000)) {
+                return true;
+            }
+            Microbot.log("HouseTabScript: Grand Exchange jewellery-box action clicked, but GE arrival was not detected yet.");
             return true;
         }
 
