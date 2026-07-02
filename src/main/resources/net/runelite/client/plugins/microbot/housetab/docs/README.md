@@ -4,6 +4,21 @@ HouseTab started as a small lectern helper and grew into a multi-step tablet cra
 
 These notes document what was learned while building and live-testing the plugin, and what should be improved if this is prepared for a wider PR.
 
+## 2.0 improvement status
+
+The 2.0 pass worked through the future-improvement list:
+
+- Completed: explicit `HouseTabState` workflow labels and transition logging.
+- Completed: centralized `HouseTabSnapshot` scene/material snapshot.
+- Completed: explicit diagnostic mode for state snapshots, host lists, recovery reason, and material summary.
+- Completed: advertised-host hardening with top-remaining selection, per-run blacklist, and known-good host cache.
+- Completed: material planning helper for progressive/single-mode decisions and clearer missing-material summaries.
+- Completed: overlay expansion for state, host, clay, state time, recovery, and material status.
+- Completed: pure planner tests for progressive ordering, Watchtower exclusion, lectern compatibility, and material-prep decisions.
+- Completed: HouseTab version bump to `2.0`.
+
+The script still uses the live-tested action helpers for clicks, banking, Phials, and lectern interaction. The 2.0 refactor makes state and planning explicit without rewriting those working interaction paths from scratch.
+
 ## What the script does today
 
 The current plugin supports two broad modes:

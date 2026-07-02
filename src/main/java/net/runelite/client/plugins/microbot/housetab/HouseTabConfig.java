@@ -111,10 +111,21 @@ public interface HouseTabConfig extends Config {
     }
 
     @ConfigItem(
+            keyName = "DebugDiagnostics",
+            name = "Debug diagnostics",
+            description = "Log state snapshots, key object visibility, and material summaries for live debugging.",
+            position = 9
+    )
+    default boolean debugDiagnostics()
+    {
+        return false;
+    }
+
+    @ConfigItem(
             keyName = "UseLastHouse",
             name = "Use last house",
             description = "Use the portal's last friend house behavior when possible, falling back to Player Name if prompted.",
-            position = 9
+            position = 10
     )
     default boolean useLastHouse()
     {
@@ -125,7 +136,7 @@ public interface HouseTabConfig extends Config {
             keyName = "UseAdvertisementBoard",
             name = "Use advertisement board",
             description = "Try the Rimmington house advertisement board before using the portal friend-house flow.",
-            position = 10
+            position = 11
     )
     default boolean useAdvertisementBoard()
     {
@@ -136,7 +147,7 @@ public interface HouseTabConfig extends Config {
             keyName = "Advertised Houses",
             name = "Advertised houses",
             description = "Optional comma-separated advertised house names to prefer. If none match, the first listed house is used.",
-            position = 11
+            position = 12
     )
     default String advertisedHouses()
     {
@@ -147,7 +158,7 @@ public interface HouseTabConfig extends Config {
             keyName = "OwnHouse",
             name = "Own house",
             description = "Use your own house",
-            position = 12
+            position = 13
     )
     default boolean ownHouse()
     {
@@ -158,7 +169,7 @@ public interface HouseTabConfig extends Config {
             keyName = "Player Name",
             name = "Player Name",
             description = "Fallback friend house name to type when the portal asks for a name.",
-            position = 13
+            position = 14
     )
     default String housePlayerName()
     {

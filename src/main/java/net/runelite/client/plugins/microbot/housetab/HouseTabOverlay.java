@@ -43,7 +43,7 @@ public class HouseTabOverlay extends OverlayPanel {
             int xpGained = startXp >= 0 ? Math.max(0, currentXp - startXp) : 0;
             int levelsGained = startLevel >= 0 ? Math.max(0, currentLevel - startLevel) : 0;
 
-            panelComponent.setPreferredSize(new Dimension(260, 220));
+            panelComponent.setPreferredSize(new Dimension(280, 290));
             panelComponent.getChildren().add(TitleComponent.builder()
                     .text("Micro HouseTab V" + HouseTabPlugin.version)
                     .color(Color.GREEN)
@@ -54,6 +54,10 @@ public class HouseTabOverlay extends OverlayPanel {
             panelComponent.getChildren().add(LineComponent.builder()
                     .left("Task")
                     .right(script.getPlanSummary())
+                    .build());
+            panelComponent.getChildren().add(LineComponent.builder()
+                    .left("State")
+                    .right(script.getCurrentState().getLabel())
                     .build());
             panelComponent.getChildren().add(LineComponent.builder()
                     .left("Magic")
@@ -68,9 +72,35 @@ public class HouseTabOverlay extends OverlayPanel {
                     .right(String.valueOf(script.getTabletsMade()))
                     .build());
             panelComponent.getChildren().add(LineComponent.builder()
+                    .left("Clay")
+                    .right(String.valueOf(script.getUnnotedClayCount()))
+                    .build());
+            if (!script.getCurrentHost().isEmpty()) {
+                panelComponent.getChildren().add(LineComponent.builder()
+                        .left("Host")
+                        .right(script.getCurrentHost())
+                        .build());
+            }
+            panelComponent.getChildren().add(LineComponent.builder()
+                    .left("State time")
+                    .right((script.getMillisInCurrentState() / 1000) + "s")
+                    .build());
+            panelComponent.getChildren().add(LineComponent.builder()
                     .left("Status")
                     .right(Microbot.status)
                     .build());
+            if (!script.getLastRecoveryReason().isEmpty()) {
+                panelComponent.getChildren().add(LineComponent.builder()
+                        .left("Recovery")
+                        .right(script.getLastRecoveryReason())
+                        .build());
+            }
+            if (!script.getLastMaterialSummary().isEmpty()) {
+                panelComponent.getChildren().add(LineComponent.builder()
+                        .left("Materials")
+                        .right(script.getLastMaterialSummary())
+                        .build());
+            }
 
             if (!script.getStopReason().isEmpty()) {
                 panelComponent.getChildren().add(LineComponent.builder()
