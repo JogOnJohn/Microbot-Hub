@@ -1,247 +1,186 @@
-# HouseTab Development Notes
+# HouseTab
 
-HouseTab started as a small lectern helper and grew into a multi-step tablet crafting script. That growth was reasonable: the early version only needed to open a lectern and select a tablet. The later version needed to handle advertised houses, Phials, progressive tablet selection, equipment and rune coverage, GE banking, bad-host recovery, startup safety, and live object/widget data. Once those requirements landed, the script became a state-machine problem.
+HouseTab crafts magic tablets at a player-owned house lectern. It supports fixed single-tablet crafting and a progressive mode that moves through teleport tablets by Magic XP as the account levels.
 
-These notes document what was learned while building and live-testing the plugin, and what should be improved if this is prepared for a wider PR.
+## Current version
 
-## 2.0 improvement status
+Version `2.0.2` is the current version.
 
-The 2.0 pass worked through the future-improvement list:
+The 2.0 line changed the plugin from a small lectern helper into a stateful tablet-making workflow with:
 
-- Completed: explicit `HouseTabState` workflow labels and transition logging.
-- Completed: centralized `HouseTabSnapshot` scene/material snapshot.
-- Completed: explicit diagnostic mode for state snapshots, host lists, recovery reason, and material summary.
-- Completed: advertised-host hardening with top-remaining selection, per-run blacklist, and known-good host cache.
-- Completed: material planning helper for progressive/single-mode decisions and clearer missing-material summaries.
-- Completed: overlay expansion for state, host, clay, state time, recovery, and material status.
-- Completed: pure planner tests for progressive ordering, Watchtower exclusion, lectern compatibility, and material-prep decisions.
-- Completed: HouseTab version bump to `2.0`.
+- Explicit workflow states and transition logging.
+- A shared scene/material snapshot.
+- Single-tablet and progressive modes using the same core crafting flow.
+- Advertisement-board host selection.
+- Bad-host recovery and per-run host blacklist.
+- Phials unnoting.
+- Progressive bank setup at the Grand Exchange.
+- Overlay status for state, host, clay, materials, runtime data, and recovery reason.
+- Planner tests for progressive ordering, material decisions, and lectern compatibility.
 
-The script still uses the live-tested action helpers for clicks, banking, Phials, and lectern interaction. The 2.0 refactor makes state and planning explicit without rewriting those working interaction paths from scratch.
+## Setup
 
-## What the script does today
+Recommended setup:
 
-The current plugin supports two broad modes:
+- Start on world `330`.
+- Use the Rimmington house advertisement board.
+- Keep noted soft clay, law runes, and teleport-to-house tablets available.
+- Keep the required combination battlestaves in the bank for progressive mode.
+- Keep the house advertisement board mode enabled unless intentionally using a named friend house.
 
-- Single tablet mode: make the configured tablet repeatedly.
-- Progressive mode: choose the highest supported teleport tablet by Magic XP for the player's level, prepare the matching staff/runes/materials, and continue crafting as the player levels.
+The plugin assumes hosted houses for normal operation. It can use an own house or named friend house fallback, but the default and best-tested path is the advertisement board.
 
-The main loop handles:
+## Modes
 
-- Rimmington advertisement-board entry.
-- Last-house entry where available.
-- Fallback to advertised-house list selection when the last host is unavailable.
-- Phials unnoting with noted soft clay.
-- Lectern discovery and tablet selection.
-- Scrolling the lectern interface when the target tablet is below the visible list.
-- POH jewelry-box travel to the Grand Exchange for progressive setup.
-- Banking crafted tablets when switching progressive tiers.
-- Restocking law runes and soft clay from bank supplies.
-- Stopping gracefully when required bank supplies are unavailable.
-- Recovering from houses that do not have a nearby compatible lectern.
+### Single tablet mode
+
+Single mode repeatedly makes the tablet selected in the plugin settings.
+
+Use this when:
+
+- You only want one tablet type.
+- You are targeting a profitable or easy-to-sell tablet.
+- You do not want the plugin changing staff/tablet tiers as Magic level changes.
+
+### Progressive mode
+
+Progressive mode selects the highest supported teleport tablet by Magic XP that the player can currently make. It is XP-sorted, not profit-sorted.
+
+When the player unlocks a higher supported tablet, progressive mode should:
+
+- Finish the current inventory when already crafting.
+- Travel to the Grand Exchange through a hosted house jewellery box when bank setup is needed.
+- Bank crafted output from the previous tablet tier.
+- Keep teleport-to-house tablets as the recovery mechanism.
+- Withdraw/restock required supplies from the bank.
+- Equip or withdraw the required staff where applicable.
+- Return to Rimmington and continue crafting.
+
+The plugin does not buy or sell on the Grand Exchange. If law runes or soft clay run out and the bank does not contain more, the script stops with a missing-material reason.
+
+## Progressive tablet order
+
+Progressive mode currently follows this order as the player unlocks tablets:
+
+```text
+Teleport to House
+Varrock Teleport
+Lumbridge Teleport
+Falador Teleport
+Camelot Teleport
+Kourend Castle Teleport
+Ardougne Teleport
+Civitas illa Fortis Teleport
+Teleport to Boat
+```
+
+Watchtower teleport tablets are intentionally skipped because their trade volume is too low for this workflow.
+
+## Staff and rune handling
+
+The plugin prefers combination battlestaves when configured to do so. A staff is considered valid when it covers the elemental rune requirements for the selected tablet. Law runes are still required in inventory or bank supplies.
+
+Examples:
+
+- Camelot tablets can use any staff that covers the air rune requirement.
+- Kourend Castle tablets require steam coverage.
+- Teleport to Boat tablets require mud coverage.
+
+If combination staff mode is disabled or a suitable staff is not available, the plugin can fall back to rune coverage where configured and available.
+
+## House entry behavior
+
+Advertisement-board entry is the default path.
+
+Relevant settings:
+
+- `Use advertisement board`: use the Rimmington house advertisement board for hosted houses. This defaults to enabled.
+- `Use last house`: use the board's visit-last option when available. This does not mean the Rimmington portal's friend-house option.
+- `Advertised houses`: optional comma-separated host names to prefer. If none match, the plugin uses the best available listing from the board.
+- `Player Name`: fallback friend-house name for the old portal flow when advertisement-board mode is disabled.
+
+When advertisement-board mode is enabled, the plugin should not fall through to the Rimmington portal `Friend's house` action.
+
+## Recovery behavior
+
+The plugin can recover from common hosted-house problems:
+
+- Host went offline.
+- Entered house has no nearby compatible lectern.
+- House scene is slow to load.
+- Previously selected advertised host fails.
+
+When a hosted house is bad, the plugin blacklists that host for the current run, breaks a teleport-to-house tablet where available, returns outside, and tries the next advertisement-board listing.
+
+## Logging and diagnostics
+
+Normal transition logs are kept at info level because they explain meaningful state changes.
+
+Steady-state loop noise should stay at debug level. Enable `Debug diagnostics` only when actively debugging; it logs state snapshots, object visibility, material summaries, known-good hosts, blacklisted hosts, and recovery reasons.
+
+`Debug widget dump` logs the lectern interface widget tree once when the lectern interface opens. Use it only when widget IDs or scroll behavior need to be checked.
 
 ## What we learned
 
 ### Live IDs beat assumptions
 
-The most important lesson was that generated constants are not always enough. The live marble lectern object was `37349`, while the script initially mixed generated `gameval.ObjectID` constants that did not cover that ID in the expected namespace. The result was a valid visible lectern that the script treated as missing.
+Object and widget constants are useful, but live data still matters. The lectern, advertisement board, quantity controls, scroll containers, and tablet widgets all needed live confirmation.
 
-For object/widget-heavy scripts, gather and record live IDs early:
+For object/widget-heavy scripts, collect:
 
-- Object IDs for every target object and fallback object.
-- Widget IDs for the target interface, quantity controls, scrollable containers, and confirm buttons.
-- Menu actions that are actually exposed by the client.
-- Any alternative IDs used by upgraded or visually similar objects.
+- Object IDs for every target and fallback object.
+- Widget IDs for the target interface and important child widgets.
+- Menu actions exposed by the client.
+- Alternative IDs used by upgraded or visually similar objects.
 
 ### State must be explicit
 
-Several bugs came from implicit state. The script inferred "inside house" from a mix of portal visibility, lectern visibility, coordinates, and boolean flags. That worked while the script was small, but it became fragile once progressive setup and bad-house recovery were added.
+Most serious bugs came from implicit state:
 
-The recurring failures were symptoms of unclear state boundaries:
+- Being inside a house while status still said advertisement-board entry.
+- Treating a slow lectern cache update as a bad house.
+- Recovering while the lectern interface or crafting flow was active.
+- Progressive setup interrupting shared crafting behavior.
+- Startup/login timing reading player state too early.
 
-- Being inside a house but still showing status `View House Advertisement`.
-- Treating "lectern not detected yet" as "bad house."
-- Running bad-house recovery while the lectern interface or crafting flow was active.
-- Progressive setup interrupting or bypassing the shared crafting flow.
-- Startup/login timing creating partial state before the local player was safe to read.
+The 2.0 refactor added explicit states and snapshots because this script is naturally a state machine.
 
 ### Shared flow matters
 
-Single mode and progressive mode should share the same house-entry, lectern, crafting, leaving, and unnoting helpers. Duplicated mode-specific branches made fixes land in one mode but not the other. The refactor toward a shared crafting loop improved this, but the remaining control flow is still more conditional than ideal.
+Single mode and progressive mode should keep sharing the same helpers for:
+
+- House entry.
+- Lectern detection.
+- Tablet selection.
+- Crafting.
+- Leaving the house.
+- Phials unnoting.
+- Bad-host recovery.
+
+Duplicating these paths caused earlier fixes to work in one mode but not the other.
 
 ### Recovery needs evidence
 
-Bad-house recovery is useful, but it should only fire after strong evidence:
+Bad-house recovery should only run after strong evidence:
 
-- Player is actually inside a POH scene.
-- No compatible lectern is visible after a reasonable scene-load window.
+- The player is actually inside a POH scene.
+- No compatible lectern is visible after a scene-load window.
 - The lectern interface is not open.
-- The player is not currently crafting or gaining XP.
-- The script is not in a transition such as entering, leaving, or teleporting.
+- The player is not crafting or gaining XP.
+- The script is not already entering, leaving, or teleporting.
 
-Without those guards, recovery can turn a slow scene/cache update into a false failure.
-
-### Logs should describe transitions
-
-Steady-state logs should be debug-level, but transition logs are valuable. The useful logs were the ones that answered:
-
-- What state did the script enter?
-- What evidence caused that state?
-- What action did it attempt?
-- What condition is it waiting for?
-- Why did it stop or recover?
-
-The least useful logs were repeated loop messages that did not explain a transition.
-
-## Would a state machine have been better?
-
-Yes. Once progressive mode was added, the script would have been easier to build and debug if it had started from the Microbot state-machine example.
-
-A state machine would not have solved missing live IDs by itself, but it would have made state transitions and stall points much clearer. The script would have had a single current state instead of status text and boolean flags loosely describing the same thing.
-
-A better future shape would look like this:
-
-```text
-STARTING
-VALIDATE_LOGIN
-VALIDATE_WORLD
-SNAPSHOT_STATE
-SELECT_TABLET
-CHECK_LOADOUT
-GO_GE
-BANK_SETUP
-RETURN_RIMMINGTON
-UNNOTE_CLAY
-OPEN_ADVERTISEMENT_BOARD
-SELECT_ADVERTISED_HOUSE
-ENTER_HOUSE
-WAIT_FOR_HOUSE_SCENE
-FIND_LECTERN
-OPEN_LECTERN
-SELECT_TABLET_WIDGET
-CRAFT_TABLETS
-LEAVE_HOUSE
-RECOVER_BAD_HOUSE
-STOPPED
-```
-
-Each state should have:
-
-- Entry logging.
-- A clear success transition.
-- A timeout transition.
-- A failure/stop reason.
-- A small set of allowed actions.
+Without those guards, a slow scene/cache update can look like a failure.
 
 ## Future improvements
 
-### Refactor into an explicit state machine
+The highest-value next improvements are:
 
-Move the current loop into a `HouseTabState` enum and a dispatcher. This is the highest-value structural improvement.
+- Move the remaining loop branching into a stricter state dispatcher.
+- Add more tests around host blacklist and material-stop reasons.
+- Cache bank supply checks more deliberately during progressive setup.
+- Improve world validation and world-hop handling for world `330`.
+- Add an optional live diagnostic dump for nearby objects and open widgets from the overlay/config.
+- Add richer overlay counters, especially per-tablet output counts.
+- Keep GE buying/selling out of scope unless explicitly added as a separate feature.
 
-Suggested supporting classes:
-
-- `HouseTabState`: the current workflow state.
-- `HouseTabSnapshot`: current location, visible objects, inventory, equipment, widgets, and config-derived target.
-- `HouseTabPlanner`: resolves selected tablet and required loadout.
-- `HouseTabActions`: small wrappers for clicking board, entering house, studying lectern, banking, unnoting, and teleporting.
-- `HouseTabRecovery`: handles bad hosts, timeouts, missing supplies, and fallback paths.
-
-### Centralize scene detection
-
-Create one method that answers:
-
-- Is the player logged in and safe to read?
-- Is the player at the GE?
-- Is the player near Rimmington/Phials/advertisement board?
-- Is the player inside a POH instance?
-- Is the house portal visible?
-- Is a compatible lectern visible?
-- Is the lectern interface open?
-- Is crafting active?
-
-All states should consume that snapshot instead of each branch making its own partial checks.
-
-### Improve startup safety
-
-The plugin already waits for a stable logged-in state, but startup should be stricter because other Microbot plugins can also read local player state early.
-
-Future startup checks should include:
-
-- `GameState.LOGGED_IN`.
-- `Microbot.isLoggedIn()`.
-- Non-null local player.
-- Non-null world location.
-- Stable scene for several ticks.
-- No welcome screen.
-- Optional delay after profile/world change.
-
-### Make live data collection easier
-
-Add an explicit diagnostic mode that dumps:
-
-- Nearby objects by ID/name/action.
-- Current widgets for the lectern and advertisement board.
-- Current inventory and equipment summary.
-- Current state snapshot.
-- Last state transition and timeout reason.
-
-This should be debug-only and should not spam normal info logs.
-
-### Make host selection more robust
-
-Advertised houses change constantly. Better host selection could:
-
-- Prefer top visible listings.
-- Blacklist failed hosts for the current run.
-- Track hosts with confirmed compatible lecterns.
-- Retry the board after a host goes offline.
-- Avoid houses where the lectern is not nearby.
-- Optionally maintain a short in-session "known good host" cache.
-
-### Improve banking and material planning
-
-Progressive mode should keep doing no GE buying/selling unless explicitly enabled, but bank setup can still improve:
-
-- Cache whether required staves are present in the bank.
-- Cache whether law runes and soft clay are present.
-- Bank crafted output whenever changing tablet tier.
-- Preserve house tablets as the unstuck mechanism.
-- Stop cleanly with a precise missing item reason.
-
-### Improve overlay data
-
-The overlay should continue to show task, status, Magic level, XP gained, and tablets made. Future fields could include:
-
-- Current state.
-- Selected host.
-- Current tablet tier.
-- Clay remaining.
-- Runtime.
-- Last recovery reason.
-- Supplies missing when stopped.
-
-Profit tracking can remain out of scope unless the plugin starts handling buying/selling.
-
-### Add tests for planner logic
-
-Most UI and object interaction needs live smoke testing, but pure logic can be tested:
-
-- Progressive tablet ordering by XP.
-- Watchtower exclusion.
-- Staff coverage for each tablet.
-- Rune requirements.
-- Bank-prep decisions.
-- Stop reasons for missing supplies.
-- Host blacklist behavior.
-
-### PR direction
-
-If this is prepared for a PR, the strongest pitch is not just "add a HouseTab script." It is:
-
-- Adds a useful tablet-making plugin.
-- Documents live-tested IDs and edge cases.
-- Demonstrates a pattern for stateful POH workflows.
-- Improves the original small plugin into a maintainable progressive workflow.
-
-Before PR, the best cleanup would be the explicit state-machine refactor. The current implementation works, but a state machine would make it easier for reviewers to reason about recovery, timeouts, and mode-specific behavior.
+The current implementation is working and live-tested, but the long-term maintainable shape is still a stricter state machine with small action methods and explicit timeout transitions.
