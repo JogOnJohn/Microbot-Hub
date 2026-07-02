@@ -56,10 +56,14 @@ public class HouseTabScript extends Script {
 
     private final int HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE = 3407881;
     private final int ORNATE_JEWELLERY_BOX_GE_WIDGET = 0x024e_0006;
+    private final int MAHOGANY_EAGLE_LECTERN_OBJECT = 13647;
+    private final int MAHOGANY_DEMON_LECTERN_OBJECT = 13648;
+    private final int MARBLE_LECTERN_OBJECT = 37349;
 
     private final Map<Integer, Integer> lecternToHouseTabButton = Map.of(
-            ObjectID.POH_LECTERN_6, 26411031,
-            ObjectID.POH_LECTERN_8, 26411033
+            MAHOGANY_EAGLE_LECTERN_OBJECT, 26411031,
+            MAHOGANY_DEMON_LECTERN_OBJECT, 26411033,
+            MARBLE_LECTERN_OBJECT, 26411033
     );
 
     private final HOUSETABS_CONFIG houseTabConfig;

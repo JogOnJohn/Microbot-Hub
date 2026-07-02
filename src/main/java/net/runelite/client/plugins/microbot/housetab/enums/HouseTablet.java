@@ -1,7 +1,6 @@
 package net.runelite.client.plugins.microbot.housetab.enums;
 
 import net.runelite.api.gameval.ItemID;
-import net.runelite.api.gameval.ObjectID;
 import net.runelite.client.plugins.microbot.util.magic.Runes;
 
 import java.util.Arrays;
@@ -116,20 +115,20 @@ public enum HouseTablet {
         DEMON,
         BOTH;
 
-        private boolean supports(int objectId) {
-            if (objectId == 37349) {
-                return this == EAGLE || this == BOTH;
-            }
+        private static final int MAHOGANY_EAGLE_LECTERN_OBJECT = 13647;
+        private static final int MAHOGANY_DEMON_LECTERN_OBJECT = 13648;
+        private static final int MARBLE_LECTERN_OBJECT = 37349;
 
-            if (objectId == ObjectID.POH_LECTERN_8) {
+        private boolean supports(int objectId) {
+            if (objectId == MARBLE_LECTERN_OBJECT) {
                 return true;
             }
 
-            if (objectId == ObjectID.POH_LECTERN_6) {
+            if (objectId == MAHOGANY_EAGLE_LECTERN_OBJECT) {
                 return this == EAGLE || this == BOTH;
             }
 
-            return false;
+            return objectId == MAHOGANY_DEMON_LECTERN_OBJECT && (this == DEMON || this == BOTH);
         }
     }
 }
