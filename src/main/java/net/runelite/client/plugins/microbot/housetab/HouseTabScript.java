@@ -698,6 +698,10 @@ public class HouseTabScript extends Script {
             return false;
         }
 
+        if (hasLecternInterfaceOpen() || Microbot.isGainingExp || isTabletCraftingActive()) {
+            return false;
+        }
+
         boolean hasHouseEvidence = hasVisibleHousePortal() || isInsidePlayerHouse();
         if (!hasHouseEvidence) {
             return false;
@@ -712,6 +716,11 @@ public class HouseTabScript extends Script {
             leaveBadAdvertisedHouse();
         }
         return true;
+    }
+
+    private boolean hasLecternInterfaceOpen() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                Microbot.getClient().getWidget(InterfaceID.TeletabsCraftIf.UNIVERSE) != null).orElse(false);
     }
 
     private boolean isNearGrandExchangeByPosition() {
@@ -1233,6 +1242,9 @@ public class HouseTabScript extends Script {
         if (getHouseLectern() == null) {
             lecternStudyPending = false;
             lecternStudyAttemptedAt = 0;
+            if (hasLecternInterfaceOpen() || Microbot.isGainingExp || isTabletCraftingActive()) {
+                return;
+            }
             if (recoverBadAdvertisedHouseIfNeeded(config, false)) {
                 return;
             }
@@ -1785,8 +1797,9 @@ public class HouseTabScript extends Script {
                     + " selected=" + selectedTablet.getName()
                     + " " + materialDebug());
         }
-        boolean isInHouse = getHouseLectern() != null;
-        if (recoverBadAdvertisedHouseIfNeeded(config, isInHouse)) {
+        boolean hasCompatibleLectern = getHouseLectern() != null;
+        boolean isInHouse = hasCompatibleLectern || isInsidePlayerHouse();
+        if (recoverBadAdvertisedHouseIfNeeded(config, hasCompatibleLectern)) {
             return;
         }
         if (!isInHouse && !hasSoftClay() && hasSoftClayNoted()) {
