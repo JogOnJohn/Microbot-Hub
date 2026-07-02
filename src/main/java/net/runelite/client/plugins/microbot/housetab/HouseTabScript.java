@@ -2059,6 +2059,10 @@ public class HouseTabScript extends Script {
             if (unnoteClay()) {
                 return;
             }
+            if (config.useAdvertisementBoard()) {
+                enterAdvertisedHouse(config, true);
+                return;
+            }
             if (enterAdvertisedHouse(config, true)) {
                 return;
             }
