@@ -609,11 +609,7 @@ public class HouseTabScript extends Script {
         }
 
         if (config.useAdvertisementBoard()) {
-            if (config.useLastHouse() && visitLastAdvertisedHouse(false)) {
-                return;
-            }
-            lookForHouseAdvertisementObject(false);
-            lookForPlayerHouse(config, false);
+            enterAdvertisedHouse(config, false);
             return;
         }
 
@@ -691,6 +687,31 @@ public class HouseTabScript extends Script {
         } catch (Exception ex) {
             return false;
         }
+    }
+
+    private boolean hasVisibleHousePortal() {
+        return Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null;
+    }
+
+    private boolean recoverBadAdvertisedHouseIfNeeded(HouseTabConfig config, boolean hasCompatibleLectern) {
+        if (!config.useAdvertisementBoard() || hasCompatibleLectern) {
+            return false;
+        }
+
+        boolean hasHouseEvidence = hasVisibleHousePortal() || isInsidePlayerHouse();
+        if (!hasHouseEvidence) {
+            return false;
+        }
+
+        if (lastInsideHouseDetectedAt == 0) {
+            lastInsideHouseDetectedAt = System.currentTimeMillis();
+            return true;
+        }
+
+        if (System.currentTimeMillis() - lastInsideHouseDetectedAt > 8000) {
+            leaveBadAdvertisedHouse();
+        }
+        return true;
     }
 
     private boolean isNearGrandExchangeByPosition() {
@@ -923,6 +944,18 @@ public class HouseTabScript extends Script {
 
     private boolean visitLastAdvertisedHouse() {
         return visitLastAdvertisedHouse(true);
+    }
+
+    private boolean enterAdvertisedHouse(HouseTabConfig config, boolean requireUnnotedClay) {
+        if (!config.useAdvertisementBoard()) {
+            return false;
+        }
+        if (config.useLastHouse() && visitLastAdvertisedHouse(requireUnnotedClay)) {
+            return true;
+        }
+        lookForHouseAdvertisementObject(requireUnnotedClay);
+        lookForPlayerHouse(config, requireUnnotedClay);
+        return true;
     }
 
     private boolean visitLastAdvertisedHouse(boolean requireUnnotedClay) {
@@ -1192,14 +1225,11 @@ public class HouseTabScript extends Script {
         return null;
     }
 
-    public void lookForLectern(HouseTabConfig config) {
+    private void lookForLectern(HouseTabConfig config) {
         if (getHouseLectern() == null) {
             lecternStudyPending = false;
             lecternStudyAttemptedAt = 0;
-            if (config.useAdvertisementBoard()
-                    && (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null
-                    || isInsidePlayerHouse())) {
-                leaveBadAdvertisedHouse();
+            if (recoverBadAdvertisedHouseIfNeeded(config, false)) {
                 return;
             }
             stop("No compatible lectern found for " + selectedTablet.getName());
@@ -1644,7 +1674,7 @@ public class HouseTabScript extends Script {
                     runProgressiveLoop(config, shouldLogLoop);
                     return;
                 }
-                runClassicLoop(config, shouldLogLoop);
+                runTabletCraftingLoop(config, shouldLogLoop);
             } catch (Exception ex) {
                 Microbot.logStackTrace(this.getClass().getSimpleName(), ex);
             } finally {
@@ -1764,24 +1794,15 @@ public class HouseTabScript extends Script {
         if (hasSoftClay()
                 && !insidePlayerHouse) {
             Microbot.status = "Entering advertised house";
-            if (config.useAdvertisementBoard()) {
-                if (config.useLastHouse() && visitLastAdvertisedHouse()) {
-                    return;
-                }
-                lookForHouseAdvertisementObject();
-                lookForPlayerHouse(config);
+            if (enterAdvertisedHouse(config, true)) {
                 return;
             }
         }
         if (insidePlayerHouse && hasSoftClay()) {
-            if (config.useAdvertisementBoard()
-                    && getHouseLectern() == null
-                    && lastInsideHouseDetectedAt > 0
-                    && System.currentTimeMillis() - lastInsideHouseDetectedAt > 8000) {
-                leaveBadAdvertisedHouse();
+            if (recoverBadAdvertisedHouseIfNeeded(config, getHouseLectern() != null)) {
                 return;
             }
-            runClassicLoop(config, shouldLogLoop);
+            runTabletCraftingLoop(config, shouldLogLoop);
             return;
         }
 
@@ -1790,27 +1811,18 @@ public class HouseTabScript extends Script {
                 return;
             }
         }
-        runClassicLoop(config, shouldLogLoop);
+        runTabletCraftingLoop(config, shouldLogLoop);
     }
 
-    private void runClassicLoop(HouseTabConfig config, boolean shouldLogLoop) {
+    private void runTabletCraftingLoop(HouseTabConfig config, boolean shouldLogLoop) {
         if (shouldLogLoop) {
-            log.debug("HouseTabScript: classic loop=" + debugLoopCount
+            log.debug("HouseTabScript: tablet crafting loop=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
                     + " " + materialDebug());
         }
         boolean isInHouse = getHouseLectern() != null;
-        if (!isInHouse
-                && config.useAdvertisementBoard()
-                && Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
-            if (lastInsideHouseDetectedAt == 0) {
-                lastInsideHouseDetectedAt = System.currentTimeMillis();
-                return;
-            }
-            if (System.currentTimeMillis() - lastInsideHouseDetectedAt > 8000) {
-                leaveBadAdvertisedHouse();
-                return;
-            }
+        if (recoverBadAdvertisedHouseIfNeeded(config, isInHouse)) {
+            return;
         }
         if (!isInHouse && !hasSoftClay() && hasSoftClayNoted()) {
             Microbot.status = "Unnoting soft clay";
@@ -1866,18 +1878,13 @@ public class HouseTabScript extends Script {
             createHouseTablet(config);
             leaveHouse();
         } else if (config.useAdvertisementBoard()
-                && Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
+                && hasVisibleHousePortal()) {
             leaveBadAdvertisedHouse();
         } else {
             if (unnoteClay()) {
                 return;
             }
-            if (config.useAdvertisementBoard()) {
-                if (config.useLastHouse() && visitLastAdvertisedHouse()) {
-                    return;
-                }
-                lookForHouseAdvertisementObject();
-                lookForPlayerHouse(config);
+            if (enterAdvertisedHouse(config, true)) {
                 return;
             }
             if (config.ownHouse()) {
