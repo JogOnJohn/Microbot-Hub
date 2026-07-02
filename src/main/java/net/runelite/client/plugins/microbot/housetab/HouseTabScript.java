@@ -93,10 +93,15 @@ public class HouseTabScript extends Script {
     private int lecternCraftActions = 0;
     private HouseTablet lastPreparedTablet = null;
     private int debugLoopCount = 0;
+
+    // Pending flags are one-shot action guards. They prevent the scheduler from
+    // issuing the same click every tick while the game client is still responding.
     private boolean phialsUnnotePending = false;
     private long phialsUnnoteAttemptedAt = 0;
     private boolean lecternStudyPending = false;
     private long lecternStudyAttemptedAt = 0;
+    private boolean leaveHousePending = false;
+    private long leaveHouseAttemptedAt = 0;
     private boolean assumeInsidePlayerHouse = false;
     private long lastLecternCraftAttemptAt = 0;
     private long lastAdvertisementViewAttemptAt = 0;
@@ -114,6 +119,11 @@ public class HouseTabScript extends Script {
     private String lastCraftGateLogReason = "";
     private long lastLecternScrollAttemptAt = 0;
     private long lastAntibanActionAt = 0;
+
+    // Hosted houses can stream objects in slowly. A missing lectern sample is
+    // only trusted after several checks, otherwise we blacklist good hosts.
+    private long noCompatibleLecternDetectedAt = 0;
+    private int noCompatibleLecternSamples = 0;
     private HouseTabState currentState = HouseTabState.STARTING;
     private long lastStateChangedAt = System.currentTimeMillis();
     private String lastTransitionReason = "initialized";
@@ -298,6 +308,8 @@ public class HouseTabScript extends Script {
         phialsUnnoteAttemptedAt = 0;
         lecternStudyPending = false;
         lecternStudyAttemptedAt = 0;
+        leaveHousePending = false;
+        leaveHouseAttemptedAt = 0;
         assumeInsidePlayerHouse = false;
         lastLecternCraftAttemptAt = 0;
         lastProgressivePrepLogAt = 0;
@@ -314,6 +326,8 @@ public class HouseTabScript extends Script {
         lastDiagnosticDumpAt = 0;
         lastRecoveryReason = "";
         lastMaterialSummary = "";
+        noCompatibleLecternDetectedAt = 0;
+        noCompatibleLecternSamples = 0;
     }
 
     private void dumpTabletWidgetsOnce(HouseTabConfig config) {
@@ -437,9 +451,13 @@ public class HouseTabScript extends Script {
         }
 
         boolean compatibleLecternVisible = sceneReady && getHouseLectern() != null;
+        if (compatibleLecternVisible) {
+            resetNoLecternEvidence();
+        }
         boolean atGrandExchange = sceneReady && isAtGrandExchange();
         boolean nearRimmington = sceneReady && isNearRimmingtonAdvertisementByPosition();
         boolean housePortalVisible = sceneReady && hasVisibleHousePortal();
+        updateLeaveHousePending(housePortalVisible);
         boolean insideHouse = sceneReady && (compatibleLecternVisible || isInsidePlayerHouse());
         boolean lecternInterfaceOpen = sceneReady && hasLecternInterfaceOpen();
         boolean craftingActive = sceneReady && isTabletCraftingActive();
@@ -835,27 +853,55 @@ public class HouseTabScript extends Script {
 
     private boolean recoverBadAdvertisedHouseIfNeeded(HouseTabConfig config, boolean hasCompatibleLectern) {
         if (!config.useAdvertisementBoard() || hasCompatibleLectern) {
+            if (hasCompatibleLectern) {
+                resetNoLecternEvidence();
+            }
             return false;
         }
 
-        if (hasLecternInterfaceOpen() || Microbot.isGainingExp || isTabletCraftingActive()) {
+        if (hasLecternInterfaceOpen()
+                || Microbot.isGainingExp
+                || isTabletCraftingActive()
+                || lecternStudyPending
+                || leaveHousePending) {
             return false;
         }
 
         boolean hasHouseEvidence = hasVisibleHousePortal() || isInsidePlayerHouse();
         if (!hasHouseEvidence) {
+            resetNoLecternEvidence();
             return false;
         }
 
+        // Object cache visibility can flicker just after entering a hosted PoH.
+        // Treat "no lectern" as real only after repeated samples over a short window.
         if (lastInsideHouseDetectedAt == 0) {
             lastInsideHouseDetectedAt = System.currentTimeMillis();
             return true;
         }
 
-        if (System.currentTimeMillis() - lastInsideHouseDetectedAt > 8000) {
+        long now = System.currentTimeMillis();
+        if (now - lastInsideHouseDetectedAt < 8000) {
+            return true;
+        }
+
+        if (noCompatibleLecternDetectedAt == 0) {
+            noCompatibleLecternDetectedAt = now;
+            noCompatibleLecternSamples = 1;
+            log.debug("HouseTab: first no-compatible-lectern sample in advertised house.");
+            return true;
+        }
+
+        noCompatibleLecternSamples++;
+        if (noCompatibleLecternSamples >= 4 && now - noCompatibleLecternDetectedAt > 5000) {
             leaveBadAdvertisedHouse();
         }
         return true;
+    }
+
+    private void resetNoLecternEvidence() {
+        noCompatibleLecternDetectedAt = 0;
+        noCompatibleLecternSamples = 0;
     }
 
     private boolean hasLecternInterfaceOpen() {
@@ -1863,21 +1909,56 @@ public class HouseTabScript extends Script {
         return sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null, 10000);
     }
 
+    private void updateLeaveHousePending(boolean portalVisible) {
+        if (!leaveHousePending) {
+            return;
+        }
+        if (!portalVisible) {
+            leaveHousePending = false;
+            leaveHouseAttemptedAt = 0;
+            assumeInsidePlayerHouse = false;
+            lastInsideHouseDetectedAt = 0;
+            resetNoLecternEvidence();
+        }
+    }
+
     private boolean leaveHousePortal() {
         transitionTo(HouseTabState.LEAVE_HOUSE, "clicking house portal");
+        long now = System.currentTimeMillis();
+        if (leaveHousePending) {
+            if (!hasVisibleHousePortal()) {
+                updateLeaveHousePending(false);
+                transitionPause("leaving house");
+                maybeAntibanAfterAction("leaving house");
+                return true;
+            }
+            if (now - leaveHouseAttemptedAt < 9000) {
+                log.debug("HouseTabScript: waiting for previous house portal click to resolve.");
+                return false;
+            }
+            Microbot.log("HouseTabScript: house portal exit did not resolve; retrying.");
+            leaveHousePending = false;
+        }
+
         Rs2TileObjectModel portal = Microbot.getRs2TileObjectCache().query()
                 .withId(HOUSE_PORTAL_OBJECT)
                 .nearest();
         if (portal == null) {
+            updateLeaveHousePending(false);
             return true;
         }
 
         try {
             sleep(180, 420);
-            if (Microbot.getRs2TileObjectCache().query().interact(HOUSE_PORTAL_OBJECT, "Enter")
+            if (Microbot.getRs2TileObjectCache().query().interact(HOUSE_PORTAL_OBJECT, "Enter")) {
+                // Portal exit is asynchronous: the click lands first, then the scene unloads.
+                // Track that pending click so the next script tick waits instead of spam-clicking.
+                leaveHousePending = true;
+                leaveHouseAttemptedAt = System.currentTimeMillis();
+            }
+            if (leaveHousePending
                     && sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000)) {
-                assumeInsidePlayerHouse = false;
-                lastInsideHouseDetectedAt = 0;
+                updateLeaveHousePending(false);
                 transitionPause("leaving house");
                 maybeAntibanAfterAction("leaving house");
                 return true;
@@ -1895,10 +1976,11 @@ public class HouseTabScript extends Script {
         }
 
         Microbot.getMouse().click(clickPoint);
+        leaveHousePending = true;
+        leaveHouseAttemptedAt = System.currentTimeMillis();
         boolean leftHouse = sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000);
         if (leftHouse) {
-            assumeInsidePlayerHouse = false;
-            lastInsideHouseDetectedAt = 0;
+            updateLeaveHousePending(false);
             transitionPause("leaving house");
             maybeAntibanAfterAction("leaving house");
         }
