@@ -1784,33 +1784,6 @@ public class HouseTabScript extends Script {
             return;
         }
 
-        if (!insidePlayerHouse && !hasSoftClay() && hasSoftClayNoted()) {
-            Microbot.status = "Unnoting soft clay";
-            if (unnoteClay()) {
-                return;
-            }
-        }
-
-        if (hasSoftClay()
-                && !insidePlayerHouse) {
-            Microbot.status = "Entering advertised house";
-            if (enterAdvertisedHouse(config, true)) {
-                return;
-            }
-        }
-        if (insidePlayerHouse && hasSoftClay()) {
-            if (recoverBadAdvertisedHouseIfNeeded(config, getHouseLectern() != null)) {
-                return;
-            }
-            runTabletCraftingLoop(config, shouldLogLoop);
-            return;
-        }
-
-        if (!insidePlayerHouse && !hasSoftClay() && hasSoftClayNoted()) {
-            if (unnoteClay()) {
-                return;
-            }
-        }
         runTabletCraftingLoop(config, shouldLogLoop);
     }
 
