@@ -1192,10 +1192,16 @@ public class HouseTabScript extends Script {
         return null;
     }
 
-    public void lookForLectern() {
+    public void lookForLectern(HouseTabConfig config) {
         if (getHouseLectern() == null) {
             lecternStudyPending = false;
             lecternStudyAttemptedAt = 0;
+            if (config.useAdvertisementBoard()
+                    && (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null
+                    || isInsidePlayerHouse())) {
+                leaveBadAdvertisedHouse();
+                return;
+            }
             stop("No compatible lectern found for " + selectedTablet.getName());
             return;
         }
@@ -1794,6 +1800,18 @@ public class HouseTabScript extends Script {
                     + " " + materialDebug());
         }
         boolean isInHouse = getHouseLectern() != null;
+        if (!isInHouse
+                && config.useAdvertisementBoard()
+                && Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
+            if (lastInsideHouseDetectedAt == 0) {
+                lastInsideHouseDetectedAt = System.currentTimeMillis();
+                return;
+            }
+            if (System.currentTimeMillis() - lastInsideHouseDetectedAt > 8000) {
+                leaveBadAdvertisedHouse();
+                return;
+            }
+        }
         if (!isInHouse && !hasSoftClay() && hasSoftClayNoted()) {
             Microbot.status = "Unnoting soft clay";
             if (unnoteClay()) {
@@ -1844,7 +1862,7 @@ public class HouseTabScript extends Script {
                 updateTabletCount();
                 return;
             }
-            lookForLectern();
+            lookForLectern(config);
             createHouseTablet(config);
             leaveHouse();
         } else if (config.useAdvertisementBoard()
