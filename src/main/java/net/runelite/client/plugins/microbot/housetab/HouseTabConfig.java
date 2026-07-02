@@ -124,7 +124,7 @@ public interface HouseTabConfig extends Config {
     @ConfigItem(
             keyName = "UseLastHouse",
             name = "Use last house",
-            description = "Use the portal's last friend house behavior when possible, falling back to Player Name if prompted.",
+            description = "Use the advertisement board's visit-last option when possible.",
             position = 10
     )
     default boolean useLastHouse()
@@ -135,12 +135,12 @@ public interface HouseTabConfig extends Config {
     @ConfigItem(
             keyName = "UseAdvertisementBoard",
             name = "Use advertisement board",
-            description = "Try the Rimmington house advertisement board before using the portal friend-house flow.",
+            description = "Use the Rimmington house advertisement board for hosted houses.",
             position = 11
     )
     default boolean useAdvertisementBoard()
     {
-        return false;
+        return true;
     }
 
     @ConfigItem(
