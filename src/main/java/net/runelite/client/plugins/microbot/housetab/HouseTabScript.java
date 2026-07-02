@@ -19,6 +19,8 @@ import net.runelite.client.plugins.microbot.housetab.enums.HouseTabState;
 import net.runelite.client.plugins.microbot.housetab.enums.HouseTablet;
 import net.runelite.client.plugins.microbot.housetab.enums.TabletQuantityMode;
 
+import net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban;
+import net.runelite.client.plugins.microbot.util.antiban.Rs2AntibanSettings;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2RunePouch;
@@ -44,6 +46,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.awt.MouseInfo;
 import java.awt.event.KeyEvent;
 
 @Slf4j
@@ -110,6 +113,7 @@ public class HouseTabScript extends Script {
     private long lastCraftGateLogAt = 0;
     private String lastCraftGateLogReason = "";
     private long lastLecternScrollAttemptAt = 0;
+    private long lastAntibanActionAt = 0;
     private HouseTabState currentState = HouseTabState.STARTING;
     private long lastStateChangedAt = System.currentTimeMillis();
     private String lastTransitionReason = "initialized";
@@ -247,6 +251,12 @@ public class HouseTabScript extends Script {
         stop(reason);
     }
 
+    @Override
+    public void shutdown() {
+        super.shutdown();
+        Rs2Antiban.resetAntibanSettings();
+    }
+
     public void handlePlayerHouseOffline(boolean useAdvertisementBoard) {
         if (!useAdvertisementBoard) {
             stop("Configured player house is offline");
@@ -273,6 +283,7 @@ public class HouseTabScript extends Script {
     }
 
     private void resetTracking() {
+        setupAntiban();
         startMagicXp = Microbot.getClient().getSkillExperience(Skill.MAGIC);
         startMagicLevel = Microbot.getClient().getRealSkillLevel(Skill.MAGIC);
         tabletsMade = 0;
@@ -295,6 +306,7 @@ public class HouseTabScript extends Script {
         lastObservedMagicXp = startMagicXp;
         lastObservedUnnotedClay = unnotedSoftClayCount();
         lastCraftProgressAt = 0;
+        lastAntibanActionAt = 0;
         currentAdvertisedHouseName = "";
         lastCraftGateLogAt = 0;
         lastCraftGateLogReason = "";
@@ -1125,6 +1137,7 @@ public class HouseTabScript extends Script {
             hasSelectedAdvertisedHouse = true;
             assumeInsidePlayerHouse = true;
             lastInsideHouseDetectedAt = System.currentTimeMillis();
+            maybeAntibanAfterAction("visit-last house entry");
         }
         return enteredHouse;
     }
@@ -1147,7 +1160,7 @@ public class HouseTabScript extends Script {
         }
 
         Microbot.log("HouseTab: right-clicking House Advertisement to select Visit-last.");
-        Microbot.getMouse().move(clickPoint);
+        moveMouseNaturallyTo(clickPoint);
         sleep(220, 520);
         Microbot.getMouse().click(clickPoint, true);
         sleep(260, 620);
@@ -1164,9 +1177,58 @@ public class HouseTabScript extends Script {
         }
 
         sleep(240, 680);
+        moveMouseNaturallyTo(menuPoint);
+        sleep(120, 340);
         Microbot.getMouse().click(menuPoint);
         transitionPause("visit-last selected");
         return true;
+    }
+
+    private void moveMouseNaturallyTo(Point target) {
+        Point current = getCurrentMouseCanvasPoint();
+        if (current == null) {
+            slowDirectMouseMove(target);
+            return;
+        }
+
+        int steps = Rs2Random.between(5, 9);
+        int startX = current.getX();
+        int startY = current.getY();
+        int targetX = target.getX();
+        int targetY = target.getY();
+
+        for (int i = 1; i <= steps; i++) {
+            double progress = (double) i / steps;
+            double eased = 1 - Math.pow(1 - progress, 2);
+            int x = (int) Math.round(startX + (targetX - startX) * eased);
+            int y = (int) Math.round(startY + (targetY - startY) * eased);
+            if (i < steps) {
+                x += Rs2Random.between(-3, 3);
+                y += Rs2Random.between(-3, 3);
+            }
+            Microbot.getMouse().move(new Point(x, y));
+            sleep(Rs2Random.between(35, 95), Rs2Random.between(100, 160));
+        }
+    }
+
+    private void slowDirectMouseMove(Point target) {
+        Microbot.getMouse().move(new Point(target.getX() + Rs2Random.between(-18, 18), target.getY() + Rs2Random.between(-18, 18)));
+        sleep(120, 260);
+        Microbot.getMouse().move(target);
+    }
+
+    private Point getCurrentMouseCanvasPoint() {
+        try {
+            java.awt.Point screenPoint = MouseInfo.getPointerInfo().getLocation();
+            java.awt.Point canvasPoint = Microbot.getClientThread().runOnClientThreadOptional(() ->
+                    Microbot.getClient().getCanvas().getLocationOnScreen()).orElse(null);
+            if (screenPoint == null || canvasPoint == null) {
+                return null;
+            }
+            return new Point(screenPoint.x - canvasPoint.x, screenPoint.y - canvasPoint.y);
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private Point getObjectClickPoint(Rs2TileObjectModel object) {
@@ -1363,6 +1425,7 @@ public class HouseTabScript extends Script {
                 Microbot.log("HouseTabScript: entered advertised house"
                         + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
                 transitionPause("entered advertised house");
+                maybeAntibanAfterAction("advertised house entry");
             } else {
                 sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null || isInsidePlayerHouse(), 4000);
                 if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null || isInsidePlayerHouse()) {
@@ -1375,6 +1438,7 @@ public class HouseTabScript extends Script {
                     Microbot.log("HouseTabScript: entered advertised house after slow scene load"
                             + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
                     transitionPause("entered advertised house");
+                    maybeAntibanAfterAction("advertised house entry");
                     return true;
                 }
                 blacklistCurrentAdvertisedHouse("entry timed out");
@@ -1688,6 +1752,7 @@ public class HouseTabScript extends Script {
         if (Rs2Random.between(1, 100) <= 8) {
             Rs2Camera.setAngle(Rs2Random.between(0, 359), 30);
         }
+        maybeAntibanAfterAction("lectern craft");
     }
 
     private void transitionPause(String reason) {
@@ -1703,6 +1768,47 @@ public class HouseTabScript extends Script {
         if (Rs2Random.between(1, 100) <= 5) {
             Rs2Camera.setAngle(Rs2Random.between(0, 359), 30);
         }
+        maybeAntibanTransition(reason);
+    }
+
+    private void setupAntiban() {
+        Rs2Antiban.resetAntibanSettings();
+        Rs2Antiban.antibanSetupTemplates.applyConstructionSetup();
+        Rs2AntibanSettings.actionCooldownChance = 0.08;
+        Rs2AntibanSettings.microBreakChance = 0.02;
+        Rs2AntibanSettings.moveMouseRandomly = true;
+        Rs2AntibanSettings.moveMouseRandomlyChance = 0.06;
+    }
+
+    private void maybeAntibanAfterAction(String reason) {
+        if (!canRunAntibanNow()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastAntibanActionAt < 4500) {
+            return;
+        }
+        lastAntibanActionAt = now;
+        log.debug("HouseTabScript: antiban action boundary after " + reason + ".");
+        Rs2Antiban.actionCooldown();
+        Rs2Antiban.takeMicroBreakByChance();
+    }
+
+    private void maybeAntibanTransition(String reason) {
+        if (!canRunAntibanNow() || Rs2Random.between(1, 100) > 10) {
+            return;
+        }
+        log.debug("HouseTabScript: antiban transition variation after " + reason + ".");
+        Rs2Antiban.moveMouseRandomly();
+    }
+
+    private boolean canRunAntibanNow() {
+        return Microbot.isLoggedIn()
+                && !Rs2AntibanSettings.actionCooldownActive
+                && !Rs2AntibanSettings.microBreakActive
+                && !Microbot.getClientThread().runOnClientThreadOptional(() -> Microbot.getClient().isMenuOpen()).orElse(false)
+                && !hasLecternInterfaceOpen()
+                && !phialsUnnotePending;
     }
 
     public void leaveHouse() {
@@ -1753,6 +1859,7 @@ public class HouseTabScript extends Script {
         }
         assumeInsidePlayerHouse = false;
         lastInsideHouseDetectedAt = 0;
+        maybeAntibanAfterAction("bad-house teleport");
         return sleepUntil(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null, 10000);
     }
 
@@ -1772,6 +1879,7 @@ public class HouseTabScript extends Script {
                 assumeInsidePlayerHouse = false;
                 lastInsideHouseDetectedAt = 0;
                 transitionPause("leaving house");
+                maybeAntibanAfterAction("leaving house");
                 return true;
             }
         } catch (Exception ex) {
@@ -1792,6 +1900,7 @@ public class HouseTabScript extends Script {
             assumeInsidePlayerHouse = false;
             lastInsideHouseDetectedAt = 0;
             transitionPause("leaving house");
+            maybeAntibanAfterAction("leaving house");
         }
         return leftHouse;
     }
@@ -1841,6 +1950,7 @@ public class HouseTabScript extends Script {
             phialsUnnotePending = false;
             phialsUnnoteAttemptedAt = 0;
             transitionPause("Phials unnote");
+            maybeAntibanAfterAction("Phials unnote");
             return true;
         }
         return false;
@@ -1867,6 +1977,9 @@ public class HouseTabScript extends Script {
                     return;
                 }
                 if (!ensureTargetWorld(config.targetWorld())) {
+                    return;
+                }
+                if (Rs2AntibanSettings.actionCooldownActive || Rs2AntibanSettings.microBreakActive) {
                     return;
                 }
                 ScriptHeartbeatRegistry.recordHeartbeat(this.getClass().getName());
