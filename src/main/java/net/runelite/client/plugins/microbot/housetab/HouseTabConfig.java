@@ -122,7 +122,7 @@ public interface HouseTabConfig extends Config {
     }
 
     @ConfigItem(
-            keyName = "UseLastHouse",
+            keyName = "UseLastAdvertisedHouse",
             name = "Use last house",
             description = "Use the advertisement board's visit-last option when possible.",
             position = 10
