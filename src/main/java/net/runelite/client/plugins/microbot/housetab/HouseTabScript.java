@@ -917,21 +917,23 @@ public class HouseTabScript extends Script {
         scheduledExecutorService = Executors.newScheduledThreadPool(1);
     }
 
-    private void lookForHouseAdvertisementObject() {
-        lookForHouseAdvertisementObject(true);
+    private boolean lookForHouseAdvertisementObject() {
+        return lookForHouseAdvertisementObject(true);
     }
 
-    private void lookForHouseAdvertisementObject(boolean requireUnnotedClay) {
+    private boolean lookForHouseAdvertisementObject(boolean requireUnnotedClay) {
         Widget houseAdvertisementPanel = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE);
         if ((requireUnnotedClay && !hasSoftClay())
-                || houseAdvertisementPanel != null
                 || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
-            return;
+            return false;
+        }
+        if (houseAdvertisementPanel != null) {
+            return true;
         }
 
         long now = System.currentTimeMillis();
         if (now - lastAdvertisementViewAttemptAt < 2500) {
-            return;
+            return false;
         }
 
         boolean success = Microbot.getRs2TileObjectCache().query()
@@ -940,6 +942,7 @@ public class HouseTabScript extends Script {
             lastAdvertisementViewAttemptAt = now;
             transitionPause("opening house advertisement");
         }
+        return success;
     }
 
     private boolean visitLastAdvertisedHouse() {
@@ -953,9 +956,8 @@ public class HouseTabScript extends Script {
         if (config.useLastHouse() && visitLastAdvertisedHouse(requireUnnotedClay)) {
             return true;
         }
-        lookForHouseAdvertisementObject(requireUnnotedClay);
-        lookForPlayerHouse(config, requireUnnotedClay);
-        return true;
+        boolean boardOpenOrOpened = lookForHouseAdvertisementObject(requireUnnotedClay);
+        return lookForPlayerHouse(config, requireUnnotedClay) || boardOpenOrOpened;
     }
 
     private boolean visitLastAdvertisedHouse(boolean requireUnnotedClay) {
@@ -1102,17 +1104,17 @@ public class HouseTabScript extends Script {
                 .toArray(String[]::new);
     }
 
-    private void lookForPlayerHouse(HouseTabConfig config) {
-        lookForPlayerHouse(config, true);
+    private boolean lookForPlayerHouse(HouseTabConfig config) {
+        return lookForPlayerHouse(config, true);
     }
 
-    private void lookForPlayerHouse(HouseTabConfig config, boolean requireUnnotedClay) {
+    private boolean lookForPlayerHouse(HouseTabConfig config, boolean requireUnnotedClay) {
         Widget houseAdvertisementNameWidget = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE);
-        if (houseAdvertisementNameWidget == null || houseAdvertisementNameWidget.getChildren() == null) return;
+        if (houseAdvertisementNameWidget == null || houseAdvertisementNameWidget.getChildren() == null) return false;
         if (requireUnnotedClay && !hasSoftClay())
-            return;
+            return false;
         if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null)
-            return;
+            return false;
 
         int enterHouseButtonHeight = 21;
         int houseIndexToJoin = -1;
@@ -1134,10 +1136,10 @@ public class HouseTabScript extends Script {
         }
 
         Widget mainWindow = Microbot.getClient().getWidget(3407879);
-        if (mainWindow == null) return;
+        if (mainWindow == null) return false;
         int HOUSE_ADVERTISEMENT_ENTER_HOUSE_PARENT_INTERFACE = 3407891;
         Widget houseAdvertisementEnterHouseWidget = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_ENTER_HOUSE_PARENT_INTERFACE);
-        if (houseAdvertisementEnterHouseWidget == null) return;
+        if (houseAdvertisementEnterHouseWidget == null) return false;
         List<Integer> visibleEnterHouseRows = new ArrayList<>();
         if (houseAdvertisementEnterHouseWidget.getChildren() != null) {
             for (int i = 0; i < houseAdvertisementEnterHouseWidget.getChildren().length; i++) {
@@ -1162,7 +1164,7 @@ public class HouseTabScript extends Script {
         if (houseIndexToJoin < 0) {
             Microbot.log("HouseTabScript: advertisement board open but no visible Enter House rows; reopening board next loop.");
             closeHouseAdvertisementInterface();
-            return;
+            return true;
         }
         Widget enterHouseButton = houseAdvertisementEnterHouseWidget.getChild(houseIndexToJoin);
         currentAdvertisedHouseName = getAdvertisedHouseName(houseAdvertisementNameWidget, houseIndexToJoin);
@@ -1173,6 +1175,7 @@ public class HouseTabScript extends Script {
                 int y = (int) mainWindow.getBounds().getCenterY() + Rs2Random.between(-50, 50);
                 Microbot.getMouse().scrollDown(new Point(x, y));
             }, () -> buttonRelativeY <= (mainWindow.getScrollY() + mainWindow.getHeight()), 500);
+            return true;
         } else {
             transitionPause("selecting advertised house");
             Microbot.getMouse()
@@ -1196,6 +1199,7 @@ public class HouseTabScript extends Script {
                 Microbot.log("HouseTabScript: advertised house entry timed out; will try next listing. skipCount=" + advertisedHouseSkipCount);
             }
             sleep(2000, 3000);
+            return true;
         }
     }
 
