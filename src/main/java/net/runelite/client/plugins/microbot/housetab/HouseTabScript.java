@@ -1767,18 +1767,6 @@ public class HouseTabScript extends Script {
             leaveHousePortal();
             return;
         }
-        if (insidePlayerHouse && !hasSoftClay()) {
-            if (shouldWaitForFinalTabletCraft()) {
-                return;
-            }
-            Microbot.status = "Leaving house";
-            Microbot.log("HouseTabScript: progressive exit branch leaving house. loop=" + debugLoopCount
-                    + " clay=" + unnotedSoftClayCount()
-                    + " noted=" + notedSoftClayCount()
-                    + " output=" + Rs2Inventory.count(selectedTablet.getItemId()));
-            leaveHousePortal();
-            return;
-        }
         if (progressiveBankPrepNeeded) {
             enterHouseForProgressivePrep(config);
             return;
