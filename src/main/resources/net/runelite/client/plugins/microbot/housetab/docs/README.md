@@ -4,7 +4,7 @@ HouseTab crafts magic tablets at a player-owned house lectern. It supports fixed
 
 ## Current version
 
-Version `2.0.2` is the current version.
+Version `2.0.3` is the current version.
 
 The 2.0 line changed the plugin from a small lectern helper into a stateful tablet-making workflow with:
 
@@ -95,7 +95,7 @@ Advertisement-board entry is the default path.
 Relevant settings:
 
 - `Use advertisement board`: use the Rimmington house advertisement board for hosted houses. This defaults to enabled.
-- `Use last house`: use the board's visit-last option when available. This does not mean the Rimmington portal's friend-house option.
+- `Use last house`: use the board's visit-last option when available. This does not mean the Rimmington portal's friend-house option. The stored config key is advertisement-board specific so old friend-house fallback settings do not affect it.
 - `Advertised houses`: optional comma-separated host names to prefer. If none match, the plugin uses the best available listing from the board.
 - `Player Name`: fallback friend-house name for the old portal flow when advertisement-board mode is disabled.
 

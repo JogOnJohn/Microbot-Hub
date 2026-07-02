@@ -1114,7 +1114,7 @@ public class HouseTabScript extends Script {
 
         boolean success = physicallySelectVisitLastHouse();
         if (success) {
-            sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null, 8000);
+            sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null, 16000);
         }
         boolean enteredHouse = Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null;
         if (enteredHouse) {
@@ -1352,8 +1352,8 @@ public class HouseTabScript extends Script {
             transitionPause("selecting advertised house");
             Microbot.getMouse()
                     .click(enterHouseButton.getCanvasLocation());
-            sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null, 10000);
-            if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
+            sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null, 18000);
+            if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null || isInsidePlayerHouse()) {
                 transitionTo(HouseTabState.WAIT_FOR_HOUSE_SCENE, "entered host " + currentAdvertisedHouseName);
                 skipVisitLastHouse = false;
                 enteredAdvertisedHouse = true;
@@ -1364,6 +1364,19 @@ public class HouseTabScript extends Script {
                         + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
                 transitionPause("entered advertised house");
             } else {
+                sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null || isInsidePlayerHouse(), 4000);
+                if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null || isInsidePlayerHouse()) {
+                    transitionTo(HouseTabState.WAIT_FOR_HOUSE_SCENE, "entered host after slow scene load " + currentAdvertisedHouseName);
+                    skipVisitLastHouse = false;
+                    enteredAdvertisedHouse = true;
+                    hasSelectedAdvertisedHouse = true;
+                    assumeInsidePlayerHouse = true;
+                    lastInsideHouseDetectedAt = System.currentTimeMillis();
+                    Microbot.log("HouseTabScript: entered advertised house after slow scene load"
+                            + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
+                    transitionPause("entered advertised house");
+                    return true;
+                }
                 blacklistCurrentAdvertisedHouse("entry timed out");
                 advertisedHouseSkipCount++;
                 skipVisitLastHouse = true;
@@ -2074,9 +2087,7 @@ public class HouseTabScript extends Script {
             }
             if (Microbot.getRs2TileObjectCache().query().interact(ObjectID.POH_RIMMINGTON_PORTAL, "Friend's house")) {
                 sleepUntil(() -> Rs2Widget.hasWidget("Enter name"), 5000);
-                if (config.useLastHouse() && !Rs2Widget.hasWidget("Enter name")) {
-                    sleep(800, 1200);
-                } else if (!config.housePlayerName().isBlank() && Rs2Widget.hasWidget(config.housePlayerName())) {
+                if (!config.housePlayerName().isBlank() && Rs2Widget.hasWidget(config.housePlayerName())) {
                     Rs2Widget.clickWidget(config.housePlayerName());
                     sleep(800, 1200);
                 } else {
