@@ -2015,6 +2015,11 @@ public class HouseTabScript extends Script {
             Microbot.log("HouseTabScript: waiting for Phials unnote dialogue.");
             return true;
         }
+        if (phialsUnnotePending && System.currentTimeMillis() - phialsUnnoteAttemptedAt >= 8000) {
+            Microbot.log("HouseTabScript: Phials unnote did not complete; retrying.");
+            phialsUnnotePending = false;
+            phialsUnnoteAttemptedAt = 0;
+        }
         if (!phialsWidgetOpen) {
             Microbot.log("HouseTabScript: attempting one Phials unnote interaction.");
             if (!Rs2Inventory.use(1762)) {
@@ -2040,11 +2045,10 @@ public class HouseTabScript extends Script {
         if (phialsWidgetOpen) {
             Microbot.log("HouseTabScript: selecting Phials unnote inventory option.");
             Rs2Keyboard.keyPress('3');
-            sleep(300, 380);
-            phialsUnnotePending = false;
-            phialsUnnoteAttemptedAt = 0;
+            phialsUnnotePending = true;
+            phialsUnnoteAttemptedAt = System.currentTimeMillis();
+            sleepUntil(() -> hasSoftClay() || Microbot.getClient().getWidget(14352385) == null, 2000);
             transitionPause("Phials unnote");
-            maybeAntibanAfterAction("Phials unnote");
             return true;
         }
         return false;

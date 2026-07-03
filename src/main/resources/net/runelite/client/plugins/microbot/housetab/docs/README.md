@@ -4,7 +4,7 @@ HouseTab crafts magic tablets at a player-owned house lectern. It supports fixed
 
 ## Current version
 
-Version `2.0.7` is the current version.
+Version `2.0.8` is the current version.
 
 The 2.0 line changed the plugin from a small lectern helper into a stateful tablet-making workflow with:
 
