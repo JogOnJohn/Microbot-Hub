@@ -818,13 +818,12 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isInsidePlayerHouse() {
-        if (assumeInsidePlayerHouse) {
-            return true;
-        }
+        boolean hasHouseObjectEvidence = false;
         try {
-            if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null
+            hasHouseObjectEvidence = Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null
                     || Microbot.getRs2TileObjectCache().query().withId(ORNATE_JEWELLERY_BOX_OBJECT).nearest() != null
-                    || Microbot.getRs2TileObjectCache().query().withIds(lecternToHouseTabButton.keySet().stream().mapToInt(Integer::intValue).toArray()).nearest() != null) {
+                    || Microbot.getRs2TileObjectCache().query().withIds(lecternToHouseTabButton.keySet().stream().mapToInt(Integer::intValue).toArray()).nearest() != null;
+            if (hasHouseObjectEvidence) {
                 assumeInsidePlayerHouse = true;
                 if (lastInsideHouseDetectedAt == 0) {
                     lastInsideHouseDetectedAt = System.currentTimeMillis();
@@ -842,9 +841,14 @@ public class HouseTabScript extends Script {
             if (inside && lastInsideHouseDetectedAt == 0) {
                 lastInsideHouseDetectedAt = System.currentTimeMillis();
             }
+            if (!inside && location != null && assumeInsidePlayerHouse && !hasHouseObjectEvidence) {
+                assumeInsidePlayerHouse = false;
+                lastInsideHouseDetectedAt = 0;
+                resetNoLecternEvidence();
+            }
             return inside;
         } catch (Exception ex) {
-            return false;
+            return assumeInsidePlayerHouse;
         }
     }
 
