@@ -89,6 +89,7 @@ public class HouseTabScript extends Script {
     private int advertisedHouseSkipCount = 0;
     private boolean enteredAdvertisedHouse = false;
     private boolean hasSelectedAdvertisedHouse = false;
+    private boolean currentHouseEnteredViaVisitLast = false;
     private TabletQuantityMode confirmedQuantityMode = null;
     private int lecternCraftActions = 0;
     private HouseTablet lastPreparedTablet = null;
@@ -311,6 +312,7 @@ public class HouseTabScript extends Script {
         leaveHousePending = false;
         leaveHouseAttemptedAt = 0;
         assumeInsidePlayerHouse = false;
+        currentHouseEnteredViaVisitLast = false;
         lastLecternCraftAttemptAt = 0;
         lastProgressivePrepLogAt = 0;
         lastWorldHopAttemptAt = 0;
@@ -1154,6 +1156,10 @@ public class HouseTabScript extends Script {
             return false;
         }
         transitionTo(HouseTabState.ENTER_HOUSE, "using advertised house flow");
+        Widget houseAdvertisementPanel = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE);
+        if (houseAdvertisementPanel != null) {
+            return lookForPlayerHouse(config, requireUnnotedClay);
+        }
         if (config.useLastHouse() && visitLastAdvertisedHouse(requireUnnotedClay)) {
             return true;
         }
@@ -1181,6 +1187,7 @@ public class HouseTabScript extends Script {
             advertisedHouseSkipCount = 0;
             enteredAdvertisedHouse = true;
             hasSelectedAdvertisedHouse = true;
+            currentHouseEnteredViaVisitLast = true;
             assumeInsidePlayerHouse = true;
             lastInsideHouseDetectedAt = System.currentTimeMillis();
         }
@@ -1223,7 +1230,11 @@ public class HouseTabScript extends Script {
 
         sleep(240, 680);
         moveMouseNaturallyTo(menuPoint);
-        sleep(120, 340);
+        sleep(80, 180);
+        if (!Microbot.getClientThread().runOnClientThreadOptional(() -> Microbot.getClient().isMenuOpen()).orElse(false)) {
+            Microbot.log("HouseTab: Visit-last menu closed before selection; falling back to advertisement board.");
+            return false;
+        }
         Microbot.getMouse().click(menuPoint);
         transitionPause("visit-last selected");
         return true;
@@ -1291,6 +1302,7 @@ public class HouseTabScript extends Script {
             int menuX = Microbot.getClient().getMenuX();
             int menuY = Microbot.getClient().getMenuY();
             int menuWidth = Microbot.getClient().getMenuWidth();
+            int menuHeight = Microbot.getClient().getMenuHeight();
             int entryHeight = 15;
             int headerHeight = 18;
 
@@ -1304,7 +1316,10 @@ public class HouseTabScript extends Script {
 
                 int visualRow = entries.length - i - 1;
                 int y = menuY + headerHeight + visualRow * entryHeight + entryHeight / 2;
-                int x = menuX + menuWidth / 2;
+                int x = menuX + Math.max(16, Math.min(menuWidth - 16, menuWidth / 2));
+                if (x <= menuX || x >= menuX + menuWidth || y <= menuY + headerHeight || y >= menuY + menuHeight) {
+                    return null;
+                }
                 return new Point(x, y);
             }
             return null;
@@ -1465,6 +1480,7 @@ public class HouseTabScript extends Script {
                 skipVisitLastHouse = false;
                 enteredAdvertisedHouse = true;
                 hasSelectedAdvertisedHouse = true;
+                currentHouseEnteredViaVisitLast = false;
                 assumeInsidePlayerHouse = true;
                 lastInsideHouseDetectedAt = System.currentTimeMillis();
                 Microbot.log("HouseTabScript: entered advertised house"
@@ -1477,6 +1493,7 @@ public class HouseTabScript extends Script {
                     skipVisitLastHouse = false;
                     enteredAdvertisedHouse = true;
                     hasSelectedAdvertisedHouse = true;
+                    currentHouseEnteredViaVisitLast = false;
                     assumeInsidePlayerHouse = true;
                     lastInsideHouseDetectedAt = System.currentTimeMillis();
                     Microbot.log("HouseTabScript: entered advertised house after slow scene load"
@@ -1899,7 +1916,13 @@ public class HouseTabScript extends Script {
         skipVisitLastHouse = true;
         Microbot.status = "No nearby lectern; trying advertised house #" + (advertisedHouseSkipCount + 1);
         Microbot.log("HouseTab: advertised house failed lectern check (" + reason + "), trying next listing.");
-        blacklistCurrentAdvertisedHouse(reason);
+        if (currentHouseEnteredViaVisitLast) {
+            Microbot.log("HouseTab: not blacklisting '" + currentAdvertisedHouseName
+                    + "' because the failed entry came from Visit-last and may be an own-house/misclick scene.");
+        } else {
+            blacklistCurrentAdvertisedHouse(reason);
+        }
+        currentHouseEnteredViaVisitLast = false;
 
         if (!teleportToHousePortal()) {
             leaveHousePortal();
