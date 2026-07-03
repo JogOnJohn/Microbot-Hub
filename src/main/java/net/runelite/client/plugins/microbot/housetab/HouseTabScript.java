@@ -1183,7 +1183,6 @@ public class HouseTabScript extends Script {
             hasSelectedAdvertisedHouse = true;
             assumeInsidePlayerHouse = true;
             lastInsideHouseDetectedAt = System.currentTimeMillis();
-            maybeAntibanAfterAction("visit-last house entry");
         }
         return enteredHouse;
     }
@@ -1471,7 +1470,6 @@ public class HouseTabScript extends Script {
                 Microbot.log("HouseTabScript: entered advertised house"
                         + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
                 transitionPause("entered advertised house");
-                maybeAntibanAfterAction("advertised house entry");
             } else {
                 sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null || isInsidePlayerHouse(), 4000);
                 if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null || isInsidePlayerHouse()) {
@@ -1484,7 +1482,6 @@ public class HouseTabScript extends Script {
                     Microbot.log("HouseTabScript: entered advertised house after slow scene load"
                             + (currentAdvertisedHouseName.isBlank() ? "." : " hosted by " + currentAdvertisedHouseName + "."));
                     transitionPause("entered advertised house");
-                    maybeAntibanAfterAction("advertised house entry");
                     return true;
                 }
                 blacklistCurrentAdvertisedHouse("entry timed out");
@@ -2076,7 +2073,8 @@ public class HouseTabScript extends Script {
                 if (!ensureTargetWorld(config.targetWorld())) {
                     return;
                 }
-                if (Rs2AntibanSettings.actionCooldownActive || Rs2AntibanSettings.microBreakActive) {
+                if ((Rs2AntibanSettings.actionCooldownActive || Rs2AntibanSettings.microBreakActive)
+                        && !canBypassAntibanWait()) {
                     return;
                 }
                 ScriptHeartbeatRegistry.recordHeartbeat(this.getClass().getName());
@@ -2107,6 +2105,16 @@ public class HouseTabScript extends Script {
             }
         }, 0, 600, TimeUnit.MILLISECONDS);
         return true;
+    }
+
+    private boolean canBypassAntibanWait() {
+        return currentState == HouseTabState.WAIT_FOR_HOUSE_SCENE
+                || currentState == HouseTabState.OPEN_LECTERN
+                || currentState == HouseTabState.SELECT_TABLET_WIDGET
+                || currentState == HouseTabState.CRAFT_TABLETS
+                || lecternStudyPending
+                || leaveHousePending
+                || phialsUnnotePending;
     }
 
     private boolean ensureTargetWorld(int targetWorld) {
@@ -2209,6 +2217,15 @@ public class HouseTabScript extends Script {
         }
         boolean hasCompatibleLectern = current.compatibleLecternVisible;
         boolean isInHouse = current.insidePlayerHouse;
+        if (currentState == HouseTabState.WAIT_FOR_HOUSE_SCENE
+                && isInHouse
+                && System.currentTimeMillis() - lastStateChangedAt > 30000
+                && !hasCompatibleLectern
+                && !current.lecternInterfaceOpen
+                && !current.craftingActive) {
+            leaveBadAdvertisedHouse("house scene loaded without compatible lectern");
+            return;
+        }
         if (recoverBadAdvertisedHouseIfNeeded(config, hasCompatibleLectern)) {
             return;
         }
