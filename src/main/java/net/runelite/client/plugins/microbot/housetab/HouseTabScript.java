@@ -1549,13 +1549,24 @@ public class HouseTabScript extends Script {
             lecternStudyAttemptedAt = 0;
             return;
         }
-        if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() == null) return;
+
+        // Do not require the house portal to be visible here. Large or awkward hosted
+        // houses can have a valid lectern in cache while the portal is off-scene.
+        if (currentState == HouseTabState.OPEN_LECTERN
+                && System.currentTimeMillis() - lastStateChangedAt > 30000
+                && !hasLecternInterfaceOpen()
+                && !isTabletCraftingActive()) {
+            leaveBadAdvertisedHouse("lectern did not open after repeated attempts");
+            return;
+        }
 
         if (lecternStudyPending && System.currentTimeMillis() - lecternStudyAttemptedAt < 8000) {
             transitionTo(HouseTabState.OPEN_LECTERN, "waiting for lectern interface");
             log.debug("HouseTabScript: waiting for lectern interface.");
             return;
         }
+        lecternStudyPending = false;
+        lecternStudyAttemptedAt = 0;
 
         transitionTo(HouseTabState.OPEN_LECTERN, "studying compatible lectern");
         Microbot.log("HouseTabScript: studying lectern.");
@@ -1877,7 +1888,11 @@ public class HouseTabScript extends Script {
     }
 
     private void leaveBadAdvertisedHouse() {
-        lastRecoveryReason = "No nearby compatible lectern at " + (currentAdvertisedHouseName == null || currentAdvertisedHouseName.isBlank()
+        leaveBadAdvertisedHouse("no nearby compatible lectern");
+    }
+
+    private void leaveBadAdvertisedHouse(String reason) {
+        lastRecoveryReason = reason + " at " + (currentAdvertisedHouseName == null || currentAdvertisedHouseName.isBlank()
                 ? "advertised house"
                 : currentAdvertisedHouseName);
         transitionTo(HouseTabState.RECOVER_BAD_HOUSE, lastRecoveryReason);
@@ -1886,8 +1901,8 @@ public class HouseTabScript extends Script {
         hasSelectedAdvertisedHouse = false;
         skipVisitLastHouse = true;
         Microbot.status = "No nearby lectern; trying advertised house #" + (advertisedHouseSkipCount + 1);
-        Microbot.log("HouseTab: advertised house had no nearby compatible lectern, trying next listing.");
-        blacklistCurrentAdvertisedHouse("no nearby compatible lectern");
+        Microbot.log("HouseTab: advertised house failed lectern check (" + reason + "), trying next listing.");
+        blacklistCurrentAdvertisedHouse(reason);
 
         if (!teleportToHousePortal()) {
             leaveHousePortal();
