@@ -46,7 +46,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
-import java.awt.MouseInfo;
 import java.awt.event.KeyEvent;
 
 @Slf4j
@@ -1241,29 +1240,12 @@ public class HouseTabScript extends Script {
     }
 
     private void moveMouseNaturallyTo(Point target) {
-        Point current = getCurrentMouseCanvasPoint();
-        if (current == null) {
+        try {
+            // Microbot.getMouse().move(...) dispatches direct canvas events. Use the
+            // natural mouse engine for visible movement before the right-click/menu click.
+            Microbot.naturalMouse.moveTo(target.getX(), target.getY());
+        } catch (Exception ex) {
             slowDirectMouseMove(target);
-            return;
-        }
-
-        int steps = Rs2Random.between(5, 9);
-        int startX = current.getX();
-        int startY = current.getY();
-        int targetX = target.getX();
-        int targetY = target.getY();
-
-        for (int i = 1; i <= steps; i++) {
-            double progress = (double) i / steps;
-            double eased = 1 - Math.pow(1 - progress, 2);
-            int x = (int) Math.round(startX + (targetX - startX) * eased);
-            int y = (int) Math.round(startY + (targetY - startY) * eased);
-            if (i < steps) {
-                x += Rs2Random.between(-3, 3);
-                y += Rs2Random.between(-3, 3);
-            }
-            Microbot.getMouse().move(new Point(x, y));
-            sleep(Rs2Random.between(35, 95), Rs2Random.between(100, 160));
         }
     }
 
@@ -1271,20 +1253,6 @@ public class HouseTabScript extends Script {
         Microbot.getMouse().move(new Point(target.getX() + Rs2Random.between(-18, 18), target.getY() + Rs2Random.between(-18, 18)));
         sleep(120, 260);
         Microbot.getMouse().move(target);
-    }
-
-    private Point getCurrentMouseCanvasPoint() {
-        try {
-            java.awt.Point screenPoint = MouseInfo.getPointerInfo().getLocation();
-            java.awt.Point canvasPoint = Microbot.getClientThread().runOnClientThreadOptional(() ->
-                    Microbot.getClient().getCanvas().getLocationOnScreen()).orElse(null);
-            if (screenPoint == null || canvasPoint == null) {
-                return null;
-            }
-            return new Point(screenPoint.x - canvasPoint.x, screenPoint.y - canvasPoint.y);
-        } catch (Exception ex) {
-            return null;
-        }
     }
 
     private Point getObjectClickPoint(Rs2TileObjectModel object) {
