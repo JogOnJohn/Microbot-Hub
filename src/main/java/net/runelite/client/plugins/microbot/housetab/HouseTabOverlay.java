@@ -10,6 +10,11 @@ import net.runelite.client.ui.overlay.components.TitleComponent;
 import javax.inject.Inject;
 import java.awt.*;
 
+/*
+ * The overlay is only a read-only dashboard. It does not drive the bot. Keeping
+ * it read-only matters because render() can be called often and should not
+ * trigger game actions or state changes.
+ */
 public class HouseTabOverlay extends OverlayPanel {
     private final HouseTabPlugin plugin;
 
@@ -24,6 +29,8 @@ public class HouseTabOverlay extends OverlayPanel {
     public Dimension render(Graphics2D graphics) {
         try {
             HouseTabScript script = plugin.getHouseTabScript();
+            // During login or plugin startup the script/player can legitimately
+            // be null. Show a small waiting panel instead of throwing.
             if (!Microbot.isLoggedIn() || Microbot.getClient().getLocalPlayer() == null || script == null) {
                 panelComponent.setPreferredSize(new Dimension(260, 80));
                 panelComponent.getChildren().add(TitleComponent.builder()
@@ -40,6 +47,8 @@ public class HouseTabOverlay extends OverlayPanel {
             int currentLevel = Microbot.getClient().getRealSkillLevel(Skill.MAGIC);
             int startXp = script.getStartMagicXp();
             int startLevel = script.getStartMagicLevel();
+            // Start values come from script initialization. If they were not
+            // captured yet, report zero gain rather than a negative number.
             int xpGained = startXp >= 0 ? Math.max(0, currentXp - startXp) : 0;
             int levelsGained = startLevel >= 0 ? Math.max(0, currentLevel - startLevel) : 0;
 

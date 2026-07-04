@@ -8,6 +8,11 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
+/*
+ * This enum is the tablet database for the script. Each row describes one
+ * craftable tablet: level requirement, output item id, XP, widget id, rune
+ * costs, preferred staff coverage, and which lectern family can make it.
+ */
 public enum HouseTablet {
     VARROCK_TELEPORT("Varrock teleport", ItemID.POH_TABLET_VARROCKTELEPORT, 25, 35.0, LecternFamily.EAGLE, 0x0193_0015,
             Map.of(Runes.AIR, 3, Runes.FIRE, 1, Runes.LAW, 1), List.of(Runes.AIR, Runes.FIRE)),
@@ -95,10 +100,14 @@ public enum HouseTablet {
     }
 
     public boolean supportsLectern(int objectId) {
+        // The script uses this to avoid entering/crafting in hosted houses that
+        // have a lectern, but not the right type for the selected tablet.
         return lecternFamily.supports(objectId);
     }
 
     public static HouseTablet highestXpForLevel(int magicLevel) {
+        // Progressive mode picks by XP, not by level order, and ignores tablets
+        // flagged progressive=false.
         return Arrays.stream(values())
                 .filter(tablet -> tablet.progressive && tablet.magicLevel <= magicLevel)
                 .max(Comparator.comparingDouble(HouseTablet::getMagicXp))
@@ -120,6 +129,7 @@ public enum HouseTablet {
         private static final int MARBLE_LECTERN_OBJECT = 37349;
 
         private boolean supports(int objectId) {
+            // Marble lecterns can make both eagle and demon tablet sets.
             if (objectId == MARBLE_LECTERN_OBJECT) {
                 return true;
             }

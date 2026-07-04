@@ -1,5 +1,10 @@
 package net.runelite.client.plugins.microbot.housetab.enums;
 
+/*
+ * The script is a state machine. Each enum value is a named phase in the route:
+ * login/world checks, material setup, entering a house, using the lectern,
+ * leaving, and recovery. Logs and overlay use the human-readable label.
+ */
 public enum HouseTabState {
     STARTING("Starting"),
     VALIDATE_LOGIN("Validate login"),

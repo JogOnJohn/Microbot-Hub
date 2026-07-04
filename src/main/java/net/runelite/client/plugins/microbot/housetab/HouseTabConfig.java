@@ -11,6 +11,12 @@ public interface HouseTabConfig extends Config {
 
     String GROUP = "HouseTab";
 
+    /*
+     * Config interfaces are RuneLite's way of exposing plugin settings. Each
+     * default method is one setting; the annotation controls how it appears in
+     * the plugin panel, and the return value is the default.
+     */
+
     @ConfigItem(
             keyName = "Progressive",
             name = "Progressive",
