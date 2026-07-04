@@ -31,7 +31,7 @@ import java.awt.*;
 )
 @Slf4j
 public class HouseTabPlugin extends Plugin {
-    public static final String version = "2.0.11";
+    public static final String version = "2.0.13";
 
     @Inject
     private HouseTabConfig config;
@@ -51,12 +51,24 @@ public class HouseTabPlugin extends Plugin {
     private boolean overlayAdded = false;
     private long startupAt = 0;
 
+    /*
+     * RuneLite plugin classes are the entry point. They should stay small:
+     * create UI/overlays, listen to game events, and start or stop the real
+     * worker script. The long-running automation lives in HouseTabScript so it
+     * can manage its own scheduler and state machine.
+     */
     @Override
     protected void startUp() throws AWTException {
         startupAt = System.currentTimeMillis();
         Microbot.log("HouseTabPlugin: startUp invoked; script will wait for stable logged-in game state.");
     }
 
+    /*
+     * The client reports "logged in" before every API is safe to read. This
+     * method deliberately waits for a local player, a world location, and a
+     * few stable ticks before creating the script. Without that guard, startup
+     * code can hit null player/scene objects during login or world hops.
+     */
     private void startScriptIfLoggedIn() {
         if (Microbot.getClient().getGameState() != GameState.LOGGED_IN || !Microbot.isLoggedIn()) {
             loggedInTicks = 0;
@@ -91,12 +103,20 @@ public class HouseTabPlugin extends Plugin {
             return;
         }
         Microbot.log("HouseTabPlugin: logged in, creating fresh script instance.");
+        // These are fallback friend-house names used when the script is not
+        // entering through the advertisement board. The runtime config decides
+        // which house-entry path is actually used.
         houseTabScript = new HouseTabScript(HOUSETABS_CONFIG.FRIENDS_HOUSE,
                 new String[]{"xGrace", "workless", "Lego Batman", "Batman 321", "Batman Chest"});
         boolean started = houseTabScript.run(config);
         Microbot.log("HouseTabPlugin: script run returned " + started);
     }
 
+    /*
+     * Shutdown must clean up both the script and the overlay. The script owns a
+     * scheduled executor, so leaving it alive after the plugin is disabled would
+     * keep clicking/reading game state in the background.
+     */
     protected void shutDown() {
         Microbot.log("HouseTabPlugin: shutDown invoked.");
         if (houseTabScript != null) {
@@ -116,6 +136,9 @@ public class HouseTabPlugin extends Plugin {
     @Subscribe
     public void onChatMessage(ChatMessage event)
     {
+        // Hosted-house entry can fail because the previous host logged out.
+        // The script handles that as a recoverable routing problem when the
+        // advertisement board is enabled.
         if (event.getType() == ChatMessageType.GAMEMESSAGE && event.getMessage().contains("That player is offline")) {
             Microbot.showMessage("Player is offline.");
             if (houseTabScript != null) {
@@ -127,6 +150,9 @@ public class HouseTabPlugin extends Plugin {
     @Subscribe
     public void onGameTick(GameTick event)
     {
+        // Poll startup from game ticks instead of sleeping in startUp(). RuneLite
+        // plugin lifecycle methods run on important client threads and should
+        // return quickly.
         startScriptIfLoggedIn();
     }
 }

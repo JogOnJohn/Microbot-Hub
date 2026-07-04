@@ -50,6 +50,24 @@ import java.awt.event.KeyEvent;
 
 @Slf4j
 public class HouseTabScript extends Script {
+    /*
+     * This script looks large because a "simple" house-tab loop is really many
+     * smaller problems glued together:
+     *
+     * 1. Make sure we are logged in and on the right world.
+     * 2. Decide which tablet to make and whether our loadout can make it.
+     * 3. Get supplies from the bank or Grand Exchange area when needed.
+     * 4. Return to Rimmington, unnote clay, and enter a usable house.
+     * 5. Find the correct lectern, select the right widget, and craft tablets.
+     * 6. Leave/re-enter houses and recover when hosted houses are bad/offline.
+     *
+     * The main loop is a state machine: it reads a snapshot, chooses one small
+     * action, then returns so the next scheduler tick can observe the result.
+     */
+
+    // Object/widget ids are stable ids from the game client. They let the script
+    // distinguish the Rimmington portal, inside-POH exit portal, advertisement
+    // board, jewellery box, and each supported lectern type.
     private final int RIMMINGTON_PORTAL_OBJECT = 15478;
     private final int HOUSE_PORTAL_OBJECT = 4525;
 
@@ -69,11 +87,16 @@ public class HouseTabScript extends Script {
             MARBLE_LECTERN_OBJECT, 26411033
     );
 
+    // Constructor inputs: legacy route selector plus fallback friend-house names.
     private final HOUSETABS_CONFIG houseTabConfig;
     private final String[] playerHouses;
 
+    // The scheduler runs the bot loop off the RuneLite client thread. Each loop
+    // should do a small amount of work, then let the next tick observe results.
     private final ScheduledExecutorService scheduledExecutorService;
 
+    // Run plan and progress tracking. These values feed the overlay and help
+    // the script detect whether crafting/banking changed anything.
     private int lecternTabletWidgetId = 26411033;
     private HouseTablet selectedTablet = HouseTablet.TELEPORT_TO_HOUSE;
     private String stopReason = "";
@@ -90,7 +113,6 @@ public class HouseTabScript extends Script {
     private boolean hasSelectedAdvertisedHouse = false;
     private boolean currentHouseEnteredViaVisitLast = false;
     private TabletQuantityMode confirmedQuantityMode = null;
-    private int lecternCraftActions = 0;
     private HouseTablet lastPreparedTablet = null;
     private int debugLoopCount = 0;
 
@@ -102,7 +124,14 @@ public class HouseTabScript extends Script {
     private long lecternStudyAttemptedAt = 0;
     private boolean leaveHousePending = false;
     private long leaveHouseAttemptedAt = 0;
+
+    // Hosted-house detection can be awkward: the POH scene is instanced, but
+    // objects may stream in late. This assumption is set after strong evidence
+    // that we entered a house, then cleared when normal-world evidence appears.
     private boolean assumeInsidePlayerHouse = false;
+
+    // Timestamps are soft timeouts/cooldowns. They prevent repeated clicks while
+    // a previous click, teleport, world hop, or UI action is still resolving.
     private long lastLecternCraftAttemptAt = 0;
     private long lastAdvertisementViewAttemptAt = 0;
     private long lastProgressivePrepLogAt = 0;
@@ -112,6 +141,9 @@ public class HouseTabScript extends Script {
     private int lastObservedMagicXp = -1;
     private int lastObservedUnnotedClay = -1;
     private long lastCraftProgressAt = 0;
+
+    // Advertisement-board house rotation. Known-good hosts can be retried; bad
+    // hosts are skipped for this run so the bot does not loop in the same house.
     private String currentAdvertisedHouseName = "";
     private final Set<String> blacklistedAdvertisedHouses = new HashSet<>();
     private final Set<String> knownGoodAdvertisedHouses = new HashSet<>();
@@ -119,6 +151,7 @@ public class HouseTabScript extends Script {
     private String lastCraftGateLogReason = "";
     private long lastLecternScrollAttemptAt = 0;
     private long lastAntibanActionAt = 0;
+    private long nextCraftingAntibanAt = 0;
 
     // Hosted houses can stream objects in slowly. A missing lectern sample is
     // only trusted after several checks, otherwise we blacklist good hosts.
@@ -132,6 +165,11 @@ public class HouseTabScript extends Script {
     private String lastRecoveryReason = "";
     private String lastMaterialSummary = "";
 
+    /*
+     * Material helpers keep item-id details in one place. The game has separate
+     * item ids for unnoted and noted soft clay, so the script constantly asks
+     * "can I craft now?" and "can I unnote more?" separately.
+     */
     private boolean hasSoftClay() {
         return Rs2Inventory.hasItem(1761);
     }
@@ -167,6 +205,9 @@ public class HouseTabScript extends Script {
     }
 
     private boolean hasStaffFor(HouseTablet tablet) {
+        // A preferred staff is useful only when it covers every elemental rune
+        // that the selected tablet can get from a staff. Law runes still come
+        // from inventory or rune pouch.
         if (tablet.getPreferredStaffRunes().isEmpty()) return false;
         int requiredCoverage = tablet.getPreferredStaffRunes().size();
         return Arrays.stream(Rs2Staff.values())
@@ -182,6 +223,8 @@ public class HouseTabScript extends Script {
     }
 
     private List<Rs2Staff> rankedStavesFor(HouseTablet tablet, boolean allowPartial) {
+        // Sort strongest coverage first. This lets progressive mode equip the
+        // best available staff before falling back to loose runes when allowed.
         int requiredCoverage = tablet.getPreferredStaffRunes().size();
         return Arrays.stream(Rs2Staff.values())
                 .filter(staff -> staff != Rs2Staff.NONE)
@@ -204,6 +247,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean hasBankStaffItem(int itemId) {
+        // The bank cache is faster when available, but direct hasBankItem is a
+        // useful fallback if the cache read throws or is not populated.
         if (!Rs2Bank.isOpen()) {
             return false;
         }
@@ -250,6 +295,8 @@ public class HouseTabScript extends Script {
     }
 
     private void stop(String reason) {
+        // Stop is a terminal state for this script instance. The plugin will not
+        // restart the same stopped script until it is toggled/recreated.
         stopReason = reason;
         transitionTo(HouseTabState.STOPPED, reason);
         Microbot.status = reason;
@@ -268,6 +315,8 @@ public class HouseTabScript extends Script {
     }
 
     public void handlePlayerHouseOffline(boolean useAdvertisementBoard) {
+        // RuneLite reports offline hosted houses through chat. If the ad board
+        // is allowed, this is recoverable: skip visit-last and choose a fresh host.
         if (!useAdvertisementBoard) {
             stop("Configured player house is offline");
             return;
@@ -278,6 +327,7 @@ public class HouseTabScript extends Script {
     }
 
     private void updatePlanSummary(HouseTabConfig config) {
+        // Short overlay text explaining what the current run intends to make.
         planSummary = (config.progressive() ? "Progressive: " : "Tablet: ")
                 + selectedTablet.getName()
                 + " | XP " + selectedTablet.getMagicXp()
@@ -285,6 +335,8 @@ public class HouseTabScript extends Script {
     }
 
     private void updateTabletCount() {
+        // Count output growth instead of assuming every click creates a tablet.
+        // This keeps the overlay accurate when the client lags or a craft fails.
         int current = Rs2Inventory.count(selectedTablet.getItemId());
         if (current > lastKnownOutputCount) {
             tabletsMade += current - lastKnownOutputCount;
@@ -293,6 +345,9 @@ public class HouseTabScript extends Script {
     }
 
     private void resetTracking() {
+        // A new script run starts with clean counters and pending-action flags.
+        // Forgetting these flags is a common source of "it immediately retries
+        // the previous action" bugs after plugin restart.
         setupAntiban();
         startMagicXp = Microbot.getClient().getSkillExperience(Skill.MAGIC);
         startMagicLevel = Microbot.getClient().getRealSkillLevel(Skill.MAGIC);
@@ -302,7 +357,6 @@ public class HouseTabScript extends Script {
         dumpedCurrentTabletInterface = false;
         dumpedTabletInterfaceFor = null;
         confirmedQuantityMode = null;
-        lecternCraftActions = 0;
         lastPreparedTablet = null;
         phialsUnnotePending = false;
         phialsUnnoteAttemptedAt = 0;
@@ -320,6 +374,7 @@ public class HouseTabScript extends Script {
         lastObservedUnnotedClay = unnotedSoftClayCount();
         lastCraftProgressAt = 0;
         lastAntibanActionAt = 0;
+        nextCraftingAntibanAt = 0;
         currentAdvertisedHouseName = "";
         lastCraftGateLogAt = 0;
         lastCraftGateLogReason = "";
@@ -332,6 +387,9 @@ public class HouseTabScript extends Script {
     }
 
     private void dumpTabletWidgetsOnce(HouseTabConfig config) {
+        // Widget ids can move between RuneLite/client revisions. This optional
+        // dump is a developer aid for finding the correct button ids without
+        // adding permanent noisy logs.
         if (!config.debugWidgetDump()) return;
         Widget root = Microbot.getClientThread().runOnClientThreadOptional(
                 () -> Microbot.getClient().getWidget(InterfaceID.TeletabsCraftIf.UNIVERSE)).orElse(null);
@@ -398,6 +456,8 @@ public class HouseTabScript extends Script {
     }
 
     public String getSnapshotDebug() {
+        // Used by overlays/debug tools to inspect the latest state decision
+        // without exposing every internal field.
         return lastSnapshot == null ? "No snapshot" : lastSnapshot.compactDebug();
     }
 
@@ -422,6 +482,8 @@ public class HouseTabScript extends Script {
     }
 
     private void transitionTo(HouseTabState nextState, String reason) {
+        // All state changes go through here so client.log tells a clean story:
+        // previous state, next state, and the reason for the transition.
         if (nextState == null) {
             return;
         }
@@ -439,6 +501,9 @@ public class HouseTabScript extends Script {
     }
 
     private HouseTabSnapshot snapshot() {
+        // Take one consistent picture of the world for this loop. After this,
+        // state decisions should use the snapshot rather than repeatedly reading
+        // live state that may change halfway through the decision.
         boolean loggedIn = Microbot.isLoggedIn();
         boolean sceneReady = isGameSceneReady();
         WorldPoint location = null;
@@ -453,11 +518,16 @@ public class HouseTabScript extends Script {
 
         boolean compatibleLecternVisible = sceneReady && getHouseLectern() != null;
         if (compatibleLecternVisible) {
+            // Seeing a compatible lectern proves this host is not bad, so clear
+            // any earlier "no lectern" suspicion.
             resetNoLecternEvidence();
         }
         boolean atGrandExchange = sceneReady && isAtGrandExchange();
         boolean nearRimmington = sceneReady && isNearRimmingtonAdvertisementByPosition();
         boolean housePortalVisible = sceneReady && hasVisibleHousePortal();
+        // This updates pending exit state before insideHouse is calculated. If a
+        // previous portal click succeeded, the missing portal clears stale POH
+        // assumptions before the current snapshot is frozen.
         updateLeaveHousePending(housePortalVisible);
         boolean insideHouse = sceneReady && (compatibleLecternVisible || isInsidePlayerHouse());
         boolean lecternInterfaceOpen = sceneReady && hasLecternInterfaceOpen();
@@ -482,11 +552,15 @@ public class HouseTabScript extends Script {
                 hasRequiredRunes(),
                 hasStaffFor(selectedTablet),
                 selectedTablet);
+        // Keep the latest snapshot for overlay/debug calls. The state machine
+        // still uses the local current variable so one loop remains consistent.
         lastSnapshot = current;
         return current;
     }
 
     private void maybeDumpDiagnostics(HouseTabConfig config, HouseTabSnapshot current, boolean force) {
+        // Diagnostics are rate-limited so debug mode can stay on during live runs
+        // without flooding client.log every scheduler tick.
         if (!force && !config.debugDiagnostics()) {
             return;
         }
@@ -505,6 +579,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean ensureStaffEquipped(HouseTablet tablet) {
+        // Equipping from inventory is cheaper than opening a bank. Bank handling
+        // happens elsewhere when the script is deliberately in setup mode.
         if (tablet.getPreferredStaffRunes().isEmpty()) return true;
         List<Rs2Staff> staves = rankedStavesFor(tablet, false);
         boolean alreadyEquipped = staves.stream()
@@ -521,6 +597,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean depositMismatchedWeaponFor(HouseTablet tablet, boolean allowPartial) {
+        // If the weapon slot is occupied by the wrong item, free it before trying
+        // to withdraw/equip the best staff for the target tablet.
         if (!Rs2Bank.isOpen()) return false;
 
         Rs2Staff bestStaff = bestAvailableStaffFor(tablet, allowPartial);
@@ -539,6 +617,9 @@ public class HouseTabScript extends Script {
     }
 
     private boolean equippedStaffProvides(Runes rune) {
+        // Staffs provide unlimited elemental runes while equipped. This helper
+        // answers "does my weapon slot already cover this rune requirement?"
+        // before the script spends inventory space withdrawing loose runes.
         return Arrays.stream(Rs2Staff.values())
                 .filter(staff -> staff != Rs2Staff.NONE)
                 .filter(staff -> staff.getRunes().contains(rune))
@@ -547,6 +628,9 @@ public class HouseTabScript extends Script {
     }
 
     private int inventoryRuneCount(Runes rune) {
+        // Combo runes count as either component rune. For example, a mud rune can
+        // satisfy earth or water. Counting them here makes hasRune() match the
+        // way the game accepts rune costs.
         int count = Rs2Inventory.itemQuantity(rune.getItemId());
         for (Runes comboRune : Runes.getComboRunes(rune)) {
             count += Rs2Inventory.itemQuantity(comboRune.getItemId());
@@ -555,6 +639,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean hasRune(Runes rune, int amount) {
+        // Rune pouch state is cached by the client, so refresh it before asking
+        // whether pouch runes cover a requirement.
         if (Rs2Inventory.hasRunePouch()) {Rs2RunePouch.fullUpdate();}
         if (equippedStaffProvides(rune)) return true;
         return inventoryRuneCount(rune) >= amount || (Rs2Inventory.hasRunePouch() && Rs2RunePouch.contains(rune));
@@ -566,6 +652,9 @@ public class HouseTabScript extends Script {
     }
 
     private String missingRuneDebug() {
+        // This is deliberately verbose because it appears only when setup fails.
+        // It tells us whether the missing rune was expected from inventory, staff,
+        // or rune pouch.
         return selectedTablet.getRuneRequirements().entrySet().stream()
                 .filter(entry -> !hasRune(entry.getKey(), entry.getValue()))
                 .map(entry -> entry.getKey().name().toLowerCase()
@@ -576,6 +665,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean hasValidProgressiveLoadout(HouseTabConfig config) {
+        // Progressive mode can change tablet choice as Magic level rises, so the
+        // current loadout must be revalidated against the newly selected tablet.
         if (!config.progressive()) {
             return true;
         }
@@ -586,6 +677,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean ensureHouseReturnTabsFromBank() {
+        // The GE setup route returns to Rimmington by breaking a house tablet
+        // outside. Without one, the script would strand itself at the GE.
         if (Rs2Inventory.hasItem(ItemID.POH_TABLET_TELEPORTTOHOUSE)) {
             return true;
         }
@@ -601,6 +694,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean ensureRequiredRunesFromBank() {
+        // Only withdraw runes that are not already covered by staff/inventory/
+        // rune pouch. This keeps the inventory as open as possible for clay.
         if (!Rs2Bank.isOpen()) {
             return hasRequiredRunes();
         }
@@ -629,6 +724,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean ensureSoftClayFromBank() {
+        // Prefer noted clay because Phials can unnote it near the Rimmington
+        // portal, which avoids repeated bank trips.
         if (hasAnySoftClay()) {
             return true;
         }
@@ -655,6 +752,8 @@ public class HouseTabScript extends Script {
     }
 
     private void depositCraftedTeleportStacksForProgressive() {
+        // When progressive mode upgrades to a higher-XP tablet, bank older output
+        // stacks so inventory slots are available for the next setup.
         if (!Rs2Bank.isOpen()) {
             return;
         }
@@ -672,11 +771,16 @@ public class HouseTabScript extends Script {
     }
 
     private HouseTablet resolveSelectedTablet(HouseTabConfig config) {
+        // Centralize tablet selection so both classic and progressive flows use
+        // the same rule.
         int magicLevel = Microbot.getClient().getRealSkillLevel(Skill.MAGIC);
         return HouseTabPlanner.resolveTablet(config.progressive(), config.tablet(), magicLevel);
     }
 
     private boolean hasRequiredStaffOrFallback(HouseTabConfig config) {
+        // Combination-staff setup is intentionally strict: if enabled, we prefer
+        // a staff that fully covers the tablet's elemental requirements. Loose
+        // runes are handled separately by hasRequiredRunes().
         if (!config.useCombinationStaff()) return true;
         if (isBestAvailableStaffEquipped(selectedTablet, false)) return true;
         if (!Rs2Bank.isOpen() && hasStaffFor(selectedTablet) && ensureStaffEquipped(selectedTablet)) return true;
@@ -688,6 +792,9 @@ public class HouseTabScript extends Script {
             List<Rs2Staff> staves = rankedStavesFor(selectedTablet, false);
             Microbot.log("HouseTab: " + staves.size() + " full staff candidates for " + selectedTablet.getName());
             for (Rs2Staff staff : staves) {
+                // Candidate logs make bank-cache issues visible. If the bot says
+                // "missing staff" while a staff is in bank, these lines show what
+                // the script actually saw.
                 Microbot.log("HouseTab: staff candidate "
                         + staff.name()
                         + "#" + staff.getItemID()
@@ -700,17 +807,22 @@ public class HouseTabScript extends Script {
                     return true;
                 }
                 if (Rs2Inventory.hasItem(staff.getItemID()) && Rs2Inventory.wield(staff.getItemID())) {
+                    // Inventory-first path avoids unnecessary bank operations if
+                    // the staff was already withdrawn earlier.
                     sleepUntil(() -> Rs2Equipment.isWearing(staff.getItemID()), 3000);
                     return Rs2Equipment.isWearing(staff.getItemID());
                 }
                 if (hasBankStaffItem(staff.getItemID())) {
                     if (Rs2Bank.withdrawAndEquip(staff.getItemID())) {
+                        // Preferred path: one helper call withdraws and equips.
                         sleepUntil(() -> Rs2Equipment.isWearing(staff.getItemID()), 3000);
                         if (Rs2Equipment.isWearing(staff.getItemID())) {
                             return true;
                         }
                     }
                     if (Rs2Bank.withdrawOne(staff.getItemID())) {
+                        // Fallback path: some bank/equipment helpers fail on
+                        // specific clients, so withdraw then wield manually.
                         sleepUntil(() -> Rs2Inventory.hasItem(staff.getItemID()), 3000);
                         if (Rs2Inventory.wield(staff.getItemID())) {
                             sleepUntil(() -> Rs2Equipment.isWearing(staff.getItemID()), 3000);
@@ -730,6 +842,7 @@ public class HouseTabScript extends Script {
     }
 
     private boolean needsProgressiveBankPrep(HouseTabConfig config) {
+        // Full prep check used when correctness matters more than speed.
         if (!config.progressive()) {
             return false;
         }
@@ -746,6 +859,7 @@ public class HouseTabScript extends Script {
     }
 
     private boolean needsProgressiveBankPrepFast(HouseTabConfig config) {
+        // Fast prep check used in hot loop paths to avoid extra bank/cache work.
         if (!config.progressive()) {
             return false;
         }
@@ -759,6 +873,9 @@ public class HouseTabScript extends Script {
     }
 
     private void enterHouseForProgressivePrep(HouseTabConfig config) {
+        // Some GE routes depend on objects inside a hosted house, such as an
+        // ornate jewellery box. If we are outside and need setup, enter a house
+        // first so we can use that route to the GE.
         Microbot.status = "Entering house for GE setup";
         long now = System.currentTimeMillis();
         if (now - lastProgressivePrepLogAt > 5000) {
@@ -797,6 +914,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isAtGrandExchange() {
+        // Position or booth evidence is enough to know GE setup can begin. When
+        // true, clear any stale inside-house assumption.
         boolean atGrandExchange = isNearGrandExchangeByPosition() || hasVisibleGrandExchangeBankBooth();
         if (atGrandExchange) {
             assumeInsidePlayerHouse = false;
@@ -805,6 +924,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isNearRimmingtonAdvertisementByPosition() {
+        // This is a coarse coordinate box around the Rimmington house portal and
+        // advertisement board. It is used as "outside and near setup area" proof.
         try {
             WorldPoint location = Microbot.getClient().getLocalPlayer().getWorldLocation();
             return location.getPlane() == 0
@@ -818,6 +939,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isInsidePlayerHouse() {
+        // Prefer object evidence first. A POH portal, compatible lectern, or
+        // jewellery box is strong proof that we are inside a player-owned house.
         boolean hasHouseObjectEvidence = false;
         try {
             hasHouseObjectEvidence = Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null
@@ -842,6 +965,9 @@ public class HouseTabScript extends Script {
                 lastInsideHouseDetectedAt = System.currentTimeMillis();
             }
             if (!inside && location != null && assumeInsidePlayerHouse && !hasHouseObjectEvidence) {
+                // Recent stall fix: after leaving a house the old assumption can
+                // outlive the portal object. Normal-world coordinates plus no POH
+                // objects mean the assumption is stale and must be cleared.
                 assumeInsidePlayerHouse = false;
                 lastInsideHouseDetectedAt = 0;
                 resetNoLecternEvidence();
@@ -857,6 +983,9 @@ public class HouseTabScript extends Script {
     }
 
     private boolean recoverBadAdvertisedHouseIfNeeded(HouseTabConfig config, boolean hasCompatibleLectern) {
+        // Hosted houses can load slowly, so one missing-lectern sample is not
+        // enough to blacklist a host. This method waits for repeated evidence
+        // before leaving and selecting the next advertised house.
         if (!config.useAdvertisementBoard() || hasCompatibleLectern) {
             if (hasCompatibleLectern) {
                 resetNoLecternEvidence();
@@ -869,6 +998,9 @@ public class HouseTabScript extends Script {
                 || isTabletCraftingActive()
                 || lecternStudyPending
                 || leaveHousePending) {
+            // Do not judge the house while another action is in progress. For
+            // example, the lectern interface opening means the host is fine even
+            // if object queries are temporarily empty.
             return false;
         }
 
@@ -905,6 +1037,7 @@ public class HouseTabScript extends Script {
     }
 
     private void resetNoLecternEvidence() {
+        // Any strong house/lectern signal invalidates previous "bad host" samples.
         noCompatibleLecternDetectedAt = 0;
         noCompatibleLecternSamples = 0;
     }
@@ -955,6 +1088,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean openGrandExchangeBank() {
+        // Use nearby GE booth objects directly instead of walking/searching. This
+        // method assumes earlier state has already proved we are at the GE.
         if (Rs2Bank.isOpen()) {
             return true;
         }
@@ -980,6 +1115,9 @@ public class HouseTabScript extends Script {
     }
 
     private boolean travelToGrandExchangeFromHouse() {
+        // The fast progressive route uses a hosted-house jewellery box. There are
+        // two possible UI paths: direct "Grand Exchange" action, or opening the
+        // teleport menu and pressing the GE hotkey.
         if (isAtGrandExchange()) {
             return true;
         }
@@ -1020,6 +1158,9 @@ public class HouseTabScript extends Script {
     }
 
     private boolean prepareProgressiveLoadoutAtGrandExchange(HouseTabConfig config) {
+        // GE setup is a contained phase: open bank, deposit clutter, equip staff,
+        // withdraw clay/runes/return tablets, then break a house tablet back to
+        // Rimmington. Each step returns false so the next tick can retry safely.
         if (!config.progressive() || !isAtGrandExchange()) {
             return false;
         }
@@ -1085,6 +1226,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean ensureGrandExchangeBankOpen(String reason) {
+        // Bank can close as side effect of equipment changes. Reopen it before
+        // continuing setup instead of assuming the previous call is still valid.
         if (Rs2Bank.isOpen()) {
             return true;
         }
@@ -1097,6 +1240,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean returnToHousePortalFromGrandExchange() {
+        // Return outside the house portal, not inside a house. That gives the
+        // normal Rimmington/Phials/ad-board loop a known starting point.
         transitionTo(HouseTabState.RETURN_RIMMINGTON, "breaking house tablet from GE");
         if (Rs2Bank.isOpen()) {
             Rs2Bank.closeBank();
@@ -1115,6 +1260,8 @@ public class HouseTabScript extends Script {
     }
 
     public HouseTabScript(HOUSETABS_CONFIG houseTabConfig, String[] playerHouses) {
+        // One worker thread is enough because every loop is sequential. Running
+        // multiple HouseTab ticks at once would race its pending flags.
         this.houseTabConfig = houseTabConfig;
         this.playerHouses = playerHouses;
         scheduledExecutorService = Executors.newScheduledThreadPool(1);
@@ -1125,6 +1272,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean lookForHouseAdvertisementObject(boolean requireUnnotedClay) {
+        // Opening the ad board is only useful when we are outside a house and,
+        // for normal crafting, already have unnoted clay ready to use.
         Widget houseAdvertisementPanel = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE);
         if ((requireUnnotedClay && !hasSoftClay())
                 || Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null) {
@@ -1155,6 +1304,10 @@ public class HouseTabScript extends Script {
     }
 
     private boolean enterAdvertisedHouse(HouseTabConfig config, boolean requireUnnotedClay) {
+        // Hosted-house entry has three paths:
+        // 1. Use the already-open board.
+        // 2. Try the board's Visit-last shortcut.
+        // 3. Open the board and choose a listed host.
         if (!config.useAdvertisementBoard()) {
             return false;
         }
@@ -1171,6 +1324,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean visitLastAdvertisedHouse(boolean requireUnnotedClay) {
+        // Visit-last is fast, but only safe after we have successfully selected
+        // an advertised house earlier in the run.
         if (skipVisitLastHouse || !hasSelectedAdvertisedHouse) {
             return false;
         }
@@ -1198,6 +1353,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean physicallySelectVisitLastHouse() {
+        // The Visit-last option is a right-click menu entry on the board object,
+        // so this path uses clickbox/menu coordinates rather than a simple widget.
         Rs2TileObjectModel board = Microbot.getRs2TileObjectCache().query()
                 .withId(HOUSE_ADVERTISEMENT_OBJECT)
                 .nearest();
@@ -1260,6 +1417,8 @@ public class HouseTabScript extends Script {
     }
 
     private Point getObjectClickPoint(Rs2TileObjectModel object) {
+        // Prefer the object's clickbox center. Canvas location can be less
+        // accurate for large/rotated scene objects.
         java.awt.Shape clickbox = Microbot.getClientThread().runOnClientThreadOptional(object::getClickbox).orElse(null);
         if (clickbox != null) {
             java.awt.Rectangle bounds = clickbox.getBounds();
@@ -1269,6 +1428,8 @@ public class HouseTabScript extends Script {
     }
 
     private Point getMenuEntryClickPoint(String option, String target) {
+        // RuneLite stores menu entries bottom-to-top visually, so the visual row
+        // is derived from the reverse index.
         return Microbot.getClientThread().runOnClientThreadOptional(() -> {
             MenuEntry[] entries = Microbot.getClient().getMenuEntries();
             int menuX = Microbot.getClient().getMenuX();
@@ -1306,6 +1467,8 @@ public class HouseTabScript extends Script {
     }
 
     private String normalizeHouseName(String value) {
+        // Board rows include RuneLite color/format tags. Normalize before
+        // comparing host names from config, known-good cache, or blacklist.
         return stripTags(value).trim();
     }
 
@@ -1318,12 +1481,16 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isAdvertisedHouseBlacklisted(String houseName) {
+        // Blacklist is per script run, not persistent. A host can be bad because
+        // of temporary conditions, so do not save this across plugin restarts.
         return houseName != null
                 && !houseName.isBlank()
                 && blacklistedAdvertisedHouses.contains(houseName.toLowerCase());
     }
 
     private boolean isAdvertisedHouseKnownGood(String houseName) {
+        // Known-good is also per run. It is a small optimization: once a host
+        // proves it has the right lectern, prefer it until it fails.
         return houseName != null
                 && !houseName.isBlank()
                 && knownGoodAdvertisedHouses.contains(houseName.toLowerCase());
@@ -1348,6 +1515,8 @@ public class HouseTabScript extends Script {
     }
 
     private String[] getAdvertisedHouseNames(HouseTabConfig config) {
+        // Optional user preference list. Empty means "use first visible unblocked
+        // host", which is useful when any public lectern house is acceptable.
         String configured = config.advertisedHouses();
         if (configured == null || configured.isBlank()) {
             return new String[0];
@@ -1363,6 +1532,9 @@ public class HouseTabScript extends Script {
     }
 
     private boolean lookForPlayerHouse(HouseTabConfig config, boolean requireUnnotedClay) {
+        // The advertisement board uses parallel child lists: one area for names
+        // and one for Enter House buttons. The same index links a name row to its
+        // corresponding button.
         Widget houseAdvertisementNameWidget = Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE);
         if (houseAdvertisementNameWidget == null || houseAdvertisementNameWidget.getChildren() == null) return false;
         if (requireUnnotedClay && !hasSoftClay())
@@ -1374,6 +1546,8 @@ public class HouseTabScript extends Script {
         int houseIndexToJoin = -1;
 
         for (int i = 0; i < houseAdvertisementNameWidget.getChildren().length; i++) {
+            // Known-good hosts win because they previously showed a compatible
+            // lectern this run.
             String houseName = getAdvertisedHouseName(houseAdvertisementNameWidget, i);
             if (isAdvertisedHouseBlacklisted(houseName)) {
                 continue;
@@ -1386,6 +1560,8 @@ public class HouseTabScript extends Script {
 
         String[] preferredHouses = getAdvertisedHouseNames(config);
         if (houseIndexToJoin < 0 && advertisedHouseSkipCount == 0 && preferredHouses.length > 0) {
+            // Only prefer configured hosts before we start skipping bad houses.
+            // Once recovery begins, progress matters more than preference.
             for (int i = 0; i < houseAdvertisementNameWidget.getChildren().length; i++) {
                 Widget child = houseAdvertisementNameWidget.getChild(i);
                 if (child == null) continue;
@@ -1423,9 +1599,12 @@ public class HouseTabScript extends Script {
             }));
         }
         if (houseIndexToJoin < 0 && !visibleEnterHouseRows.isEmpty()) {
+            // Fallback: choose the first visible, non-blacklisted Enter House row.
             houseIndexToJoin = visibleEnterHouseRows.get(0);
         }
         if (houseIndexToJoin < 0) {
+            // If the board is open but no row is usable, close it. Reopening on
+            // the next loop refreshes the widget tree and listing order.
             Microbot.log("HouseTabScript: advertisement board open but no visible Enter House rows; reopening board next loop.");
             closeHouseAdvertisementInterface();
             return true;
@@ -1434,8 +1613,11 @@ public class HouseTabScript extends Script {
         currentAdvertisedHouseName = getAdvertisedHouseName(houseAdvertisementNameWidget, houseIndexToJoin);
         int buttonRelativeY = houseAdvertisementEnterHouseWidget.getChild(houseIndexToJoin).getRelativeY() + enterHouseButtonHeight;
         if (buttonRelativeY > (mainWindow.getScrollY() + mainWindow.getHeight())) {
+            // The target row exists but is below the visible scroll viewport.
             transitionTo(HouseTabState.SELECT_ADVERTISED_HOUSE, "scrolling to advertised host " + currentAdvertisedHouseName);
             keepExecuteUntil(() -> {
+                // Scroll inside the board panel, not the game world. The random
+                // point keeps the scroll target inside the main board bounds.
                 int x = (int) mainWindow.getBounds().getCenterX() + Rs2Random.between(-50, 50);
                 int y = (int) mainWindow.getBounds().getCenterY() + Rs2Random.between(-50, 50);
                 Microbot.getMouse().scrollDown(new Point(x, y));
@@ -1448,6 +1630,8 @@ public class HouseTabScript extends Script {
                     .click(enterHouseButton.getCanvasLocation());
             sleepUntilOnClientThread(() -> Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null, 18000);
             if (Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null || isInsidePlayerHouse()) {
+                // The inside-house portal is the strongest sign that entry
+                // completed and the POH scene loaded.
                 transitionTo(HouseTabState.WAIT_FOR_HOUSE_SCENE, "entered host " + currentAdvertisedHouseName);
                 skipVisitLastHouse = false;
                 enteredAdvertisedHouse = true;
@@ -1474,6 +1658,8 @@ public class HouseTabScript extends Script {
                     return true;
                 }
                 blacklistCurrentAdvertisedHouse("entry timed out");
+                // A timed-out row may be offline/full/bad. Skip it for this run
+                // and let the next loop pick another listing.
                 advertisedHouseSkipCount++;
                 skipVisitLastHouse = true;
                 hasSelectedAdvertisedHouse = false;
@@ -1486,6 +1672,9 @@ public class HouseTabScript extends Script {
     }
 
     private void closeHouseAdvertisementInterface() {
+        // Escape closes the board cleanly. Resetting lastAdvertisementViewAttemptAt
+        // lets the next loop reopen it immediately instead of waiting for the
+        // normal click throttle.
         if (Microbot.getClient().getWidget(HOUSE_ADVERTISEMENT_NAME_PARENT_INTERFACE) == null) {
             return;
         }
@@ -1495,13 +1684,19 @@ public class HouseTabScript extends Script {
     }
 
     private Integer getHouseLectern() {
+        // Search every supported lectern object, but accept only a lectern that
+        // can craft the currently selected tablet.
         Rs2TileObjectModel lectern = null;
         for (Integer id : lecternToHouseTabButton.keySet()) {
             lectern = Microbot.getRs2TileObjectCache().query().withId(id).nearest();
             if (lectern != null && selectedTablet.supportsLectern(lectern.getId())) break;
+            // A lectern can exist but be the wrong family for the selected tablet
+            // (for example eagle-only vs demon-only). Treat that as no lectern.
             lectern = null;
         }
         if (lectern != null) {
+            // Prefer the tablet enum's known widget id. The map fallback exists
+            // for older code paths where button id was inferred from lectern type.
             lecternTabletWidgetId = selectedTablet.hasKnownWidget()
                     ? selectedTablet.getWidgetId()
                     : lecternToHouseTabButton.get(lectern.getId());
@@ -1512,6 +1707,9 @@ public class HouseTabScript extends Script {
     }
 
     private void lookForLectern(HouseTabConfig config) {
+        // Finding a lectern is separate from opening it. Object queries tell us
+        // whether the house is suitable; widget queries tell us whether "Study"
+        // succeeded and the crafting interface is open.
         if (getHouseLectern() == null) {
             lecternStudyPending = false;
             lecternStudyAttemptedAt = 0;
@@ -1527,6 +1725,8 @@ public class HouseTabScript extends Script {
         }
         markCurrentAdvertisedHouseKnownGood();
         if (!hasSoftClay() || Microbot.getRs2TileObjectCache().query().withId(HOUSE_ADVERTISEMENT_OBJECT).nearest() != null || isTabletCraftingActive())
+            // Do not study the lectern without clay, while outside at the board,
+            // or while a previous craft is still active.
             return;
 
         Widget houseTabInterface = Microbot.getClient().getWidget(lecternTabletWidgetId);
@@ -1547,6 +1747,8 @@ public class HouseTabScript extends Script {
         }
 
         if (lecternStudyPending && System.currentTimeMillis() - lecternStudyAttemptedAt < 8000) {
+            // The click was sent already. Wait for the interface instead of
+            // issuing another Study click every scheduler tick.
             transitionTo(HouseTabState.OPEN_LECTERN, "waiting for lectern interface");
             log.debug("HouseTabScript: waiting for lectern interface.");
             return;
@@ -1564,6 +1766,9 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isTabletCraftingActive() {
+        // Crafting cannot be detected from one signal reliably. The script uses:
+        // recent lectern click, XP/clay progress, and the crafting animation.
+        // This prevents leaving the house during the final tablet or during lag.
         long now = System.currentTimeMillis();
         int unnotedClay = unnotedSoftClayCount();
         boolean recentCraftProgress = now - lastCraftProgressAt < 1800;
@@ -1573,6 +1778,8 @@ public class HouseTabScript extends Script {
         String reason;
         boolean active;
         if (unnotedClay <= 0) {
+            // Zero clay usually means done, but there is a tiny window where the
+            // final craft animation/progress has not fully settled.
             active = recentCraftProgress && animationActive;
             reason = active ? "zero-clay-recent-progress-animation" : "zero-clay-finished";
             logCraftGate(reason, active, unnotedClay, sinceCraftClick, sinceCraftProgress, animationActive);
@@ -1593,6 +1800,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean shouldWaitForFinalTabletCraft() {
+        // When the final clay is consumed, wait briefly for the final animation
+        // to resolve before clicking the house portal.
         long now = System.currentTimeMillis();
         int unnotedClay = unnotedSoftClayCount();
         boolean animationActive = isTabletCraftingAnimationActive();
@@ -1605,12 +1814,16 @@ public class HouseTabScript extends Script {
     }
 
     private boolean isTabletCraftingAnimationActive() {
+        // Animation reads must happen on the client thread. The helper returns
+        // false instead of throwing if the player is not readable.
         return Microbot.getClientThread().runOnClientThreadOptional(() ->
                 Microbot.getClient().getLocalPlayer() != null
                         && Microbot.getClient().getLocalPlayer().getAnimation() == 4068).orElse(false);
     }
 
     private void refreshCraftProgress() {
+        // XP increase or clay decrease proves real progress. That timestamp is
+        // later used by isTabletCraftingActive() to bridge short animation gaps.
         int currentMagicXp = Microbot.getClient().getSkillExperience(Skill.MAGIC);
         int currentUnnotedClay = unnotedSoftClayCount();
         if ((lastObservedMagicXp >= 0 && currentMagicXp > lastObservedMagicXp)
@@ -1628,6 +1841,8 @@ public class HouseTabScript extends Script {
     }
 
     private void logCraftGate(String reason, boolean active, int unnotedClay, long sinceCraftClick, long sinceCraftProgress, boolean animationActive) {
+        // Craft-gate logs are noisy, so only log when the reason changes or at a
+        // low frequency. These logs explain "why didn't it leave yet?"
         if (unnotedClay > 3 && active) {
             return;
         }
@@ -1648,6 +1863,8 @@ public class HouseTabScript extends Script {
     }
 
     public void createHouseTablet(HouseTabConfig config) {
+        // This method assumes the lectern interface is open. It makes sure the
+        // desired tablet and quantity are visible/selected, then clicks Confirm.
         if (!selectedTablet.hasKnownWidget()) {
             stop("Missing widget id for " + selectedTablet.getName());
             return;
@@ -1671,6 +1888,7 @@ public class HouseTabScript extends Script {
         }
 
         if (config.quantityMode() == TabletQuantityMode.MAKE_ONE) {
+            // Test mode: make one tablet, verify output/clay/XP changed, then stop.
             int outputCount = Rs2Inventory.count(selectedTablet.getItemId());
             int clayCount = Rs2Inventory.count(1761);
             Microbot.getMouse().click(houseTabInterface.getCanvasLocation());
@@ -1685,6 +1903,7 @@ public class HouseTabScript extends Script {
         }
 
         if (isTabletCraftingActive()) {
+            // If crafting already started, do not click the widget again.
             transitionTo(HouseTabState.CRAFT_TABLETS, "tablet crafting already active");
             return;
         }
@@ -1694,11 +1913,13 @@ public class HouseTabScript extends Script {
         Microbot.getMouse().click(houseTabInterface.getCanvasLocation());
         sleep(250, 500);
         Rs2Widget.clickWidget(InterfaceID.TeletabsCraftIf.CONFIRM);
-        maybeLecternAntiban();
+        nextCraftingAntibanAt = System.currentTimeMillis() + Rs2Random.between(7000, 16000);
         updateTabletCount();
     }
 
     private boolean ensureSelectedTabletVisible() {
+        // The tablet list can scroll. Widget bounds tell us whether the selected
+        // tablet button is inside the visible viewport.
         return Microbot.getClientThread().runOnClientThreadOptional(() -> {
             Widget target = Microbot.getClient().getWidget(lecternTabletWidgetId);
             Widget viewport = Microbot.getClient().getWidget(InterfaceID.TeletabsCraftIf.TABLETS_INNER);
@@ -1720,6 +1941,7 @@ public class HouseTabScript extends Script {
 
             long now = System.currentTimeMillis();
             if (now - lastLecternScrollAttemptAt < 450) {
+                // Do not spam scroll events; wait for the UI to respond.
                 return false;
             }
             lastLecternScrollAttemptAt = now;
@@ -1739,6 +1961,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean ensureQuantityMode(TabletQuantityMode quantityMode) {
+        // RuneLite widgets can expose text through either name or text depending
+        // on client revision, so quantityWidgetHasText checks both.
         if (confirmedQuantityMode == quantityMode) {
             return true;
         }
@@ -1784,37 +2008,78 @@ public class HouseTabScript extends Script {
                 || expected.equalsIgnoreCase(stripTags(widget.getText()));
     }
 
-    private void maybeLecternAntiban() {
-        lecternCraftActions++;
-        if (Rs2Random.between(1, 100) <= 18) {
-            sleep(250, 850);
+    private void maybeCraftingAntiban(HouseTabSnapshot current) {
+        // Antiban is deliberately opportunistic. It runs only after the current
+        // loop has confirmed crafting is still active and all state-changing
+        // conditions have been checked first.
+        if (current == null
+                || !current.craftingActive
+                || !current.insidePlayerHouse
+                || !current.hasUnnotedClay
+                || !canRunAntibanNow()) {
+            return;
         }
-        if (lecternCraftActions % Rs2Random.between(4, 8) == 0) {
-            Microbot.getMouse().move(new Point(Rs2Random.between(120, 720), Rs2Random.between(120, 460)));
+
+        long now = System.currentTimeMillis();
+        if (now < nextCraftingAntibanAt) {
+            return;
         }
-        if (Rs2Random.between(1, 100) <= 8) {
-            Rs2Camera.setAngle(Rs2Random.between(0, 359), 30);
+
+        nextCraftingAntibanAt = now + Rs2Random.between(8000, 22000);
+        if (Rs2Random.between(1, 100) > 35) {
+            return;
         }
-        maybeAntibanAfterAction("lectern craft");
+
+        lastAntibanActionAt = now;
+        log.debug("HouseTabScript: crafting antiban mouse movement while waiting at lectern.");
+        // Use the shared Rs2Antiban helper rather than raw camera/click actions.
+        // This keeps behavior consistent with other Microbot scripts and avoids
+        // interfering with the lectern widget.
+        Rs2Antiban.moveMouseRandomly();
     }
 
     private void transitionPause(String reason) {
+        // Short human-ish pause after state-changing actions. This is separate
+        // from crafting antiban and can include small camera/mouse variation.
         int pause = Rs2Random.between(320, 860);
         if (Rs2Random.between(1, 100) <= 8) {
             pause += Rs2Random.between(500, 1100);
         }
         log.debug("HouseTabScript: transition pause after " + reason + " for " + pause + "ms.");
         sleep(pause, pause + 80);
-        if (Rs2Random.between(1, 100) <= 12) {
-            Microbot.getMouse().move(new Point(Rs2Random.between(120, 720), Rs2Random.between(120, 460)));
+        if (!isSensitiveMouseTransition(reason) && Rs2Random.between(1, 100) <= 12) {
+            moveMouseRandomlyNatural();
         }
         if (Rs2Random.between(1, 100) <= 5) {
             Rs2Camera.setAngle(Rs2Random.between(0, 359), 30);
         }
-        maybeAntibanTransition(reason);
+        if (!isSensitiveMouseTransition(reason)) {
+            maybeAntibanTransition(reason);
+        }
+    }
+
+    private boolean isSensitiveMouseTransition(String reason) {
+        if (reason == null) {
+            return false;
+        }
+        return reason.equals("visit-last selected")
+                || reason.equals("opening house advertisement")
+                || reason.equals("selecting advertised house")
+                || reason.equals("entered advertised house");
+    }
+
+    private void moveMouseRandomlyNatural() {
+        Point target = new Point(Rs2Random.between(120, 720), Rs2Random.between(120, 460));
+        try {
+            Microbot.naturalMouse.moveTo(target.getX(), target.getY());
+        } catch (Exception ex) {
+            Microbot.getMouse().move(target);
+        }
     }
 
     private void setupAntiban() {
+        // HouseTab uses construction-style antiban defaults, then lowers the
+        // chances so antiban remains subtle around UI-heavy lectern actions.
         Rs2Antiban.resetAntibanSettings();
         Rs2Antiban.antibanSetupTemplates.applyConstructionSetup();
         Rs2AntibanSettings.actionCooldownChance = 0.08;
@@ -1824,6 +2089,8 @@ public class HouseTabScript extends Script {
     }
 
     private void maybeAntibanAfterAction(String reason) {
+        // Run the heavier shared antiban only at action boundaries, not during
+        // every scheduler tick.
         if (!canRunAntibanNow()) {
             return;
         }
@@ -1846,6 +2113,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean canRunAntibanNow() {
+        // Never run antiban while menus/widgets/pending interactions are active.
+        // That is how we avoid breaking state changes or stealing focus.
         return Microbot.isLoggedIn()
                 && !Rs2AntibanSettings.actionCooldownActive
                 && !Rs2AntibanSettings.microBreakActive
@@ -1855,6 +2124,9 @@ public class HouseTabScript extends Script {
     }
 
     public void leaveHouse() {
+        // Only leave when the inventory is finished and crafting is not active.
+        // The portal must be visible; otherwise this method waits for the normal
+        // outside-house flow to take over.
         boolean hasClay = hasSoftClay();
         boolean craftingActive = isTabletCraftingActive();
         boolean portalVisible = Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest() != null;
@@ -1878,6 +2150,8 @@ public class HouseTabScript extends Script {
     }
 
     private void leaveBadAdvertisedHouse(String reason) {
+        // Bad advertised houses are recoverable. Mark/skip the current host and
+        // get back outside so the next loop can choose a different listing.
         lastRecoveryReason = reason + " at " + (currentAdvertisedHouseName == null || currentAdvertisedHouseName.isBlank()
                 ? "advertised house"
                 : currentAdvertisedHouseName);
@@ -1902,6 +2176,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean teleportToHousePortal() {
+        // Breaking a house tablet with "Outside" is the cleanest way to escape a
+        // bad hosted house because it lands near the Rimmington portal/board.
         if (!Rs2Inventory.hasItem(ItemID.POH_TABLET_TELEPORTTOHOUSE)) {
             Microbot.log("HouseTab: no house tablet available for bad-house recovery; falling back to portal.");
             return false;
@@ -1917,6 +2193,8 @@ public class HouseTabScript extends Script {
     }
 
     private void updateLeaveHousePending(boolean portalVisible) {
+        // Portal clicks unload the POH scene asynchronously. Once the portal is
+        // gone, consider the exit resolved and clear stale inside-house state.
         if (!leaveHousePending) {
             return;
         }
@@ -1930,6 +2208,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean leaveHousePortal() {
+        // Leave-house has two click paths: direct object interaction first, then
+        // a physical click fallback if menu invocation fails.
         transitionTo(HouseTabState.LEAVE_HOUSE, "clicking house portal");
         long now = System.currentTimeMillis();
         if (leaveHousePending) {
@@ -1995,6 +2275,8 @@ public class HouseTabScript extends Script {
     }
 
     public boolean unnoteClay() {
+        // Phials converts noted soft clay into unnoted clay outside the Rimmington
+        // portal. This lets the script do many house trips without banking.
         transitionTo(HouseTabState.UNNOTE_CLAY, "using Phials");
         if (hasSoftClay()) {
             phialsUnnotePending = false;
@@ -2050,6 +2332,10 @@ public class HouseTabScript extends Script {
     }
 
     public boolean run(HouseTabConfig config) {
+        // Main scheduled loop. Each pass validates safety, records a heartbeat,
+        // refreshes progress, builds a snapshot, then delegates to progressive or
+        // classic tablet logic. Most actions return immediately and are observed
+        // on a later tick.
         Microbot.log("HouseTabScript: scheduling main loop. progressive=" + config.progressive()
                 + ", configuredTablet=" + config.tablet().getName()
                 + ", staffMode=" + config.useCombinationStaff()
@@ -2060,11 +2346,15 @@ public class HouseTabScript extends Script {
                 debugLoopCount++;
                 boolean shouldLogLoop = debugLoopCount <= 10 || debugLoopCount % 25 == 0;
                 if (!Microbot.isLoggedIn()) {
+                    // Login is controlled by other plugins/break handler. HouseTab
+                    // just waits here rather than trying to click login screens.
                     transitionTo(HouseTabState.VALIDATE_LOGIN, "waiting for Microbot login");
                     if (shouldLogLoop) log.debug("HouseTabScript: waiting for login. loop=" + debugLoopCount);
                     return;
                 }
                 if (!isGameSceneReady()) {
+                    // The game can be logged in while local player/scene objects
+                    // are still null, especially right after hopping or login.
                     transitionTo(HouseTabState.VALIDATE_LOGIN, "waiting for local player scene");
                     if (shouldLogLoop) log.debug("HouseTabScript: waiting for game scene. loop=" + debugLoopCount);
                     return;
@@ -2074,12 +2364,17 @@ public class HouseTabScript extends Script {
                 }
                 if ((Rs2AntibanSettings.actionCooldownActive || Rs2AntibanSettings.microBreakActive)
                         && !canBypassAntibanWait()) {
+                    // Respect antiban pauses unless we are in a state where
+                    // waiting would itself cause spam/recovery problems.
                     return;
                 }
                 ScriptHeartbeatRegistry.recordHeartbeat(this.getClass().getName());
+                // Re-resolve every loop because progressive mode can change the
+                // target tablet immediately after a Magic level-up.
                 selectedTablet = resolveSelectedTablet(config);
                 updatePlanSummary(config);
                 if (startMagicXp < 0 || startMagicLevel < 0) {
+                    // First successful scene-ready loop initializes run counters.
                     resetTracking();
                     Microbot.log("HouseTabScript: tracking initialized. selected=" + selectedTablet.getName()
                             + ", magicLevel=" + startMagicLevel
@@ -2087,6 +2382,8 @@ public class HouseTabScript extends Script {
                 }
                 refreshCraftProgress();
                 HouseTabSnapshot current = snapshot();
+                // The overlay and diagnostics display this string; it is also
+                // useful when the script stops due to missing resources.
                 lastMaterialSummary = HouseTabPlanner.missingMaterials(current, config.useCombinationStaff());
                 maybeDumpDiagnostics(config, current, false);
                 if (config.progressive()) {
@@ -2107,6 +2404,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean canBypassAntibanWait() {
+        // UI/action-resolution states are allowed to keep ticking during antiban
+        // cooldowns so pending clicks can be observed and cleared.
         return currentState == HouseTabState.WAIT_FOR_HOUSE_SCENE
                 || currentState == HouseTabState.OPEN_LECTERN
                 || currentState == HouseTabState.SELECT_TABLET_WIDGET
@@ -2117,6 +2416,8 @@ public class HouseTabScript extends Script {
     }
 
     private boolean ensureTargetWorld(int targetWorld) {
+        // World hopping is treated as a state-machine gate. If we are on the
+        // wrong world, do not run the crafting logic until the hop settles.
         if (targetWorld <= 0) {
             return true;
         }
@@ -2149,6 +2450,9 @@ public class HouseTabScript extends Script {
     }
 
     private void runProgressiveLoop(HouseTabConfig config, HouseTabSnapshot current, boolean shouldLogLoop) {
+        // Progressive mode can change the selected tablet as Magic level rises.
+        // If the current loadout no longer fits, route through GE setup before
+        // returning to normal crafting.
         if (shouldLogLoop) {
             log.debug("HouseTabScript: progressive tick=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
@@ -2184,6 +2488,8 @@ public class HouseTabScript extends Script {
             return;
         }
         if (progressiveBankPrepNeeded && insidePlayerHouse && current.hasUnnotedClay && current.craftingActive) {
+            // Do not interrupt an active inventory just because the next tablet
+            // tier will need setup. Finish the current craft first.
             transitionTo(HouseTabState.CRAFT_TABLETS, "finishing current inventory before setup");
             Microbot.status = "Finishing current inventory before progressive setup";
             updateTabletCount();
@@ -2209,6 +2515,9 @@ public class HouseTabScript extends Script {
     }
 
     private void runTabletCraftingLoop(HouseTabConfig config, HouseTabSnapshot current, boolean shouldLogLoop) {
+        // Shared crafting loop for classic and progressive once the loadout is
+        // valid. It decides between unnoting, entering a house, opening lectern,
+        // crafting, leaving, or stopping for missing materials.
         if (shouldLogLoop) {
             log.debug("HouseTabScript: tablet crafting loop=" + debugLoopCount
                     + " selected=" + selectedTablet.getName()
@@ -2222,6 +2531,8 @@ public class HouseTabScript extends Script {
                 && !hasCompatibleLectern
                 && !current.lecternInterfaceOpen
                 && !current.craftingActive) {
+            // If a hosted house loads but no compatible lectern ever appears,
+            // do not idle forever. Leave and try another host.
             leaveBadAdvertisedHouse("house scene loaded without compatible lectern");
             return;
         }
@@ -2246,6 +2557,8 @@ public class HouseTabScript extends Script {
             return;
         }
         if (isInHouse && !current.hasUnnotedClay) {
+            // No clay inside the house means the current inventory is done. Wait
+            // for any final craft animation, then leave.
             if (shouldWaitForFinalTabletCraft()) {
                 transitionTo(HouseTabState.CRAFT_TABLETS, "waiting for final craft animation");
                 return;
@@ -2267,6 +2580,8 @@ public class HouseTabScript extends Script {
             return;
         }
         if (Microbot.isGainingExp) {
+            // XP gain is a broad "crafting is happening" signal. Avoid clicking
+            // anything while the client reports active XP gain.
             transitionTo(HouseTabState.CRAFT_TABLETS, "gaining Magic XP");
             return;
         }
@@ -2278,11 +2593,14 @@ public class HouseTabScript extends Script {
         }
 
         if (isInHouse) {
+            // Inside a suitable house: either wait for active crafting, open the
+            // lectern, select the tablet, or leave if the inventory is done.
             advertisedHouseSkipCount = 0;
             enteredAdvertisedHouse = false;
             if (current.craftingActive) {
                 transitionTo(HouseTabState.CRAFT_TABLETS, "crafting active");
                 updateTabletCount();
+                maybeCraftingAntiban(current);
                 return;
             }
             transitionTo(hasCompatibleLectern ? HouseTabState.OPEN_LECTERN : HouseTabState.FIND_LECTERN,
@@ -2292,9 +2610,13 @@ public class HouseTabScript extends Script {
             leaveHouse();
         } else if (config.useAdvertisementBoard()
                 && current.housePortalVisible) {
+            // Portal visible while our house-state detector says "outside" is
+            // inconsistent, so route through recovery rather than crafting.
             transitionTo(HouseTabState.RECOVER_BAD_HOUSE, "portal visible without house state");
             leaveBadAdvertisedHouse();
         } else {
+            // Outside-house flow: unnote clay if needed, then enter a hosted,
+            // own, or friend house depending on config.
             if (unnoteClay()) {
                 return;
             }

@@ -3,6 +3,11 @@ package net.runelite.client.plugins.microbot.housetab;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.housetab.enums.HouseTablet;
 
+/*
+ * A snapshot is one read-only picture of the game at a point in time. The
+ * script builds this once per loop and then makes decisions from these fields.
+ * That avoids mixing old and new game-state reads inside one decision.
+ */
 final class HouseTabSnapshot {
     final boolean loggedIn;
     final boolean sceneReady;
@@ -66,6 +71,8 @@ final class HouseTabSnapshot {
     }
 
     String compactDebug() {
+        // Keep live diagnostics short enough for client.log while still showing
+        // the signals that decide state transitions.
         return "world=" + world
                 + " loc=" + (location == null ? "unknown" : location)
                 + " tablet=" + (selectedTablet == null ? "none" : selectedTablet.getName())
