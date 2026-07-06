@@ -35,7 +35,10 @@ public class GildedAltarScript extends Script {
     public static GildedAltarPlayerState state = GildedAltarPlayerState.IDLE;
 
     private boolean inHouse() {
-        return Microbot.getRs2NpcCache().query().withName("Phials").nearestOnClientThread() == null;
+        return Microbot.getRs2NpcCache()
+                .query()
+                .withName("Phials")
+                .nearestOnClientThread() == null;
     }
 
     private boolean hasUnNotedBones() {
