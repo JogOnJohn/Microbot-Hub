@@ -22,6 +22,7 @@ import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
+import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.reflection.Rs2Reflection;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 
@@ -469,7 +470,13 @@ public class AgilityScript extends Script
 			.where(Rs2TileItemModel::isLootAble)
 			.where(item -> item.getWorldLocation() != null && item.getWorldLocation().getPlane() == playerLocation.getPlane())
 			.where(item -> item.getWorldLocation().distanceTo(playerLocation) <= MARK_OF_GRACE_SEARCH_DISTANCE)
-			.where(item -> Rs2Walker.canReach(item.getWorldLocation()))
+			// A mark of grace is a ground item you stand on, so it must be walk-reachable. Rs2Walker.canReach
+			// tests whether a 2x2 area around the pathfinder's endpoint intersects a 4x4 area around the target,
+			// which is collision-blind: for a mark on another rooftop section the partial path stops on our
+			// section a few tiles away and still "intersects", so canReach falsely passes and we loop trying to
+			// loot an unreachable mark. isTileReachable does a real BFS over live collision from the player, so
+			// it only passes for marks we can actually walk to (marks on other sections are picked up on later laps).
+			.where(item -> Rs2Tile.isTileReachable(item.getWorldLocation()))
 			.toList()
 			.stream()
 			.min(Comparator.comparingInt(item -> item.getWorldLocation().distanceTo(playerLocation)))
