@@ -71,6 +71,9 @@ public class AgilityScript extends Script
 	private int pendingMarkOfGraceCount = 0;
 	private long pendingMarkOfGraceStartedAt = 0;
 	private long lastMarkOfGraceScanAt = 0;
+	// Which obstacle index we last ran a mark scan for. When it changes we've moved to a new rooftop
+	// section, so we force a fresh scan (bypassing the throttle) to catch a mark that just spawned there.
+	private int lastMarkScanObstacleIndex = -1;
 	private WorldPoint alchDecisionObstacleLocation = null;
 	private int alchDecisionObstacleId = -1;
 	private boolean alchDecisionShouldAlch = false;
@@ -99,6 +102,7 @@ public class AgilityScript extends Script
 		startPoint = null;
 		initialPlayerLocation = null;
 		currentObstacleIndex = -1;
+		lastMarkScanObstacleIndex = -1;
 		supplyManager.reset();
 		clearPendingMarkOfGrace();
 		markFailureCooldownUntil.clear();
@@ -461,12 +465,15 @@ public class AgilityScript extends Script
 		{
 			if (markPickupResolved())
 			{
+				Microbot.log("Mark of grace: looted at " + pendingMarkOfGraceLocation);
 				clearPendingMarkOfGrace();
 			}
 			else if (System.currentTimeMillis() - pendingMarkOfGraceStartedAt > MARK_OF_GRACE_PICKUP_TIMEOUT)
 			{
 				// Didn't resolve in time — blocklist this tile so we stop thrashing the course loop
 				// on it, and move on. Retried after the cooldown.
+				Microbot.log("Mark of grace: pickup timed out at " + pendingMarkOfGraceLocation
+					+ ", blocklisting for " + (MARK_OF_GRACE_FAILURE_COOLDOWN_MS / 1000) + "s");
 				markFailureCooldownUntil.put(pendingMarkOfGraceLocation,
 					System.currentTimeMillis() + MARK_OF_GRACE_FAILURE_COOLDOWN_MS);
 				clearPendingMarkOfGrace();
@@ -498,7 +505,12 @@ public class AgilityScript extends Script
 		}
 
 		long now = System.currentTimeMillis();
-		if (now - lastMarkOfGraceScanAt < MARK_OF_GRACE_SCAN_INTERVAL_MS)
+		// Force a scan the instant we advance to a new obstacle (we've just climbed onto a new rooftop
+		// section, where a new mark may have spawned) so the 750ms throttle can't suppress the first look
+		// and let the next obstacle fire before we spot the mark — the Seers bank-roof skip.
+		boolean sectionChanged = currentObstacleIndex != lastMarkScanObstacleIndex;
+		lastMarkScanObstacleIndex = currentObstacleIndex;
+		if (!sectionChanged && now - lastMarkOfGraceScanAt < MARK_OF_GRACE_SCAN_INTERVAL_MS)
 		{
 			return false;
 		}
@@ -528,37 +540,43 @@ public class AgilityScript extends Script
 			return false;
 		}
 
-		if (Rs2Player.isMoving() || Rs2Player.isAnimating())
-		{
-			return true;
-		}
-
 		WorldPoint markLocation = markOfGrace.getWorldLocation();
-		var markLocalLocation = markOfGrace.getLocalLocation();
-		if (markLocation == null || markLocalLocation == null)
+		if (markLocation == null)
 		{
 			return false;
 		}
 
-		if (!Rs2Camera.isTileOnScreen(markLocalLocation))
+		// Commit to this mark NOW, before any early-out below. Once pending is set, the pending-mark block
+		// at the top of this method owns the course gate every subsequent tick and keeps the obstacle
+		// handler from walking us off the mark, re-issuing the Take until the inventory count rises or the
+		// 5s timeout blocklists it. Previously, if the player was mid-glide (isMoving, e.g. the bank-roof
+		// landing right after the wall-climb), the tile was off-screen, or the Take menu couldn't be built
+		// on this first look, we returned WITHOUT committing and the very next (throttled) tick let the
+		// obstacle fire — the bank-roof skip that survived the earlier resolve-flicker fix.
+		pendingMarkOfGraceLocation = markLocation;
+		pendingMarkOfGraceCount = Rs2Inventory.itemQuantity(ItemID.GRACE);
+		pendingMarkOfGraceStartedAt = System.currentTimeMillis();
+		Microbot.log("Mark of grace: going for mark at " + markLocation + " (have " + pendingMarkOfGraceCount + ")");
+
+		if (Rs2Player.isMoving() || Rs2Player.isAnimating())
+		{
+			// Let the current movement/animation settle; the pending block drives the Take next tick.
+			return true;
+		}
+
+		var markLocalLocation = markOfGrace.getLocalLocation();
+		if (markLocalLocation != null && !Rs2Camera.isTileOnScreen(markLocalLocation))
 		{
 			Rs2Camera.turnTo(markLocalLocation);
 			sleep(300, 600);
 			return true;
 		}
 
-		int markCount = Rs2Inventory.itemQuantity(ItemID.GRACE);
-		if (!pickupMarkOfGrace(markOfGrace))
-		{
-			return false;
-		}
-		pendingMarkOfGraceLocation = markLocation;
-		pendingMarkOfGraceCount = markCount;
-		pendingMarkOfGraceStartedAt = System.currentTimeMillis();
-
+		pickupMarkOfGrace(markOfGrace);
 		sleepUntil(() -> shuttingDown || markPickupResolved() || Rs2Player.isMoving(), 1800);
 		if (markPickupResolved() || shuttingDown)
 		{
+			Microbot.log("Mark of grace: looted at " + markLocation);
 			clearPendingMarkOfGrace();
 		}
 		return true;
