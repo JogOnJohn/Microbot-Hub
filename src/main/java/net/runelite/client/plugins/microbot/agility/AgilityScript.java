@@ -71,9 +71,17 @@ public class AgilityScript extends Script
 	private int pendingMarkOfGraceCount = 0;
 	private long pendingMarkOfGraceStartedAt = 0;
 	private long lastMarkOfGraceScanAt = 0;
-	// Which obstacle index we last ran a mark scan for. When it changes we've moved to a new rooftop
-	// section, so we force a fresh scan (bypassing the throttle) to catch a mark that just spawned there.
-	private int lastMarkScanObstacleIndex = -1;
+	// Section-change tracking for the mark scan. Right after an obstacle completes, waitForCompletion
+	// returns on the PLANE FLIP while the landing animation is still playing, and for a tick or two the
+	// tile-item/collision state lags — a mark scan in that window misses a mark that's really there
+	// (the Seers bank-roof skip). So until the current section has had one scan from a settled state
+	// (player neither moving nor animating), the next-obstacle speed-click is gated (bounded below).
+	private int lastSettledScanObstacleIndex = -1;
+	private int prevTickObstacleIndex = -1;
+	private long sectionEnteredAt = 0;
+	// Upper bound on the settle gate so a long/stuck animation can never stall the course. A click
+	// issued mid-animation only executes when the animation ends anyway, so the real cost is ~1 tick.
+	private static final long OBSTACLE_SETTLE_GATE_MS = 1500;
 	private WorldPoint alchDecisionObstacleLocation = null;
 	private int alchDecisionObstacleId = -1;
 	private boolean alchDecisionShouldAlch = false;
@@ -102,7 +110,9 @@ public class AgilityScript extends Script
 		startPoint = null;
 		initialPlayerLocation = null;
 		currentObstacleIndex = -1;
-		lastMarkScanObstacleIndex = -1;
+		lastSettledScanObstacleIndex = -1;
+		prevTickObstacleIndex = -1;
+		sectionEnteredAt = 0;
 		supplyManager.reset();
 		clearPendingMarkOfGrace();
 		markFailureCooldownUntil.clear();
@@ -169,6 +179,11 @@ public class AgilityScript extends Script
 
 				boolean hasRequiredLevel = plugin.hasRequiredLevel(courseHandler);
 				currentObstacleIndex = courseHandler.getCurrentObstacleIndex();
+				if (currentObstacleIndex != prevTickObstacleIndex)
+				{
+					prevTickObstacleIndex = currentObstacleIndex;
+					sectionEnteredAt = System.currentTimeMillis();
+				}
 				AgilitySupplyManager.InventorySnapshot inventorySnapshot = supplyManager.createInventorySnapshot();
 				if (supplyManager.handleSummerPies(courseHandler, playerWorldLocation, currentObstacleIndex, inventorySnapshot))
 				{
@@ -229,6 +244,19 @@ public class AgilityScript extends Script
 
 				if (courseHandler.handleCourseActions(playerWorldLocation))
 				{
+					return;
+				}
+
+				// After landing on a new section, give the mark scan one settled look (player idle)
+				// before the next-obstacle speed-click. A scan that runs during the landing animation
+				// can miss a mark that's actually on this roof (plane/tile-item cache lag), and once
+				// the next obstacle fires the mark is lost for the lap — the Seers bank-roof skip.
+				// Bounded by OBSTACLE_SETTLE_GATE_MS so a stuck animation can't stall the course.
+				if (lastSettledScanObstacleIndex != currentObstacleIndex
+					&& (Rs2Player.isMoving() || Rs2Player.isAnimating())
+					&& System.currentTimeMillis() - sectionEnteredAt < OBSTACLE_SETTLE_GATE_MS)
+				{
+					Microbot.log("Early return: Waiting for settled mark scan");
 					return;
 				}
 				final int agilityExp = currentAgilityXp;
@@ -484,9 +512,21 @@ public class AgilityScript extends Script
 			}
 			else
 			{
-				// Idle, mark not yet in the inventory, and not timed out — the "Take" click didn't
-				// land (common on the bank roof right after the wall-climb, when the tile briefly
-				// isn't clickable). Re-issue the pickup and KEEP blocking the course, so the obstacle
+				// Idle and settled — if the mark's tile is no longer walk-reachable we've left its
+				// section (e.g. an obstacle fired before the commit); retrying the Take from here can
+				// never land, so fail fast instead of burning the full pickup timeout on dead clicks.
+				if (!Rs2Tile.isTileReachable(pendingMarkOfGraceLocation))
+				{
+					Microbot.log("Mark of grace: " + pendingMarkOfGraceLocation
+						+ " is no longer reachable, blocklisting for " + (MARK_OF_GRACE_FAILURE_COOLDOWN_MS / 1000) + "s");
+					markFailureCooldownUntil.put(pendingMarkOfGraceLocation,
+						System.currentTimeMillis() + MARK_OF_GRACE_FAILURE_COOLDOWN_MS);
+					clearPendingMarkOfGrace();
+					return false;
+				}
+				// Mark not yet in the inventory and not timed out — the "Take" click didn't land
+				// (common on the bank roof right after the wall-climb, when the tile briefly isn't
+				// clickable). Re-issue the pickup and KEEP blocking the course, so the obstacle
 				// handler doesn't walk us off the mark before we grab it. Bounded by the 5s timeout.
 				retryPendingMarkPickup();
 				return true;
@@ -495,6 +535,8 @@ public class AgilityScript extends Script
 
 		if (Rs2Inventory.isFull() && !Rs2Inventory.contains(ItemID.GRACE))
 		{
+			// Can't loot anyway — release the obstacle settle-gate so it doesn't wait on a scan.
+			lastSettledScanObstacleIndex = currentObstacleIndex;
 			return false;
 		}
 
@@ -505,16 +547,21 @@ public class AgilityScript extends Script
 		}
 
 		long now = System.currentTimeMillis();
-		// Force a scan the instant we advance to a new obstacle (we've just climbed onto a new rooftop
-		// section, where a new mark may have spawned) so the 750ms throttle can't suppress the first look
-		// and let the next obstacle fire before we spot the mark — the Seers bank-roof skip.
-		boolean sectionChanged = currentObstacleIndex != lastMarkScanObstacleIndex;
-		lastMarkScanObstacleIndex = currentObstacleIndex;
-		if (!sectionChanged && now - lastMarkOfGraceScanAt < MARK_OF_GRACE_SCAN_INTERVAL_MS)
+		// Until this section has had one mark scan from a settled state, scan every tick (bypass the
+		// 750ms throttle). Right after landing, plane/tile-item state lags a tick or two, so early scans
+		// can miss a mark that's really there; only a scan with the player fully idle is trusted, and
+		// that settled scan is what releases the obstacle settle-gate in the main loop.
+		boolean settledNow = !Rs2Player.isMoving() && !Rs2Player.isAnimating();
+		boolean sectionNeedsSettledScan = lastSettledScanObstacleIndex != currentObstacleIndex;
+		if (!sectionNeedsSettledScan && now - lastMarkOfGraceScanAt < MARK_OF_GRACE_SCAN_INTERVAL_MS)
 		{
 			return false;
 		}
 		lastMarkOfGraceScanAt = now;
+		if (settledNow)
+		{
+			lastSettledScanObstacleIndex = currentObstacleIndex;
+		}
 
 		Rs2TileItemModel markOfGrace = Microbot.getRs2TileItemCache().query()
 			.fromWorldView()
