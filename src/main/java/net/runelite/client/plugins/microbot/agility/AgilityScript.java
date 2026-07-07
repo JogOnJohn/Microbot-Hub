@@ -477,7 +477,12 @@ public class AgilityScript extends Script
 			}
 			else
 			{
-				clearPendingMarkOfGrace();
+				// Idle, mark not yet in the inventory, and not timed out — the "Take" click didn't
+				// land (common on the bank roof right after the wall-climb, when the tile briefly
+				// isn't clickable). Re-issue the pickup and KEEP blocking the course, so the obstacle
+				// handler doesn't walk us off the mark before we grab it. Bounded by the 5s timeout.
+				retryPendingMarkPickup();
+				return true;
 			}
 		}
 
@@ -572,6 +577,34 @@ public class AgilityScript extends Script
 		pendingMarkOfGraceCount = 0;
 		pendingMarkOfGraceStartedAt = 0;
 		lastMarkOfGraceScanAt = 0;
+	}
+
+	// Re-issue the "Take" on the currently-pending mark. Used to keep retrying a mark we've committed
+	// to (so the course doesn't walk off it) when the first click didn't land. The short sleepUntil
+	// throttles the retries so we don't spam clicks; the overall attempt is bounded by the 5s timeout.
+	private void retryPendingMarkPickup()
+	{
+		if (pendingMarkOfGraceLocation == null)
+		{
+			return;
+		}
+		Rs2TileItemModel mark = Microbot.getRs2TileItemCache().query()
+			.fromWorldView()
+			.withId(ItemID.GRACE)
+			.where(Rs2TileItemModel::isLootAble)
+			.where(item -> pendingMarkOfGraceLocation.equals(item.getWorldLocation()))
+			.first();
+		if (mark == null || mark.getLocalLocation() == null)
+		{
+			return;
+		}
+		if (!Rs2Camera.isTileOnScreen(mark.getLocalLocation()))
+		{
+			Rs2Camera.turnTo(mark.getLocalLocation());
+			return;
+		}
+		pickupMarkOfGrace(mark);
+		sleepUntil(() -> shuttingDown || markPickupResolved() || Rs2Player.isMoving(), 1200);
 	}
 
 	private boolean isMarkOnCooldown(WorldPoint markLocation)
