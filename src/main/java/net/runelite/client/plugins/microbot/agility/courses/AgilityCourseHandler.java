@@ -234,6 +234,15 @@ public interface AgilityCourseHandler
 			return false;
 		}
 
+		// If the first obstacle is already reachable, engage it instead of webwalking back to the exact
+		// start tile. The webwalker cold-starts the pathfinder (~2s) and can settle a few tiles short,
+		// which both stalls (see SeersCourse) and adds a noticeable click delay on every lap reset.
+		// Letting the main loop click the reachable obstacle uses a direct minimap click — no pathfinder.
+		if (getCurrentObstacle() != null)
+		{
+			return false;
+		}
+
 		if (playerWorldLocation.distanceTo(getStartPoint()) > 12)
 		{
 			Microbot.log("Going back to course's starting point");
