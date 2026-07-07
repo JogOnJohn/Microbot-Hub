@@ -32,7 +32,9 @@ import java.awt.Rectangle;
 import java.awt.EventQueue;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -59,6 +61,11 @@ public class AgilityScript extends Script
 	private static final long MARK_OF_GRACE_SCAN_INTERVAL_MS = 750;
 	private static final int MARK_OF_GRACE_SEARCH_DISTANCE = 30;
 	private static final int MARK_OF_GRACE_PICKUP_TIMEOUT = 5000;
+	// When a mark's pickup doesn't resolve in time, blocklist that exact tile for a while so the run
+	// doesn't keep bouncing out of the course loop to retry the same un-grabbable mark. It's retried
+	// after the cooldown (usually the next lap), matching the "eventually gets it" behaviour.
+	private static final long MARK_OF_GRACE_FAILURE_COOLDOWN_MS = 20000;
+	private final Map<WorldPoint, Long> markFailureCooldownUntil = new HashMap<>();
 	private volatile int currentObstacleIndex = -1;
 	private WorldPoint pendingMarkOfGraceLocation = null;
 	private int pendingMarkOfGraceCount = 0;
@@ -94,6 +101,7 @@ public class AgilityScript extends Script
 		currentObstacleIndex = -1;
 		supplyManager.reset();
 		clearPendingMarkOfGrace();
+		markFailureCooldownUntil.clear();
 		clearAlchDecision();
 
 		if (mainScheduledFuture != null && !mainScheduledFuture.isDone())
@@ -451,8 +459,16 @@ public class AgilityScript extends Script
 
 		if (pendingMarkOfGraceLocation != null)
 		{
-			if (markPickupResolved() || System.currentTimeMillis() - pendingMarkOfGraceStartedAt > MARK_OF_GRACE_PICKUP_TIMEOUT)
+			if (markPickupResolved())
 			{
+				clearPendingMarkOfGrace();
+			}
+			else if (System.currentTimeMillis() - pendingMarkOfGraceStartedAt > MARK_OF_GRACE_PICKUP_TIMEOUT)
+			{
+				// Didn't resolve in time — blocklist this tile so we stop thrashing the course loop
+				// on it, and move on. Retried after the cooldown.
+				markFailureCooldownUntil.put(pendingMarkOfGraceLocation,
+					System.currentTimeMillis() + MARK_OF_GRACE_FAILURE_COOLDOWN_MS);
 				clearPendingMarkOfGrace();
 			}
 			else if (Rs2Player.isMoving() || Rs2Player.isAnimating())
@@ -489,6 +505,7 @@ public class AgilityScript extends Script
 			.where(Rs2TileItemModel::isLootAble)
 			.where(item -> item.getWorldLocation() != null && item.getWorldLocation().getPlane() == playerLocation.getPlane())
 			.where(item -> item.getWorldLocation().distanceTo(playerLocation) <= MARK_OF_GRACE_SEARCH_DISTANCE)
+			.where(item -> !isMarkOnCooldown(item.getWorldLocation()))
 			// A mark of grace is a ground item you stand on, so it must be walk-reachable. Rs2Walker.canReach
 			// tests whether a 2x2 area around the pathfinder's endpoint intersects a 4x4 area around the target,
 			// which is collision-blind: for a mark on another rooftop section the partial path stops on our
@@ -555,6 +572,21 @@ public class AgilityScript extends Script
 		pendingMarkOfGraceCount = 0;
 		pendingMarkOfGraceStartedAt = 0;
 		lastMarkOfGraceScanAt = 0;
+	}
+
+	private boolean isMarkOnCooldown(WorldPoint markLocation)
+	{
+		Long until = markFailureCooldownUntil.get(markLocation);
+		if (until == null)
+		{
+			return false;
+		}
+		if (System.currentTimeMillis() >= until)
+		{
+			markFailureCooldownUntil.remove(markLocation);
+			return false;
+		}
+		return true;
 	}
 
 	private boolean hasLootableMarkAt(WorldPoint markLocation)
