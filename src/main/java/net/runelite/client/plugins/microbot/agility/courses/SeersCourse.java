@@ -50,6 +50,15 @@ public class SeersCourse implements AgilityCourseHandler
 		{
 			return false;
 		}
+		// If the wall-climb (or any obstacle) is already reachable, start the lap instead of walking
+		// to the exact start tile. The webwalker sometimes settles a few tiles short of the start
+		// point; without this guard the script bounces forever between "Going back to course's
+		// starting point" and "No agility obstacle found". Letting the main loop engage the reachable
+		// obstacle also avoids a slow full webwalk on the short final approach.
+		if (getCurrentObstacle() != null)
+		{
+			return false;
+		}
 
 		if (getVarbitValue(VarbitID.KANDARIN_DIARY_HARD_COMPLETE) == 1
 			&& Rs2Magic.hasRequiredRunes(Rs2Spells.CAMELOT_TELEPORT)
