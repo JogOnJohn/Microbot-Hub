@@ -50,6 +50,12 @@ public class AgilityScript extends Script
 	private AgilityCourse activeCourse = null;
 	private AgilityCourseHandler activeHandler = null;
 	private static final long MAIN_LOOP_DELAY_MS = 250;
+	// Multi-plane rooftop courses (e.g. Seers) briefly have no interactable obstacle on the player's
+	// plane during the animation/plane transition after an obstacle, and obstacle objects flicker in
+	// and out of the scene cache. Re-scan a few times before concluding there is none, so a transient
+	// miss doesn't bounce us into "No agility obstacle found" / walk-back-to-start.
+	private static final int OBSTACLE_RESCAN_ATTEMPTS = 3;
+	private static final long OBSTACLE_RESCAN_DELAY_MS = 300;
 	private static final long MARK_OF_GRACE_SCAN_INTERVAL_MS = 750;
 	private static final int MARK_OF_GRACE_SEARCH_DISTANCE = 30;
 	private static final int MARK_OF_GRACE_PICKUP_TIMEOUT = 5000;
@@ -216,6 +222,19 @@ public class AgilityScript extends Script
 				final int agilityExp = currentAgilityXp;
 
 				TileObject gameObject = courseHandler.getCurrentObstacle();
+
+				// The next obstacle is often not yet interactable for a moment (plane transition /
+				// scene flicker). Give it a few short re-scans before giving up, rather than logging
+				// "No agility obstacle found" and letting the loop fall through to walk-back recovery.
+				for (int attempt = 0; gameObject == null && attempt < OBSTACLE_RESCAN_ATTEMPTS; attempt++)
+				{
+					sleep((int) OBSTACLE_RESCAN_DELAY_MS);
+					if (!super.run() || !Microbot.isLoggedIn())
+					{
+						return;
+					}
+					gameObject = courseHandler.getCurrentObstacle();
+				}
 
 				if (gameObject == null)
 				{
