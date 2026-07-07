@@ -566,9 +566,14 @@ public class AgilityScript extends Script
 
 	private boolean markPickupResolved()
 	{
+		// The only reliable "we actually looted it" signal is the inventory Mark of grace count going up.
+		// We used to also treat "mark no longer on the ground" as resolved, but the rooftop ground-item
+		// cache briefly drops items during the plane-transition/walk right after a "Take" (most visible on
+		// the Seers bank roof): that flicker cleared the pending mark before we'd grabbed it, which released
+		// the obstacle handler and let it click the next gap — skipping the mark. A genuinely despawned mark
+		// is handled instead by the MARK_OF_GRACE_PICKUP_TIMEOUT (5s) blocklist path.
 		return pendingMarkOfGraceLocation != null
-			&& (Rs2Inventory.itemQuantity(ItemID.GRACE) > pendingMarkOfGraceCount
-			|| !hasLootableMarkAt(pendingMarkOfGraceLocation));
+			&& Rs2Inventory.itemQuantity(ItemID.GRACE) > pendingMarkOfGraceCount;
 	}
 
 	private void clearPendingMarkOfGrace()
@@ -620,16 +625,6 @@ public class AgilityScript extends Script
 			return false;
 		}
 		return true;
-	}
-
-	private boolean hasLootableMarkAt(WorldPoint markLocation)
-	{
-		return Microbot.getRs2TileItemCache().query()
-			.fromWorldView()
-			.withId(ItemID.GRACE)
-			.where(Rs2TileItemModel::isLootAble)
-			.where(item -> markLocation.equals(item.getWorldLocation()))
-			.first() != null;
 	}
 
 	private boolean pickupMarkOfGrace(Rs2TileItemModel markOfGrace)
