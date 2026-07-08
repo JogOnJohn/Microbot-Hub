@@ -512,10 +512,10 @@ public class AgilityScript extends Script
 			}
 			else
 			{
-				// Idle and settled — if the mark's tile is no longer walk-reachable we've left its
+				// Idle and settled — if the mark is no longer walk-reachable we've left its
 				// section (e.g. an obstacle fired before the commit); retrying the Take from here can
 				// never land, so fail fast instead of burning the full pickup timeout on dead clicks.
-				if (!Rs2Tile.isTileReachable(pendingMarkOfGraceLocation))
+				if (!canWalkToMark(pendingMarkOfGraceLocation))
 				{
 					Microbot.log("Mark of grace: " + pendingMarkOfGraceLocation
 						+ " is no longer reachable, blocklisting for " + (MARK_OF_GRACE_FAILURE_COOLDOWN_MS / 1000) + "s");
@@ -570,13 +570,14 @@ public class AgilityScript extends Script
 			.where(item -> item.getWorldLocation() != null && item.getWorldLocation().getPlane() == playerLocation.getPlane())
 			.where(item -> item.getWorldLocation().distanceTo(playerLocation) <= MARK_OF_GRACE_SEARCH_DISTANCE)
 			.where(item -> !isMarkOnCooldown(item.getWorldLocation()))
-			// A mark of grace is a ground item you stand on, so it must be walk-reachable. Rs2Walker.canReach
-			// tests whether a 2x2 area around the pathfinder's endpoint intersects a 4x4 area around the target,
-			// which is collision-blind: for a mark on another rooftop section the partial path stops on our
-			// section a few tiles away and still "intersects", so canReach falsely passes and we loop trying to
-			// loot an unreachable mark. isTileReachable does a real BFS over live collision from the player, so
-			// it only passes for marks we can actually walk to (marks on other sections are picked up on later laps).
-			.where(item -> Rs2Tile.isTileReachable(item.getWorldLocation()))
+			// A mark of grace must be walk-reachable. Rs2Walker.canReach tests whether a 2x2 area around
+			// the pathfinder's endpoint intersects a 4x4 area around the target, which is collision-blind:
+			// for a mark on another rooftop section the partial path stops on our section a few tiles away
+			// and still "intersects", so canReach falsely passes and we loop trying to loot an unreachable
+			// mark. canWalkToMark does a real BFS over live collision from the player (mark tile or a
+			// cardinal neighbour, for marks on collision-blocked furniture like the Pollnivneach tables),
+			// so it only passes for marks we can actually loot (other sections are picked up on later laps).
+			.where(item -> canWalkToMark(item.getWorldLocation()))
 			.toList()
 			.stream()
 			.min(Comparator.comparingInt(item -> item.getWorldLocation().distanceTo(playerLocation)))
@@ -675,6 +676,22 @@ public class AgilityScript extends Script
 		}
 		pickupMarkOfGrace(mark);
 		sleepUntil(() -> shuttingDown || markPickupResolved() || Rs2Player.isMoving(), 1200);
+	}
+
+	// A mark is lootable if we can walk onto its tile, OR onto a cardinal neighbour: marks can spawn
+	// on collision-blocked furniture (e.g. the Pollnivneach market-stall table, object 602 at
+	// 3359,2983,2) where the tile itself is never walkable but the game loots from the tile beside it.
+	// Marks on other rooftop sections stay filtered because their neighbours are unreachable too.
+	private boolean canWalkToMark(WorldPoint markLocation)
+	{
+		if (Rs2Tile.isTileReachable(markLocation))
+		{
+			return true;
+		}
+		return Rs2Tile.isTileReachable(markLocation.dx(1))
+			|| Rs2Tile.isTileReachable(markLocation.dx(-1))
+			|| Rs2Tile.isTileReachable(markLocation.dy(1))
+			|| Rs2Tile.isTileReachable(markLocation.dy(-1));
 	}
 
 	private boolean isMarkOnCooldown(WorldPoint markLocation)
