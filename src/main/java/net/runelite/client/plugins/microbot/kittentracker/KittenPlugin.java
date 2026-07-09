@@ -1174,7 +1174,8 @@ public class KittenPlugin extends Plugin {
         if (follower == null) {
             return false;
         }
-        WorldPoint followerLocation = follower.getWorldLocation();
+        // Actor location reads assert the client thread; this polls on the blocking-event thread.
+        WorldPoint followerLocation = clientThread.invoke(follower::getWorldLocation);
         WorldPoint playerLocation = clientThread.invoke(() ->
                 client.getLocalPlayer() != null ? client.getLocalPlayer().getWorldLocation() : null);
         return followerLocation != null && playerLocation != null
@@ -1212,7 +1213,8 @@ public class KittenPlugin extends Plugin {
         // kitten stranded on another rooftop section still read as "reachable" and got spam-clicked.
         // Rs2Tile.isTileReachable BFSes from the PLAYER over live collision, answering the question
         // that actually matters: can we walk to the kitten from where we stand?
-        WorldPoint kittenLocation = kitten.getWorldLocation();
+        // NPC.getWorldLocation() asserts the client thread, and this runs on the blocking-event thread.
+        WorldPoint kittenLocation = clientThread.invoke(kitten::getWorldLocation);
         boolean reachable = kittenLocation != null && Rs2Tile.isTileReachable(kittenLocation);
         Microbot.log("[KittenTracker] Kitten reachable check result=" + reachable
                 + ", kittenLocation=" + kittenLocation

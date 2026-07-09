@@ -37,6 +37,21 @@ public class KittenAttentionEvent implements BlockingEvent
     public boolean execute()
     {
         long start = System.currentTimeMillis();
+        try {
+            return doExecute(start);
+        } catch (Exception ex) {
+            // An exception escaping execute() skips every backoff path, and the blocking-event
+            // manager re-validates immediately — a tight error loop firing several times a second
+            // (seen live with "must be called on client thread"). Convert any unexpected failure
+            // into the normal backoff so the loop can never happen again.
+            Microbot.log("[KittenTracker] Attention event error: " + ex);
+            kittenPlugin.startKittenInteractionBackoff("unexpected attention error: " + ex.getMessage());
+            return true;
+        }
+    }
+
+    private boolean doExecute(long start)
+    {
         Microbot.log("[KittenTracker] Attention event executing");
         NPC kitten = kittenPlugin.getKittenFollower();
         if (kitten == null) {
