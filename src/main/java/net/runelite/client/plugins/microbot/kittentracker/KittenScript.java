@@ -2,6 +2,7 @@
 package net.runelite.client.plugins.microbot.kittentracker;
 
 import net.runelite.api.gameval.ItemID;
+import net.runelite.api.NPC;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
@@ -12,7 +13,8 @@ public class KittenScript extends Script {
 
     private KittenPlugin kittenPlugin;
 
-    public boolean run(KittenConfig config) {
+    public boolean run(KittenConfig config, KittenPlugin kittenPlugin) {
+        this.kittenPlugin = kittenPlugin;
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 if (!Microbot.isLoggedIn()) return;
@@ -31,7 +33,7 @@ public class KittenScript extends Script {
 
     private void handleKittenNeeds(KittenConfig config) {
         if (config.kittenHungryOverlay() 
-            && Rs2Inventory.contains(ItemID.TBWT_RAW_KARAMBWANJI)
+            && kittenPlugin.getAvailableKittenFoodId() != -1
             && (KittenPlugin.HUNGRY_FIRST_WARNING_TIME_LEFT_IN_SECONDS * 1000) >= kittenPlugin.getTimeBeforeHungry()) {
             feedKitten();
         }
@@ -43,12 +45,19 @@ public class KittenScript extends Script {
     }
 
     private void feedKitten() {
-        Microbot.getRs2NpcCache().query().withName("Kitten").toListOnClientThread().stream().findFirst().ifPresent(kitten -> Rs2Inventory.useItemOnNpc(ItemID.TBWT_RAW_KARAMBWANJI, kitten.getNpc()));
+        NPC kitten = kittenPlugin.getKittenFollower();
+        int foodId = kittenPlugin.getAvailableKittenFoodId();
+        if (kitten != null && foodId != -1) {
+            Rs2Inventory.useItemOnNpc(foodId, kitten);
+        }
         sleep(1000, 2000);
     }
 
     private void giveKittenAttention() {
-        Microbot.getRs2NpcCache().query().withName("Kitten").toListOnClientThread().stream().findFirst().ifPresent(kitten -> Rs2Inventory.useItemOnNpc(ItemID.BALL_OF_WOOL, kitten.getNpc()));
+        NPC kitten = kittenPlugin.getKittenFollower();
+        if (kitten != null) {
+            Rs2Inventory.useItemOnNpc(ItemID.BALL_OF_WOOL, kitten);
+        }
         sleep(1000, 2000);
     }
 

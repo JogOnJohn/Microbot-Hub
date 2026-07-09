@@ -28,7 +28,9 @@ package net.runelite.client.plugins.microbot.kittentracker;
 import com.google.inject.Provides;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
+import net.runelite.api.ItemID;
 import net.runelite.api.events.*;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetID;
 import net.runelite.client.Notifier;
@@ -41,6 +43,11 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.PluginConstants;
+import net.runelite.api.coords.WorldPoint;
+import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
+import net.runelite.client.plugins.microbot.util.Global;
+import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
+import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.ui.overlay.infobox.InfoBoxManager;
@@ -71,7 +78,7 @@ import java.util.List;
         isExternal = PluginConstants.IS_EXTERNAL
 )
 public class KittenPlugin extends Plugin {
-    public static final String version = "1.3.1";
+    public static final String version = "1.3.7";
     private static final int VAR_PLAYER_FOLLOWER = 447;
     private static final int WIDGET_ID_DIALOG_NOTIFICATION_GROUP_ID = 229;
     private static final int WIDGET_ID_DIALOG_PLAYER_TEXT = 6;
@@ -254,16 +261,20 @@ public class KittenPlugin extends Plugin {
 
     @Override
     public void startUp() {
+        Microbot.log("[KittenTracker] Starting plugin version " + version);
         clientThread.invokeLater(this::checkForFollower);
         previousFollowerId = config.felineId();
+        Microbot.log("[KittenTracker] Previous saved feline id=" + previousFollowerId);
         overlayManager.add(overlay);
-        script.run(config);
+        script.run(config, this);
         Microbot.getBlockingEventManager().add(kittenAttentionEvent);
         Microbot.getBlockingEventManager().add(feedKittenEvent);
+        Microbot.log("[KittenTracker] Registered kitten attention/feed blocking events");
     }
 
     @Override
     protected void shutDown() {
+        Microbot.log("[KittenTracker] Shutting down plugin");
         overlayManager.remove(overlay);
         byeFollower();
         Microbot.getBlockingEventManager().remove(kittenAttentionEvent);
@@ -273,11 +284,18 @@ public class KittenPlugin extends Plugin {
 
     private void checkForFollower() {
         if (GameState.LOGGED_IN != client.getGameState()) {
+            Microbot.log("[KittenTracker] Skipping follower check; gameState=" + client.getGameState());
             return;
         }
 
         if (playerHasFollower()) {
-            newFollower();
+            followerID = getCurrentFollowerId();
+            Microbot.log("[KittenTracker] Startup follower detected; followerId=" + followerID);
+            if (0 < followerID) {
+                newFollower();
+            }
+        } else {
+            Microbot.log("[KittenTracker] No follower detected at startup");
         }
     }
 
@@ -295,10 +313,13 @@ public class KittenPlugin extends Plugin {
     }
 
     private void checkForNewFollower() {
-        followerID = getCurrentFollowerId();
-        if (0 < followerID) // Varbit needs to fill up first after logging in
+        int currentFollowerId = getCurrentFollowerId();
+        if (0 < currentFollowerId) // Varbit needs to fill up first after logging in
         {
-            previousFollowerId = followerID; // config.felineId();
+            previousFollowerId = followerID;
+            followerID = currentFollowerId;
+            Microbot.log("[KittenTracker] Follower changed; previousFollowerId=" + previousFollowerId
+                    + ", currentFollowerId=" + followerID);
             newFollower();
         }
     }
@@ -313,6 +334,7 @@ public class KittenPlugin extends Plugin {
         attentionNotificationSend = false;
         hungryNotificationSend = false;
         followerKind = FollowerKind.getFromFollowerId(followerID);
+        Microbot.log("[KittenTracker] Classified follower; followerId=" + followerID + ", kind=" + followerKind);
 
         switch (followerKind) {
             case KITTEN:
@@ -366,6 +388,7 @@ public class KittenPlugin extends Plugin {
     }
 
     private void byeFollower() {
+        Microbot.log("[KittenTracker] Follower removed; followerId=" + followerID + ", kind=" + followerKind);
         switch (followerKind) {
             case KITTEN:
                 saveGrowthProgress();
@@ -1097,6 +1120,141 @@ public class KittenPlugin extends Plugin {
 
     public boolean playerHasFollower() {
         return 0 < (client.getVarpValue(VAR_PLAYER_FOLLOWER));
+    }
+
+    public NPC getKittenFollower() {
+        long start = System.currentTimeMillis();
+        NPC follower = clientThread.invoke(client::getFollower);
+        if (follower == null || !isKitten()) {
+            Microbot.log("[KittenTracker] Kitten follower lookup failed; followerPresent=" + (follower != null)
+                    + ", trackedFollowerId=" + followerID + ", kind=" + followerKind
+                    + ", elapsedMs=" + (System.currentTimeMillis() - start));
+            return null;
+        }
+
+        Microbot.log("[KittenTracker] Kitten follower lookup succeeded; trackedFollowerId=" + followerID
+                + ", elapsedMs=" + (System.currentTimeMillis() - start));
+        return follower;
+    }
+
+    public boolean callFollowerToPlayer() {
+        long start = System.currentTimeMillis();
+        Microbot.log("[KittenTracker] Calling follower; switching to worn equipment tab");
+        boolean switchedToEquipment = Rs2Tab.switchTo(InterfaceTab.EQUIPMENT);
+        Microbot.log("[KittenTracker] Worn equipment tab switch result=" + switchedToEquipment
+                + ", currentTab=" + Rs2Tab.getCurrentTab()
+                + ", elapsedMs=" + (System.currentTimeMillis() - start));
+        if (!switchedToEquipment) {
+            switchBackToInventoryAfterFollowerCall(start);
+            return false;
+        }
+
+        boolean clickedCallFollower = Rs2Widget.clickWidget(InterfaceID.Wornitems.CALL_FOLLOWER);
+        Microbot.log("[KittenTracker] Call follower widget click result=" + clickedCallFollower
+                + ", widgetId=" + InterfaceID.Wornitems.CALL_FOLLOWER
+                + ", elapsedMs=" + (System.currentTimeMillis() - start));
+
+        // The click alone proves nothing: mid-course there may be no valid tile beside the player to
+        // place the pet on, and the game just ignores the call. Success = the kitten actually standing
+        // near us and walk-reachable within a few ticks.
+        boolean followerArrived = false;
+        if (clickedCallFollower) {
+            followerArrived = Global.sleepUntil(this::isFollowerBesidePlayer, 3000);
+        }
+        Microbot.log("[KittenTracker] Call follower arrival verified=" + followerArrived
+                + ", elapsedMs=" + (System.currentTimeMillis() - start));
+
+        switchBackToInventoryAfterFollowerCall(start);
+        return clickedCallFollower && followerArrived;
+    }
+
+    /** Quiet check polled by sleepUntil (no logging): follower within 3 tiles and walk-reachable. */
+    private boolean isFollowerBesidePlayer() {
+        NPC follower = clientThread.invoke(client::getFollower);
+        if (follower == null) {
+            return false;
+        }
+        WorldPoint followerLocation = follower.getWorldLocation();
+        WorldPoint playerLocation = clientThread.invoke(() ->
+                client.getLocalPlayer() != null ? client.getLocalPlayer().getWorldLocation() : null);
+        return followerLocation != null && playerLocation != null
+                && playerLocation.distanceTo(followerLocation) <= 3
+                && Rs2Tile.isTileReachable(followerLocation);
+    }
+
+    // When a kitten interaction cycle fails outright (kitten unreachable and Call follower couldn't
+    // land it beside us — e.g. stranded on another rooftop section mid-agility), suppress both
+    // blocking events for a while instead of hammering tab-switches and dead clicks every cycle.
+    // Hunger/attention timers run in minutes, so a short backoff costs nothing; the kitten catches
+    // up (or the call succeeds) once the player is somewhere the pet can be placed.
+    public static final long KITTEN_INTERACTION_BACKOFF_MS = 30_000;
+    private long kittenInteractionBackoffUntil = 0;
+
+    public boolean isKittenInteractionOnBackoff() {
+        return System.currentTimeMillis() < kittenInteractionBackoffUntil;
+    }
+
+    public void startKittenInteractionBackoff(String reason) {
+        kittenInteractionBackoffUntil = System.currentTimeMillis() + KITTEN_INTERACTION_BACKOFF_MS;
+        Microbot.log("[KittenTracker] Backing off kitten interactions for "
+                + (KITTEN_INTERACTION_BACKOFF_MS / 1000) + "s; reason=" + reason);
+    }
+
+    public boolean isKittenReachable(NPC kitten) {
+        long start = System.currentTimeMillis();
+        if (kitten == null) {
+            Microbot.log("[KittenTracker] Kitten reachable check failed; kitten=null");
+            return false;
+        }
+
+        // IEntity.isReachable() BFSes from the TARGET tile and then asks whether the target is in the
+        // resulting set — trivially true for anything in-scene on the current plane, which is why a
+        // kitten stranded on another rooftop section still read as "reachable" and got spam-clicked.
+        // Rs2Tile.isTileReachable BFSes from the PLAYER over live collision, answering the question
+        // that actually matters: can we walk to the kitten from where we stand?
+        WorldPoint kittenLocation = kitten.getWorldLocation();
+        boolean reachable = kittenLocation != null && Rs2Tile.isTileReachable(kittenLocation);
+        Microbot.log("[KittenTracker] Kitten reachable check result=" + reachable
+                + ", kittenLocation=" + kittenLocation
+                + ", elapsedMs=" + (System.currentTimeMillis() - start));
+        return reachable;
+    }
+
+    private void switchBackToInventoryAfterFollowerCall(long start) {
+        Microbot.log("[KittenTracker] Switching back to inventory tab after follower call");
+        boolean switchedToInventory = Rs2Tab.switchTo(InterfaceTab.INVENTORY);
+        Microbot.log("[KittenTracker] Inventory tab switch result=" + switchedToInventory
+                + ", currentTab=" + Rs2Tab.getCurrentTab()
+                + ", elapsedMs=" + (System.currentTimeMillis() - start));
+    }
+
+    public int getAvailableKittenFoodId() {
+        int[] foodIds = {
+                ItemID.TROUT,
+                ItemID.SALMON,
+                ItemID.RAW_KARAMBWANJI
+        };
+
+        for (int foodId : foodIds) {
+            if (net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory.contains(foodId)) {
+                return foodId;
+            }
+        }
+
+        return -1;
+    }
+
+    public String describeKittenFood(int foodId) {
+        switch (foodId) {
+            case ItemID.TROUT:
+                return "Trout";
+            case ItemID.SALMON:
+                return "Salmon";
+            case ItemID.RAW_KARAMBWANJI:
+                return "Raw karambwanji";
+            default:
+                return "unknown(" + foodId + ")";
+        }
     }
 
     public boolean isKitten() {
