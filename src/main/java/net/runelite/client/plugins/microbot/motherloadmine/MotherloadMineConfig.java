@@ -106,7 +106,7 @@ public interface MotherloadMineConfig extends Config
 	@ConfigItem(
 		keyName = repairBothWheels,
 		name = "Repair Both Waterwheels",
-		description = "Repair every broken waterwheel strut instead of stopping once a single wheel is running",
+		description = "When the water stops (both struts broken), repair both struts instead of only one",
 		position = 5,
 		section = generalSection
 	)

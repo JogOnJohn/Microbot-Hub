@@ -92,6 +92,7 @@ public class MotherloadMineScript extends Script
 
 	private boolean shouldEmptySack = false;
 	private boolean shouldRepairWaterwheel = false;
+	private boolean waterwheelRepairInProgress = false;
 	private boolean emptySackWorkflowActive = false;
 	private long idleSince = 0;
 	private int idleThreshold = 0;
@@ -124,6 +125,7 @@ public class MotherloadMineScript extends Script
         lastLoggedStatus = null;
         shouldEmptySack = false;
 		shouldRepairWaterwheel = false;
+		waterwheelRepairInProgress = false;
 		emptySackWorkflowActive = false;
     }
 
@@ -196,7 +198,10 @@ public class MotherloadMineScript extends Script
             return;
         }
 
-        if (shouldRepairWaterwheel && getBrokenStrutCount() > targetBrokenStrutCount()) {
+        // Only start repairing once the water has fully stopped (both struts broken),
+        // but let an in-progress session finish whatever is still broken
+        int brokenStruts = getBrokenStrutCount();
+        if (shouldRepairWaterwheel && (brokenStruts > 1 || (waterwheelRepairInProgress && brokenStruts > targetBrokenStrutCount()))) {
             status = MLMStatus.FIXING_WATERWHEEL;
             return;
         }
@@ -356,6 +361,7 @@ public class MotherloadMineScript extends Script
 		idleSince = 0;
 		shouldEmptySack = false;
 		shouldRepairWaterwheel = false;
+		waterwheelRepairInProgress = false;
 		emptySackWorkflowActive = false;
 		pickedUpHammer = false;
 	}
@@ -391,7 +397,11 @@ public class MotherloadMineScript extends Script
     }
 
     private void fixWaterwheel() {
-        log.info("Fixing waterwheel workflow started");
+        if (!waterwheelRepairInProgress)
+        {
+            waterwheelRepairInProgress = true;
+            log.info("Fixing waterwheel workflow started");
+        }
         ensureLowerFloor();
 
 		if (!hasHammer()) {
@@ -427,6 +437,7 @@ public class MotherloadMineScript extends Script
 		{
 			dropHammerIfNeeded();
 			shouldRepairWaterwheel = false;
+			waterwheelRepairInProgress = false;
 			log.info("Waterwheel repair complete");
 		}
     }
