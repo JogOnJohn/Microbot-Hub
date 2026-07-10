@@ -196,7 +196,7 @@ public class MotherloadMineScript extends Script
             return;
         }
 
-        if (shouldRepairWaterwheel && getBrokenStrutCount() > 1) {
+        if (shouldRepairWaterwheel && getBrokenStrutCount() > targetBrokenStrutCount()) {
             status = MLMStatus.FIXING_WATERWHEEL;
             return;
         }
@@ -398,17 +398,43 @@ public class MotherloadMineScript extends Script
 			if (!obtainHammer()) return;
 		}
 
-		if (rs2TileObjectCache.query().interact(ObjectID.MOTHERLODE_WHEEL_STRUT_BROKEN))
+		final int targetBrokenStruts = targetBrokenStrutCount();
+
+		while (isRunning() && getBrokenStrutCount() > targetBrokenStruts)
 		{
+			Rs2TileObjectModel strut = rs2TileObjectCache.query().withId(ObjectID.MOTHERLODE_WHEEL_STRUT_BROKEN).nearest();
+			if (strut == null) break;
+
+			final int brokenBefore = getBrokenStrutCount();
+			if (!strut.click())
+			{
+				// The queryable API does not walk to out-of-range objects; get closer and retry next tick
+				Rs2Walker.walkTo(strut.getWorldLocation(), 2);
+				return;
+			}
+
 			// We use a modified version of waitForXpDrop to ensure we break out of the sleep if the strut is repaired
 			final int skillExp = Microbot.getClientThread().invoke(() -> Microbot.getClient().getSkillExperience(Skill.SMITHING));
-			sleepUntilTrue(() -> skillExp != Microbot.getClientThread().invoke(() -> Microbot.getClient().getSkillExperience(Skill.SMITHING)) || getBrokenStrutCount() <= 1, 250, 20_000);
+			sleepUntilTrue(() -> skillExp != Microbot.getClientThread().invoke(() -> Microbot.getClient().getSkillExperience(Skill.SMITHING)) || getBrokenStrutCount() < brokenBefore, 250, 20_000);
 
+			if (getBrokenStrutCount() >= brokenBefore)
+			{
+				return; // no repair progress (mis-click or interrupted); retry next tick
+			}
+		}
+
+		if (getBrokenStrutCount() <= targetBrokenStruts)
+		{
 			dropHammerIfNeeded();
 			shouldRepairWaterwheel = false;
-            log.info("Waterwheel repair complete");
+			log.info("Waterwheel repair complete");
 		}
     }
+
+	private int targetBrokenStrutCount()
+	{
+		return config.repairBothWheels() ? 0 : 1;
+	}
 
     private void depositHopper()
     {

@@ -23,6 +23,7 @@ public interface MotherloadMineConfig extends Config
 	String useDepositAll = "useDepositAll";
 	String antiCrash = "antiCrash";
 	String dropGems = "dropGems";
+	String repairBothWheels = "repairBothWheels";
 	String useUpstairsMine = "useUpstairsMine";
 	String useUpstairsHopper = "useUpstairsHopper";
 	String miningArea = "miningArea";
@@ -100,6 +101,18 @@ public interface MotherloadMineConfig extends Config
 	default boolean dropGems()
 	{
 		return false;
+	}
+
+	@ConfigItem(
+		keyName = repairBothWheels,
+		name = "Repair Both Waterwheels",
+		description = "Repair every broken waterwheel strut instead of stopping once a single wheel is running",
+		position = 5,
+		section = generalSection
+	)
+	default boolean repairBothWheels()
+	{
+		return true;
 	}
 
 	// Mine upstairs
