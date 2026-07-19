@@ -199,9 +199,13 @@ public class MotherloadMineScript extends Script
         }
 
         // Only start repairing once the water has fully stopped (both struts broken),
-        // but let an in-progress session finish whatever is still broken
+        // but let an in-progress session finish whatever is still broken.
+        // Without a hammer, obtainHammer() can only free a slot by dropping pay-dirt;
+        // an inventory full of anything else (e.g. ore collected from the sack) must be
+        // banked first or the script deadlocks re-entering FIXING_WATERWHEEL every tick
         int brokenStruts = getBrokenStrutCount();
-        if (shouldRepairWaterwheel && (brokenStruts > 1 || (waterwheelRepairInProgress && brokenStruts > targetBrokenStrutCount()))) {
+        boolean canObtainHammer = hasHammer() || !Rs2Inventory.isFull() || Rs2Inventory.contains(ItemID.PAYDIRT);
+        if (shouldRepairWaterwheel && canObtainHammer && (brokenStruts > 1 || (waterwheelRepairInProgress && brokenStruts > targetBrokenStrutCount()))) {
             status = MLMStatus.FIXING_WATERWHEEL;
             return;
         }
@@ -325,8 +329,9 @@ public class MotherloadMineScript extends Script
 
 	private void completeEmptySackWorkflow()
 	{
+		// shouldRepairWaterwheel is intentionally left alone: a repair deferred because the
+		// inventory was full of ore must still run now that the ore has been banked
 		shouldEmptySack = false;
-		shouldRepairWaterwheel = false;
 		emptySackWorkflowActive = false;
 		Rs2Antiban.takeMicroBreakByChance();
 		status = MLMStatus.IDLE;
