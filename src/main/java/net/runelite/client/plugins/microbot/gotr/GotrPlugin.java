@@ -41,7 +41,7 @@ import java.util.regex.Matcher;
 )
 @Slf4j
 public class GotrPlugin extends Plugin {
-    public static final String version = "1.5.13";
+    public static final String version = "1.5.18";
 
     @Inject
     private GotrConfig config;
@@ -83,12 +83,10 @@ public class GotrPlugin extends Plugin {
             overlayManager.add(gotrOverlay);
         }
 
-        // Initialize pre/post schedule tasks        
-        if (Microbot.isLoggedIn()) {
-                log.info("GOTR Plugin started in Normal Mode");
-                // In normal mode, start the script directly                
-                gotrScript.run(config);
-        }
+        // Schedule immediately even if the plugin is restored on the login screen. The script
+        // loop has its own logged-in guard and will begin safely after login completes.
+        log.info("GOTR Plugin started in Normal Mode");
+        gotrScript.run(config);
     }
 
     protected void shutDown() {
@@ -146,6 +144,9 @@ public class GotrPlugin extends Plugin {
             if (Microbot.isPluginEnabled(BreakHandlerPlugin.class)) {
                 BreakHandlerScript.setLockState(true);
             }
+            // The pre-round preparation window is over. If the client joined late or the weak
+            // cell table could not be used, do not keep blocking active-round mining for it.
+            GotrScript.needsOpeningCell = false;
             GotrScript.nextGameStart = Optional.empty();
             GotrScript.timeSincePortal = Optional.of(Instant.now());
             GotrScript.isFirstPortal = true;
@@ -165,12 +166,22 @@ public class GotrPlugin extends Plugin {
         } else if (msg.contains("The Portal Guardians will keep their rifts open for another 30 seconds.")) {
             GotrScript.shouldMineGuardianRemains = true;
             GotrScript.nextGameStart = Optional.of(Instant.now().plusSeconds(60));
-        } else if (msg.toLowerCase().contains("closed the rift!") || msg.toLowerCase().contains("The great guardian was defeated!")) {
+        } else if (msg.toLowerCase().contains("closed the rift!")
+            || msg.toLowerCase().contains("the great guardian was defeated!")) {
+            // Publish the round boundary before the Break Handler delay so the script cannot
+            // begin its next mining pass without first securing the opening cell.
+            GotrScript.shouldMineGuardianRemains = true;
+            GotrScript.needsOpeningCell = true;
+            // A huge-portal hint can survive the final trip and otherwise makes the regular mine
+            // routine return on every pre-round tick. Portals are no longer actionable once the
+            // rift has actually closed.
+            Microbot.getClient().clearHintArrow();
+            GotrScript.timeSincePortal = Optional.empty();
+            log.info("Rift closed; opening cell required before the next mining pass");
             if (Microbot.isPluginEnabled(BreakHandlerPlugin.class)) {
                 Global.sleep(Rs2Random.randomGaussian(2000, 300));
                 BreakHandlerScript.setLockState(false);
             }
-            GotrScript.shouldMineGuardianRemains = true;
 
         }
 

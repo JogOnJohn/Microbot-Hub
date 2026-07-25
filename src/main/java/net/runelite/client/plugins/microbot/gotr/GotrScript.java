@@ -53,6 +53,7 @@ public class GotrScript extends Script {
     public static final int greatGuardianId = 11403;
     private static final int ACTIVE_GUARDIAN_PORTAL_ANIMATION = 9363;
     private static final int TALISMAN_ENDGAME_POWER = 90;
+    private static final int PRE_ROUND_GUARDIAN_POWER = 10;
     private static final int ALTAR_ENTRY_START_TIMEOUT_MS = 12000;
     private static final int ALTAR_LOAD_TIMEOUT_MS = 10000;
     public static final Map<Integer, GuardianPortalInfo> guardianPortalInfo = new HashMap<>();
@@ -64,6 +65,7 @@ public class GotrScript extends Script {
     public static int elementalRewardPoints;
     public static int catalyticRewardPoints;
     public static GotrState state;
+    public static volatile boolean needsOpeningCell = true;
     static GotrConfig config;
     String GUARDIAN_FRAGMENTS = "guardian fragments";
     String GUARDIAN_ESSENCE = "guardian essence";
@@ -71,6 +73,7 @@ public class GotrScript extends Script {
     boolean initCheck = false;
     boolean optimizedEssenceLoop = false;
     private int lastLoggedFragmentStopCount = -1;
+    private int lastObservedGuardiansPower = -1;
 
     static boolean useNpcContact = true;
 
@@ -162,6 +165,8 @@ public class GotrScript extends Script {
         initCheck = false;
         optimizedEssenceLoop = false;
         lastLoggedFragmentStopCount = -1;
+        lastObservedGuardiansPower = -1;
+        needsOpeningCell = true;
         guardians.clear();
         activeGuardianPortals.clear();
         greatGuardian = null;
@@ -213,6 +218,7 @@ public class GotrScript extends Script {
 
 
                 if (isInMiniGame) {
+                    updateRoundCompletionState();
 
                     if (waitingForGameToStart(timeToStart)) return;
 
@@ -260,6 +266,8 @@ public class GotrScript extends Script {
                             if (enterAltar()) return;
                         }
                     } else {
+                        if (ensureOpeningCellBeforeMining()) return;
+
                         int fragmentTarget = config.maxFragmentAmount();
                         if (getGuardiansPower() > 70) {
                             int batchCapacity = Rs2Inventory.emptySlotCount()
@@ -270,23 +278,7 @@ public class GotrScript extends Script {
                                     Math.max(1, batchCapacity),
                                     Math.max(1, batchCapacity) + 3));
                         }
-                        int fragmentCount = Rs2Inventory.itemQuantity(GUARDIAN_FRAGMENTS);
-                        if (fragmentCount >= fragmentTarget) {
-                            shouldMineGuardianRemains = false;
-                            if (fragmentCount != lastLoggedFragmentStopCount) {
-                                log("Fragment target reached: " + fragmentCount + "/" + fragmentTarget
-                                    + "; stopping mining.");
-                                lastLoggedFragmentStopCount = fragmentCount;
-                            }
-                            // Clicking the large-mine exit immediately interrupts the persistent
-                            // mining action. Previously the script called mineGuardianRemains()
-                            // once more and did not interrupt until a later loop, overshooting the
-                            // configured target substantially.
-                            if (isInLargeMine()) {
-                                leaveLargeMine();
-                            }
-                            return;
-                        }
+                        if (stopMiningAtFragmentTarget(fragmentTarget)) return;
                         mineGuardianRemains();
                     }
                     return;
@@ -334,23 +326,40 @@ public class GotrScript extends Script {
                 return true;
             }
 
-            // Mass-world setup starts with one weak cell so the script can immediately build an
-            // inactive barrier or heal a weak one instead of waiting for the first altar trip.
-            if (!hasPoweredCell()) {
-                if (isInLargeMine()) {
-                    if (leaveLargeMine()) return true;
-                }
-                if (takeWeakCell()) return true;
-            }
+            if (ensureOpeningCellBeforeMining()) return true;
 
             repairPouches();
     
             if (!shouldMineGuardianRemains) return true;
-    
+
+            // The countdown path used to bypass the configured cap and continue mining until
+            // roughly 35 seconds before the round, commonly leaving 120+ fragments for a target
+            // of 100. Enforce and interrupt at the same target used by the regular mining path.
+            if (stopMiningAtFragmentTarget(config.maxFragmentAmount())) return true;
+
             mineGuardianRemains();
             return true;
         }
         return false;
+    }
+
+    private boolean stopMiningAtFragmentTarget(int fragmentTarget) {
+        int fragmentCount = Rs2Inventory.itemQuantity(GUARDIAN_FRAGMENTS);
+        if (fragmentCount < fragmentTarget) {
+            return false;
+        }
+
+        shouldMineGuardianRemains = false;
+        if (fragmentCount != lastLoggedFragmentStopCount) {
+            log("Fragment target reached: " + fragmentCount + "/" + fragmentTarget
+                + "; stopping mining.");
+            lastLoggedFragmentStopCount = fragmentCount;
+        }
+        // Clicking the large-mine exit immediately interrupts the persistent mining action.
+        if (isInLargeMine()) {
+            leaveLargeMine();
+        }
+        return true;
     }
 
     private boolean repairCells() {
@@ -469,14 +478,44 @@ public class GotrScript extends Script {
         return countPoweredCells() > 0;
     }
 
+    private static boolean hasWeakOpeningCell() {
+        return Rs2Inventory.hasItem(ItemID.WEAK_CELL);
+    }
+
     private static int countPoweredCells() {
         return CellType.PoweredCellList().stream()
             .mapToInt(Rs2Inventory::count)
             .sum();
     }
 
+    private boolean ensureOpeningCellBeforeMining() {
+        if (!needsOpeningCell) {
+            return false;
+        }
+        if (hasWeakOpeningCell()) {
+            needsOpeningCell = false;
+            log("Weak opening cell secured; mining may begin.");
+            return false;
+        }
+        if (isInLargeMine()) {
+            leaveLargeMine();
+            return true;
+        }
+
+        // Claim the tick even if the interaction cannot be dispatched. The verified pickup
+        // remains outstanding and will be retried instead of allowing mining to start without it.
+        takeWeakCell();
+        return true;
+    }
+
     private boolean takeWeakCell() {
-        if (hasPoweredCell() || Rs2Inventory.isFull()) {
+        if (hasWeakOpeningCell() || Rs2Inventory.isFull()) {
+            return false;
+        }
+        // A cell crafted after the close dialogue can linger briefly and is removed by round
+        // cleanup. Do not mistake it for the table-sourced weak opening cell or begin mining;
+        // hold the gate until it clears, then take and verify the weak cell.
+        if (hasPoweredCell()) {
             return false;
         }
 
@@ -1046,14 +1085,46 @@ public class GotrScript extends Script {
     }
 
     private static int getGuardiansPower() {
+        return readGuardiansPower().orElse(0);
+    }
+
+    private static OptionalInt readGuardiansPower() {
         Widget pWidget = Rs2Widget.getWidget(48889874);
         if (pWidget == null) {
-            return 0;
+            return OptionalInt.empty();
         }
 
         Matcher matcher = Pattern.compile("(\\d+)%").matcher(pWidget.getText());
+        return matcher.find()
+            ? OptionalInt.of(Integer.parseInt(matcher.group(1)))
+            : OptionalInt.empty();
+    }
 
-        return matcher.find() ? Integer.parseInt(matcher.group(1)) : 0;
+    private void updateRoundCompletionState() {
+        OptionalInt observedPower = readGuardiansPower();
+        if (!observedPower.isPresent()) {
+            return;
+        }
+
+        int currentPower = observedPower.getAsInt();
+        // A plugin/client restart can restore the script in the middle of a live round without
+        // replaying the "rift becomes active" chat event. In that case the default opening-cell
+        // gate must not send the player back to the weak-cell table. The same 0 -> positive
+        // transition closes the prep window if the start chat event was missed.
+        if (currentPower > PRE_ROUND_GUARDIAN_POWER
+            && (lastObservedGuardiansPower < 0 || lastObservedGuardiansPower == 0)
+            && needsOpeningCell) {
+            needsOpeningCell = false;
+            log("Active round detected at " + currentPower
+                + "%; opening-cell preparation window closed.");
+        }
+        // 100% is still a live contribution window. Only the subsequent reset to 0 marks the
+        // round boundary when the post-rift chat event was not observed.
+        if (lastObservedGuardiansPower >= 100 && currentPower == 0) {
+            needsOpeningCell = true;
+            log("Guardian power reset to 0%; opening cell required before the next mining pass.");
+        }
+        lastObservedGuardiansPower = currentPower;
     }
 
     public static void resetPlugin() {
