@@ -10,6 +10,7 @@ public class GuardianPortalInfo {
     @Getter
     private int requiredLevel;
     private int runeId;
+    @Getter
     private int talismanId;
     @Getter
     private int spriteId;
