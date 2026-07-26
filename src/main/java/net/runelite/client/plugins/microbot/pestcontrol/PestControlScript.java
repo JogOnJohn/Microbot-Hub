@@ -118,6 +118,7 @@ public class PestControlScript extends Script {
     private boolean quickPrayerHandled = false;
     private boolean activityRecoveryActive = false;
     private long loginUnavailableSince = 0L;
+    private long lastRoundExitAt = 0L;
 
     private enum RuntimeState {
         INITIALISING,
@@ -429,6 +430,7 @@ public class PestControlScript extends Script {
         quickPrayerHandled = false;
         activityRecoveryActive = false;
         loginUnavailableSince = 0L;
+        lastRoundExitAt = 0L;
         transitionTo(RuntimeState.INITIALISING, "starting script");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
@@ -437,7 +439,9 @@ public class PestControlScript extends Script {
                     if (loginUnavailableSince == 0L) {
                         loginUnavailableSince = now;
                     }
-                    if (wasInPestControl
+                    boolean recentRoundExit = lastRoundExitAt > 0L
+                            && now - lastRoundExitAt < ROUND_TRANSITION_LOGIN_GRACE_MILLIS;
+                    if ((wasInPestControl || recentRoundExit)
                             && now - loginUnavailableSince < ROUND_TRANSITION_LOGIN_GRACE_MILLIS) {
                         transitionTo(RuntimeState.REQUEUE, "round transition");
                     } else {
@@ -471,6 +475,7 @@ public class PestControlScript extends Script {
     private void handleRoundTick() {
         initialise = false;
         if (!wasInPestControl) {
+            lastRoundExitAt = 0L;
             autoRetaliateConfirmedOff = false;
             autoRetaliateDisableLogged = false;
             openingPortal = chooseOpeningPortal();
@@ -573,6 +578,7 @@ public class PestControlScript extends Script {
 
     private void handleLobbyTick(boolean isInBoat) {
         if (wasInPestControl) {
+            lastRoundExitAt = System.currentTimeMillis();
             Rs2Walker.clearWalkingRoute("pest-control:round-ended");
             wasInPestControl = false;
             pendingPostRoundRestore = true;
@@ -1638,6 +1644,7 @@ public class PestControlScript extends Script {
         lastBoardingAttemptAt = 0L;
         boardingAttemptPending = false;
         loginUnavailableSince = 0L;
+        lastRoundExitAt = 0L;
         super.shutdown();
     }
 }
