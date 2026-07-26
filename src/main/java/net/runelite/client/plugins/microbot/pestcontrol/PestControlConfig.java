@@ -40,20 +40,10 @@ public interface PestControlConfig extends Config {
     }
 
     @ConfigItem(
-            keyName = "Special Attack",
-            name = "Use Special Attack on %",
-            description = "What percentage to use Special Attack",
-            position = 5
-    )
-    default int specialAttackPercentage() {
-        return 100;
-    }
-
-    @ConfigItem(
             keyName = "World",
             name = "World",
             description = "Pest Control world",
-            position = 6
+            position = 5
     )
 
     default int world() {
@@ -64,7 +54,7 @@ public interface PestControlConfig extends Config {
             keyName = "primaryCombatStyle",
             name = "Primary combat style",
             description = "Combat style used whenever a portal weapon is set to None",
-            position = 7
+            position = 6
     )
     default PestControlCombatStyle primaryCombatStyle() {
         return PestControlCombatStyle.RANGED;
@@ -74,10 +64,20 @@ public interface PestControlConfig extends Config {
             keyName = "rangedWeapon",
             name = "Ranged weapon (purple)",
             description = "Exact weapon name for the ranged-weak purple portal, or None to use the primary weapon",
-            position = 8
+            position = 7
     )
     default String rangedWeapon() {
         return "Adamant crossbow";
+    }
+
+    @ConfigItem(
+            keyName = "usePurpleSpecialAttack",
+            name = "Use special (purple)",
+            description = "Use the equipped weapon's special attack while attacking the purple portal",
+            position = 8
+    )
+    default boolean usePurpleSpecialAttack() {
+        return false;
     }
 
     @ConfigItem(
@@ -91,23 +91,53 @@ public interface PestControlConfig extends Config {
     }
 
     @ConfigItem(
+            keyName = "useBlueSpecialAttack",
+            name = "Use special (blue)",
+            description = "Use the equipped weapon's special attack while attacking the blue portal",
+            position = 10
+    )
+    default boolean useBlueSpecialAttack() {
+        return false;
+    }
+
+    @ConfigItem(
             keyName = "slashStabWeapon",
             name = "Slash/stab weapon (yellow)",
             description = "Exact weapon name for the slash/stab-weak yellow portal, or None to use the primary weapon",
-            position = 10
+            position = 11
     )
     default String slashStabWeapon() {
         return "Dragon scimitar";
     }
 
     @ConfigItem(
+            keyName = "useYellowSpecialAttack",
+            name = "Use special (yellow)",
+            description = "Use the equipped weapon's special attack while attacking the yellow portal",
+            position = 12
+    )
+    default boolean useYellowSpecialAttack() {
+        return false;
+    }
+
+    @ConfigItem(
             keyName = "crushWeapon",
             name = "Crush weapon (red)",
             description = "Exact weapon name for the crush-weak red portal, or None to use the primary weapon",
-            position = 11
+            position = 13
     )
     default String crushWeapon() {
         return "None";
+    }
+
+    @ConfigItem(
+            keyName = "useRedSpecialAttack",
+            name = "Use special (red)",
+            description = "Use the equipped weapon's special attack while attacking the red portal",
+            position = 14
+    )
+    default boolean useRedSpecialAttack() {
+        return false;
     }
 
     @Range(
@@ -118,7 +148,7 @@ public interface PestControlConfig extends Config {
             keyName = "rangedOpeningWeight",
             name = "Ranged-side opening weight",
             description = "Chance to stage near the ranged-weak purple portal at the start of each round; other sides share the remainder",
-            position = 12
+            position = 15
     )
     default int rangedOpeningWeight() {
         return 55;

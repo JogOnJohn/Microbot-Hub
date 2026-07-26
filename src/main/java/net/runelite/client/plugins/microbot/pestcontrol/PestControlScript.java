@@ -1,7 +1,6 @@
 package net.runelite.client.plugins.microbot.pestcontrol;
 
 import com.google.common.collect.ImmutableSet;
-import net.runelite.api.Actor;
 import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
@@ -392,8 +391,6 @@ public class PestControlScript extends Script {
         lastBoardingAttemptAt = 0L;
         boardingAttemptPending = false;
         handleQuickPrayerOnce();
-        activateSpecialAttackIfReady();
-
         WorldPoint playerLocation = Rs2Player.getWorldLocation();
         PortalTarget portalTarget = selectAdaptivePortalTarget();
         if (portalTarget != null) {
@@ -405,6 +402,7 @@ public class PestControlScript extends Script {
 
         // Portal switches are temporary. As soon as no portal is attackable,
         // return to the configured primary weapon/style before doing anything else.
+        disableSpecialAttackIfEnabled();
         restorePrimaryWeapon();
         applyPrimaryAttackMode();
 
@@ -721,12 +719,14 @@ public class PestControlScript extends Script {
         }
 
         if (isInteractingWithSpinnerNear(target.portal)) {
+            disableSpecialAttackIfEnabled();
             transitionTo(RuntimeState.KILL_SPINNER, target.portal + " portal");
             return;
         }
 
         Rs2NpcModel spinner = findSpinnerNear(target.portal);
         if (spinner != null) {
+            disableSpecialAttackIfEnabled();
             transitionTo(RuntimeState.KILL_SPINNER, target.portal + " portal");
             if (isInteractingWith(spinner.getNpc())) {
                 return;
@@ -736,6 +736,7 @@ public class PestControlScript extends Script {
         }
 
         transitionTo(RuntimeState.ATTACK_PORTAL, target.portal + " portal");
+        activateSpecialAttackIfReady(target.portal);
         if (isInteractingWithPortal(target.portal)) {
             long sinceLastAttackCommand = System.currentTimeMillis() - lastAttackCommandAt;
             if (isPlayerMovingOrAnimating()
@@ -992,6 +993,8 @@ public class PestControlScript extends Script {
             managedAttackOptionIndex = expectedIndex;
             missingAttackOptionsLogged.remove(normalizeWeaponName(equippedWeapon)
                     + ":" + desiredStyle.toLowerCase(Locale.ROOT));
+            Microbot.log("Pest Control attack style confirmed: " + desiredStyle
+                    + " (" + equippedWeapon + ")");
         }
         return selected;
     }
@@ -1314,6 +1317,7 @@ public class PestControlScript extends Script {
 
     private boolean attackSpinner() {
         if (isInteractingWithSpinner()) {
+            disableSpecialAttackIfEnabled();
             transitionTo(RuntimeState.KILL_SPINNER, "nearby Spinner");
             return true;
         }
@@ -1326,6 +1330,7 @@ public class PestControlScript extends Script {
         if (spinner == null) {
             return false;
         }
+        disableSpecialAttackIfEnabled();
         transitionTo(RuntimeState.KILL_SPINNER, "nearby Spinner");
         if (isInteractingWith(spinner.getNpc())) {
             return true;
@@ -1334,19 +1339,39 @@ public class PestControlScript extends Script {
         return true;
     }
 
-    private void activateSpecialAttackIfReady() {
+    private void activateSpecialAttackIfReady(Portal portal) {
+        if (!useSpecialAttackForPortal(portal) || !isInteractingWithPortal(portal)) {
+            disableSpecialAttackIfEnabled();
+            return;
+        }
+
         Optional<SpecialAttackWeaponEnum> specialAttackWeapon = getEquippedSpecialAttackWeapon();
-        if (specialAttackWeapon.isEmpty() || !hasCombatTarget()) {
+        if (specialAttackWeapon.isEmpty()) {
             return;
         }
 
-        int configuredEnergyRequired = config.specialAttackPercentage() * 10;
-        if (configuredEnergyRequired <= 0) {
-            return;
-        }
+        Rs2Combat.setSpecState(true, specialAttackWeapon.get().getEnergyRequired());
+    }
 
-        int energyRequired = Math.max(configuredEnergyRequired, specialAttackWeapon.get().getEnergyRequired());
-        Rs2Combat.setSpecState(true, energyRequired);
+    private boolean useSpecialAttackForPortal(Portal portal) {
+        switch (portal) {
+            case PURPLE:
+                return config.usePurpleSpecialAttack();
+            case BLUE:
+                return config.useBlueSpecialAttack();
+            case YELLOW:
+                return config.useYellowSpecialAttack();
+            case RED:
+                return config.useRedSpecialAttack();
+            default:
+                return false;
+        }
+    }
+
+    private static void disableSpecialAttackIfEnabled() {
+        if (Rs2Combat.getSpecState()) {
+            Rs2Combat.setSpecState(false);
+        }
     }
 
     private Optional<SpecialAttackWeaponEnum> getEquippedSpecialAttackWeapon() {
@@ -1360,18 +1385,6 @@ public class PestControlScript extends Script {
                 .sorted(Comparator.comparingInt((SpecialAttackWeaponEnum specWeapon) -> specWeapon.getName().length()).reversed())
                 .filter(specWeapon -> weaponName.contains(specWeapon.getName()))
                 .findFirst();
-    }
-
-    private boolean hasCombatTarget() {
-        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
-            Player player = Microbot.getClient().getLocalPlayer();
-            if (player == null) {
-                return false;
-            }
-
-            Actor target = player.getInteracting();
-            return target != null && !target.isDead();
-        }).orElse(false);
     }
 
     @Override
