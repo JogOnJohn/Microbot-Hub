@@ -78,12 +78,15 @@ public class PestControlScript extends Script {
             NpcID.SPINNER_1713
     );
 
-    final int distanceToPortal = 8;
     private static final int PORTAL_CROWD_RADIUS = 12;
     private static final int PORTAL_MATCH_RADIUS = 5;
     private static final int SPINNER_PORTAL_RADIUS = 8;
     private static final int PORTAL_SWITCH_CROWD_MARGIN = 1;
-    private static final int OPENING_SIDE_DISTANCE = 10;
+    private static final int PEST_CONTROL_CENTER_REGION_COORD = 32;
+    private static final int SAFE_STAGING_OFFSET = 5;
+    private static final int STAGING_ARRIVAL_DISTANCE = 2;
+    private static final int RANGED_ENGAGEMENT_DISTANCE = 6;
+    private static final int MELEE_ENGAGEMENT_DISTANCE = 1;
     private static final int MINIMAP_STEP_DISTANCE = 14;
     private static final int ACTIVITY_MAINTENANCE_PERCENT = 60;
     private static final long MOVEMENT_RETRY_MILLIS = 750L;
@@ -255,7 +258,8 @@ public class PestControlScript extends Script {
             return PURPLE;
         }
 
-        Portal[] otherPortals = {BLUE, YELLOW, RED};
+        // Red can never be the first portal to become vulnerable.
+        Portal[] otherPortals = {BLUE, YELLOW};
         return otherPortals[Rs2Random.between(0, otherPortals.length)];
     }
 
@@ -265,16 +269,15 @@ public class PestControlScript extends Script {
             return false;
         }
 
-        WorldPoint target = logicalPortalLocation(openingPortal, playerLocation);
+        WorldPoint target = safeRangedPortalLocation(openingPortal, playerLocation);
         transitionTo(RuntimeState.OPENING_SIDE, openingPortal + " portal");
-        if (regionDistance(playerLocation, openingPortal.getRegionX(), openingPortal.getRegionY())
-                <= OPENING_SIDE_DISTANCE) {
+        if (playerLocation.distanceTo(target) <= STAGING_ARRIVAL_DISTANCE) {
             openingSideReached = true;
-            Microbot.log("Pest Control staged near " + openingPortal + " portal");
+            Microbot.log("Pest Control staged safely behind " + openingPortal + " portal");
             return false;
         }
 
-        return moveToward(playerLocation, target, OPENING_SIDE_DISTANCE);
+        return moveToward(playerLocation, target, STAGING_ARRIVAL_DISTANCE);
     }
 
     private boolean confirmAutoRetaliateOff() {
@@ -413,8 +416,7 @@ public class PestControlScript extends Script {
                 return;
             }
             Rs2NpcModel attackableNpc = nearestAttackablePest();
-            transitionTo(RuntimeState.ACTIVITY_FALLBACK, "maintaining activity");
-            dispatchAttack(attackableNpc);
+            maintainActivityWith(attackableNpc, playerLocation);
             runWatchdog(playerLocation);
             return;
         }
@@ -527,6 +529,29 @@ public class PestControlScript extends Script {
                         .nearest());
     }
 
+    private void maintainActivityWith(Rs2NpcModel target, WorldPoint playerLocation) {
+        WorldPoint targetLocation = Microbot.getClientThread().runOnClientThreadOptional(() ->
+                target == null || target.getNpc() == null || target.getNpc().isDead()
+                        ? null
+                        : target.getWorldLocation()
+        ).orElse(null);
+        if (targetLocation == null) {
+            transitionTo(RuntimeState.ACTIVITY_FALLBACK, "no attackable pest nearby");
+            return;
+        }
+
+        int engagementDistance = engagementDistance(config.primaryCombatStyle());
+        if (playerLocation == null
+                || playerLocation.distanceTo(targetLocation) > engagementDistance) {
+            transitionTo(RuntimeState.ACTIVITY_FALLBACK, "approaching activity target");
+            moveToward(playerLocation, targetLocation, engagementDistance);
+            return;
+        }
+
+        transitionTo(RuntimeState.ACTIVITY_FALLBACK, "attacking activity target");
+        dispatchAttack(target);
+    }
+
     private boolean boardBoat() {
         long now = System.currentTimeMillis();
         if (now - lastBoardingAttemptAt < BOARDING_RETRY_MILLIS) {
@@ -613,13 +638,18 @@ public class PestControlScript extends Script {
             transitionTo(RuntimeState.ERROR, "player location unavailable");
             return;
         }
-        WorldPoint portalLocation = logicalPortalLocation(target.portal, playerLocation);
-
         prepareWeaponForPortal(target.portal);
 
-        if (playerLocation.distanceTo(portalLocation) > distanceToPortal) {
+        int engagementDistance = engagementDistanceForPortal(target.portal);
+        WorldPoint engagementLocation = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                ? safeRangedPortalLocation(target.portal, playerLocation)
+                : logicalPortalLocation(target.portal, playerLocation);
+        int arrivalDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                ? STAGING_ARRIVAL_DISTANCE
+                : MELEE_ENGAGEMENT_DISTANCE;
+        if (playerLocation.distanceTo(engagementLocation) > arrivalDistance) {
             transitionTo(RuntimeState.CHASE_PORTAL, target.portal + " portal");
-            moveToward(playerLocation, portalLocation, distanceToPortal);
+            moveToward(playerLocation, engagementLocation, arrivalDistance);
             return;
         }
 
@@ -683,6 +713,29 @@ public class PestControlScript extends Script {
             default:
                 return "None";
         }
+    }
+
+    private int engagementDistanceForPortal(Portal portal) {
+        String configuredWeapon = configuredWeaponForPortal(portal);
+        if (isPrimaryFallback(configuredWeapon)) {
+            return engagementDistance(config.primaryCombatStyle());
+        }
+        switch (portal) {
+            case PURPLE:
+                return RANGED_ENGAGEMENT_DISTANCE;
+            case BLUE:
+                return RANGED_ENGAGEMENT_DISTANCE;
+            case YELLOW:
+            case RED:
+            default:
+                return MELEE_ENGAGEMENT_DISTANCE;
+        }
+    }
+
+    private static int engagementDistance(PestControlCombatStyle style) {
+        return style == PestControlCombatStyle.MELEE
+                ? MELEE_ENGAGEMENT_DISTANCE
+                : RANGED_ENGAGEMENT_DISTANCE;
     }
 
     private static PortalAttackMode attackModeForPortal(Portal portal) {
@@ -1073,6 +1126,21 @@ public class PestControlScript extends Script {
                 playerLocation.getRegionID(),
                 portal.getRegionX(),
                 portal.getRegionY(),
+                playerLocation.getPlane());
+    }
+
+    private static WorldPoint safeRangedPortalLocation(Portal portal, WorldPoint playerLocation) {
+        int dx = portal.getRegionX() - PEST_CONTROL_CENTER_REGION_COORD;
+        int dy = portal.getRegionY() - PEST_CONTROL_CENTER_REGION_COORD;
+        int span = Math.max(Math.abs(dx), Math.abs(dy));
+        int offsetX = span == 0 ? 0 : (int) Math.round((double) dx * SAFE_STAGING_OFFSET / span);
+        int offsetY = span == 0 ? 0 : (int) Math.round((double) dy * SAFE_STAGING_OFFSET / span);
+        int regionX = Math.max(0, Math.min(63, portal.getRegionX() + offsetX));
+        int regionY = Math.max(0, Math.min(63, portal.getRegionY() + offsetY));
+        return WorldPoint.fromRegion(
+                playerLocation.getRegionID(),
+                regionX,
+                regionY,
                 playerLocation.getPlane());
     }
 
