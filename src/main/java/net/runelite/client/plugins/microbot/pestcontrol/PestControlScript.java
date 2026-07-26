@@ -15,14 +15,11 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
-import net.runelite.client.plugins.microbot.inventorysetups.InventorySetup;
-import net.runelite.client.plugins.microbot.inventorysetups.InventorySetupsItem;
-import net.runelite.client.plugins.microbot.util.Rs2InventorySetup;
-import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
+import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
@@ -47,6 +44,9 @@ public class PestControlScript extends Script {
     boolean walkToCenter = false;
     private boolean wasInPestControl = false;
     private Portal selectedPortal = null;
+    private String primaryWeaponName = null;
+    private boolean missingSwitchWeaponLogged = false;
+    private boolean missingPrimaryWeaponLogged = false;
     PestControlConfig config;
     private final PestControlPlugin plugin;
 
@@ -104,6 +104,10 @@ public class PestControlScript extends Script {
 
     public boolean run(PestControlConfig config) {
         this.config = config;
+        selectedPortal = null;
+        primaryWeaponName = null;
+        missingSwitchWeaponLogged = false;
+        missingPrimaryWeaponLogged = false;
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 if (!Microbot.isLoggedIn()) return;
@@ -125,11 +129,7 @@ public class PestControlScript extends Script {
                         sleepUntil(() -> Rs2Player.getWorld() == config.world(), 7000);
                     }
                     if (Rs2Player.getWorldLocation().getRegionID() == 10537 && Rs2Player.getWorld() == config.world()) {
-
-                        if (handleInventorySetup()) {
-                            initialise = false;
-                        }
-
+                        initialise = false;
                     } else {
                         Microbot.log("Traveling to Pest Island");
                         Rs2Walker.walkTo(new WorldPoint(2667, 2653, 0));
@@ -207,6 +207,7 @@ public class PestControlScript extends Script {
                 } else {
                     if (wasInPestControl) {
                         Rs2Walker.setTarget(null);
+                        restorePrimaryWeapon();
                         wasInPestControl = false;
                         selectedPortal = null;
                     }
@@ -235,46 +236,6 @@ public class PestControlScript extends Script {
         }, 0, 300, TimeUnit.MILLISECONDS);
         return true;
     }
-
-    /**
-     * Handles the inventory setup based on the provided configuration.
-     *
-     * @return true when no setup work is needed (no setup configured, already
-     *         matches, or successfully loaded); false when loading failed and
-     *         the script should retry on the next tick.
-     */
-    private boolean handleInventorySetup() {
-
-        InventorySetup setup = config.inventorySetup();
-        if (setup == null || isEmptySetup(setup)) {
-            return true;
-        }
-
-        Microbot.log("Starting Inv Setup");
-        var inventorySetup = new Rs2InventorySetup(setup, mainScheduledFuture);
-
-        if (inventorySetup.doesInventoryMatch() && inventorySetup.doesEquipmentMatch()) {
-            return true;
-        }
-
-        if (!inventorySetup.loadEquipment() || !inventorySetup.loadInventory()) {
-            return false;
-        }
-
-        Microbot.log("Inv Setup Finished");
-        Rs2Bank.closeBank();
-        sleepUntil(() -> !Rs2Bank.isOpen(), 2000);
-        return true;
-    }
-
-    private static boolean isEmptySetup(InventorySetup setup) {
-        return isAllDummy(setup.getInventory()) && isAllDummy(setup.getEquipment());
-    }
-
-    private static boolean isAllDummy(List<InventorySetupsItem> items) {
-        return items == null || items.stream().allMatch(item -> item == null || InventorySetupsItem.itemIsDummy(item));
-    }
-
 
     public boolean isOutside() {
         WorldPoint playerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
@@ -376,6 +337,7 @@ public class PestControlScript extends Script {
     private boolean attackPortals() {
         PortalTarget target = selectAdaptivePortalTarget();
         if (target == null) {
+            restorePrimaryWeapon();
             return false;
         }
 
@@ -390,6 +352,8 @@ public class PestControlScript extends Script {
             return false;
         }
 
+        prepareWeaponForPortal(target.portal);
+
         Rs2NpcModel spinner = findSpinnerNear(portalLocation);
         if (spinner != null) {
             return spinner.click("Attack");
@@ -402,6 +366,116 @@ public class PestControlScript extends Script {
         }
 
         return attackPortal(target.npc);
+    }
+
+    private void prepareWeaponForPortal(Portal portal) {
+        if (isSwitchWeaponAdvantagedAt(portal)) {
+            equipSwitchWeapon();
+        } else {
+            restorePrimaryWeapon();
+        }
+    }
+
+    private boolean isSwitchWeaponAdvantagedAt(Portal portal) {
+        if (config.primaryCombatStyle() == config.switchCombatStyle()) {
+            return false;
+        }
+
+        switch (config.switchCombatStyle()) {
+            case RANGED:
+                return portal == PURPLE;
+            case MAGIC:
+                return portal == BLUE;
+            case MELEE:
+                String weapon = normalizeWeaponName(config.switchWeapon());
+                if (weapon.contains("scimitar")) {
+                    return portal == YELLOW;
+                }
+                if (weapon.contains("mace")
+                        || weapon.contains("warhammer")
+                        || weapon.contains("maul")) {
+                    return portal == RED;
+                }
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    private void equipSwitchWeapon() {
+        String switchWeapon = config.switchWeapon() == null
+                ? ""
+                : config.switchWeapon().trim();
+        if (switchWeapon.isEmpty() || isWeaponEquipped(switchWeapon)) {
+            return;
+        }
+
+        capturePrimaryWeapon();
+        if (Rs2Inventory.interact(switchWeapon, "Wield", true)) {
+            sleepUntil(() -> isWeaponEquipped(switchWeapon), 2000);
+            missingSwitchWeaponLogged = false;
+        } else if (!missingSwitchWeaponLogged) {
+            Microbot.log("Pest Control switch weapon not found in inventory: " + switchWeapon);
+            missingSwitchWeaponLogged = true;
+        }
+    }
+
+    private void restorePrimaryWeapon() {
+        capturePrimaryWeapon();
+        String switchWeapon = config.switchWeapon() == null
+                ? ""
+                : config.switchWeapon().trim();
+        if (switchWeapon.isEmpty() || !isWeaponEquipped(switchWeapon)) {
+            return;
+        }
+
+        if (primaryWeaponName == null || primaryWeaponName.isEmpty()) {
+            if (!missingPrimaryWeaponLogged) {
+                Microbot.log("Pest Control could not identify the primary weapon before switching");
+                missingPrimaryWeaponLogged = true;
+            }
+            return;
+        }
+
+        if (Rs2Inventory.interact(primaryWeaponName, "Wield", true)) {
+            sleepUntil(() -> isWeaponEquipped(primaryWeaponName), 2000);
+            missingPrimaryWeaponLogged = false;
+        } else if (!missingPrimaryWeaponLogged) {
+            Microbot.log("Pest Control primary weapon not found in inventory: " + primaryWeaponName);
+            missingPrimaryWeaponLogged = true;
+        }
+    }
+
+    private void capturePrimaryWeapon() {
+        if (primaryWeaponName != null && !primaryWeaponName.isEmpty()) {
+            return;
+        }
+
+        Rs2ItemModel equippedWeapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
+        if (equippedWeapon == null || equippedWeapon.getName() == null) {
+            return;
+        }
+
+        String equippedName = equippedWeapon.getName().trim();
+        String switchWeapon = config.switchWeapon() == null
+                ? ""
+                : config.switchWeapon().trim();
+        if (!equippedName.isEmpty() && !equippedName.equalsIgnoreCase(switchWeapon)) {
+            primaryWeaponName = equippedName;
+            Microbot.log("Pest Control primary weapon: " + primaryWeaponName
+                    + " (" + config.primaryCombatStyle() + ")");
+        }
+    }
+
+    private static boolean isWeaponEquipped(String weaponName) {
+        Rs2ItemModel equippedWeapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
+        return equippedWeapon != null
+                && equippedWeapon.getName() != null
+                && equippedWeapon.getName().equalsIgnoreCase(weaponName);
+    }
+
+    private static String normalizeWeaponName(String weaponName) {
+        return weaponName == null ? "" : weaponName.trim().toLowerCase(Locale.ROOT);
     }
 
     /**

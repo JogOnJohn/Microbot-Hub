@@ -4,7 +4,6 @@ import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigInformation;
 import net.runelite.client.config.ConfigItem;
-import net.runelite.client.plugins.microbot.inventorysetups.InventorySetup;
 
 @ConfigGroup("pestcontrol")
 @ConfigInformation("Start near a boat of your combat level")
@@ -78,22 +77,43 @@ public interface PestControlConfig extends Config {
     }
 
     @ConfigItem(
-            keyName = "inventorySetup",
-            name = "Inventory Setup",
-            description = "Inventory setup to use",
-            position = 9
-    )
-    default InventorySetup inventorySetup() {
-        return null;
-    }
-    @ConfigItem(
             keyName = "World",
             name = "World",
             description = "Pest Control world",
-            position = 10
+            position = 9
     )
 
     default int world() {
         return 344;
+    }
+
+    @ConfigItem(
+            keyName = "primaryCombatStyle",
+            name = "Primary combat style",
+            description = "Combat style used unless the configured switch has a portal advantage",
+            position = 10
+    )
+    default PestControlCombatStyle primaryCombatStyle() {
+        return PestControlCombatStyle.RANGED;
+    }
+
+    @ConfigItem(
+            keyName = "switchCombatStyle",
+            name = "Switch combat style",
+            description = "Combat style of the configured switch weapon",
+            position = 11
+    )
+    default PestControlCombatStyle switchCombatStyle() {
+        return PestControlCombatStyle.MELEE;
+    }
+
+    @ConfigItem(
+            keyName = "switchWeapon",
+            name = "Switch weapon",
+            description = "Weapon to wield at a portal weak to the switch style; the equipped primary weapon is restored automatically",
+            position = 12
+    )
+    default String switchWeapon() {
+        return "Dragon scimitar";
     }
 }
