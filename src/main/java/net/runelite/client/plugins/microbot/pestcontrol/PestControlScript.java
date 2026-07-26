@@ -95,7 +95,7 @@ public class PestControlScript extends Script {
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
     private static final long WATCHDOG_LOG_INTERVAL_MILLIS = 6_000L;
     private static final long BOARDING_RETRY_MILLIS = 600L;
-    private static final long BOARDING_CONFIRM_TIMEOUT_MILLIS = 5_000L;
+    private static final long BOARDING_CONFIRM_TIMEOUT_MILLIS = 3_000L;
     public static final boolean DEBUG = false;
 
     public static List<Portal> portals = List.of(PURPLE, BLUE, RED, YELLOW);
