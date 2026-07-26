@@ -32,14 +32,13 @@ import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 import net.runelite.client.plugins.pestcontrol.Portal;
-import org.apache.commons.lang3.tuple.Pair;
 
 import javax.inject.Inject;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import static net.runelite.client.plugins.microbot.util.prayer.Rs2Prayer.isQuickPrayerEnabled;
-import static net.runelite.client.plugins.microbot.util.walker.Rs2Walker.distanceToRegion;
 import static net.runelite.client.plugins.pestcontrol.Portal.*;
 
 public class PestControlScript extends Script {
@@ -47,6 +46,7 @@ public class PestControlScript extends Script {
     boolean initialise = true;
     boolean walkToCenter = false;
     private boolean wasInPestControl = false;
+    private Portal selectedPortal = null;
     PestControlConfig config;
     private final PestControlPlugin plugin;
 
@@ -74,6 +74,9 @@ public class PestControlScript extends Script {
     );
 
     final int distanceToPortal = 8;
+    private static final int PORTAL_CROWD_RADIUS = 12;
+    private static final int PORTAL_MATCH_RADIUS = 5;
+    private static final int SPINNER_PORTAL_RADIUS = 8;
     public static final boolean DEBUG = false;
 
     public static List<Portal> portals = List.of(PURPLE, BLUE, RED, YELLOW);
@@ -192,18 +195,7 @@ public class PestControlScript extends Script {
                             || handleAttack(PestControlNpc.SPINNER, 3)) {
                         return;
                     }
-                    Rs2NpcModel portal = Microbot.getRs2NpcCache().query()
-                            .where(n -> n.getName() != null && n.getName().toLowerCase().contains("portal")
-                                    && n.getNpc() != null && !n.getNpc().isDead()
-                                    && Arrays.stream(Microbot.getClientThread().runOnClientThreadOptional(() ->
-                                        Microbot.getClient().getNpcDefinition(n.getId()).getActions()).orElse(new String[0]))
-                                    .anyMatch(a -> a != null && a.equalsIgnoreCase("attack")))
-                            .nearest();
-                    if (portal != null) {
-                        if (portal.click("Attack")) {
-                            sleepUntil(() -> !Microbot.getClient().getLocalPlayer().isInteracting());
-                        }
-                    } else {
+                    if (!attackPortals()) {
                         if (!Microbot.getClient().getLocalPlayer().isInteracting()) {
                             Rs2NpcModel attackableNpc = Microbot.getRs2NpcCache().query()
                                     .where(n -> n.getNpc() != null && !n.getNpc().isDead() && n.getNpc().getCombatLevel() > 0)
@@ -216,6 +208,7 @@ public class PestControlScript extends Script {
                     if (wasInPestControl) {
                         Rs2Walker.setTarget(null);
                         wasInPestControl = false;
+                        selectedPortal = null;
                     }
                     resetPortals();
                     walkToCenter = false;
@@ -348,24 +341,8 @@ public class PestControlScript extends Script {
         return false;
     }
 
-    public Portal getClosestAttackablePortal() {
-        List<Pair<Portal, Integer>> distancesToPortal = new ArrayList();
-        for (Portal portal : portals) {
-            if (!portal.isHasShield() && !portal.getHitPoints().getText().trim().equals("0")) {
-                distancesToPortal.add(Pair.of(portal, distanceToRegion(portal.getRegionX(), portal.getRegionY())));
-            }
-        }
-
-        Pair<Portal, Integer> closestPortal = distancesToPortal.stream().min(Map.Entry.comparingByValue()).orElse(null);
-
-        if (closestPortal == null) return null;
-
-        return closestPortal.getKey();
-    }
-
-    private static boolean attackPortal() {
+    private static boolean attackPortal(Rs2NpcModel npcPortal) {
         if (!Microbot.getClient().getLocalPlayer().isInteracting()) {
-            Rs2NpcModel npcPortal = Microbot.getRs2NpcCache().query().withName("portal").nearestOnClientThread();
             if (npcPortal == null) return false;
             NPCComposition npc = Microbot.getClientThread().runOnClientThreadOptional(() ->
                     Microbot.getClient().getNpcDefinition(npcPortal.getId())).orElse(null);
@@ -397,20 +374,143 @@ public class PestControlScript extends Script {
 
 
     private boolean attackPortals() {
-        Portal closestAttackablePortal = getClosestAttackablePortal();
-        if (closestAttackablePortal == null) return false;
-        for (Portal portal : portals) {
-            if (!portal.isHasShield() && !portal.getHitPoints().getText().trim().equals("0") && closestAttackablePortal == portal) {
-                if (!Rs2Walker.isCloseToRegion(distanceToPortal, portal.getRegionX(), portal.getRegionY())) {
-                    Rs2Walker.walkTo(WorldPoint.fromRegion(Rs2Player.getWorldLocation().getRegionID(), portal.getRegionX(), portal.getRegionY(), Microbot.getClient().getTopLevelWorldView().getPlane()), 5);
-                    attackPortal();
-                } else {
-                    attackPortal();
-                }
-                return true;
-            }
+        PortalTarget target = selectAdaptivePortalTarget();
+        if (target == null) {
+            return false;
         }
-        return false;
+
+        if (selectedPortal != target.portal) {
+            selectedPortal = target.portal;
+            Microbot.log("Pest Control target: " + target.portal
+                    + " portal (" + target.nearbyPlayers + " other players nearby)");
+        }
+
+        WorldPoint portalLocation = target.npc.getWorldLocation();
+        if (portalLocation == null) {
+            return false;
+        }
+
+        Rs2NpcModel spinner = findSpinnerNear(portalLocation);
+        if (spinner != null) {
+            return spinner.click("Attack");
+        }
+
+        WorldPoint playerLocation = Rs2Player.getWorldLocation();
+        if (playerLocation != null && playerLocation.distanceTo(portalLocation) > distanceToPortal) {
+            Rs2Walker.walkTo(portalLocation, 5);
+            return true;
+        }
+
+        return attackPortal(target.npc);
+    }
+
+    /**
+     * Select only portals that currently expose an Attack action. Among those,
+     * favour the least-covered portal and use purple as the tie-break because
+     * mass-world players commonly leave the safer west lane under-covered.
+     */
+    private PortalTarget selectAdaptivePortalTarget() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Player localPlayer = Microbot.getClient().getLocalPlayer();
+            if (localPlayer == null) {
+                return null;
+            }
+
+            List<Rs2NpcModel> attackablePortals = Microbot.getRs2NpcCache().query()
+                    .withName("portal")
+                    .where(this::hasAttackAction)
+                    .toList();
+
+            List<WorldPoint> otherPlayers = Microbot.getRs2PlayerCache().getStream()
+                    .filter(player -> player.getPlayer() != localPlayer)
+                    .map(player -> player.getWorldLocation())
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
+
+            WorldPoint playerLocation = localPlayer.getWorldLocation();
+            return attackablePortals.stream()
+                    .map(npc -> toPortalTarget(npc, otherPlayers, playerLocation))
+                    .filter(Objects::nonNull)
+                    .min(Comparator
+                            .comparingInt((PortalTarget target) -> target.nearbyPlayers)
+                            .thenComparingInt(target -> target.portal == PURPLE ? 0 : 1)
+                            .thenComparingInt(target -> target.distance))
+                    .orElse(null);
+        }).orElse(null);
+    }
+
+    private boolean hasAttackAction(Rs2NpcModel npc) {
+        if (npc == null || npc.getNpc() == null || npc.getNpc().isDead()) {
+            return false;
+        }
+        NPCComposition composition = Microbot.getClient().getNpcDefinition(npc.getId());
+        return composition != null && Arrays.stream(composition.getActions())
+                .anyMatch(action -> action != null && action.equalsIgnoreCase("attack"));
+    }
+
+    private PortalTarget toPortalTarget(
+            Rs2NpcModel npc,
+            List<WorldPoint> otherPlayers,
+            WorldPoint playerLocation) {
+        WorldPoint location = npc.getWorldLocation();
+        if (location == null) {
+            return null;
+        }
+
+        Portal portal = portals.stream()
+                .min(Comparator.comparingInt(candidate -> regionDistance(
+                        location,
+                        candidate.getRegionX(),
+                        candidate.getRegionY())))
+                .filter(candidate -> regionDistance(
+                        location,
+                        candidate.getRegionX(),
+                        candidate.getRegionY()) <= PORTAL_MATCH_RADIUS)
+                .orElse(null);
+        if (portal == null) {
+            return null;
+        }
+
+        int nearbyPlayers = (int) otherPlayers.stream()
+                .filter(player -> regionDistance(
+                        player,
+                        portal.getRegionX(),
+                        portal.getRegionY()) <= PORTAL_CROWD_RADIUS)
+                .count();
+        int distance = playerLocation == null
+                ? Integer.MAX_VALUE
+                : playerLocation.distanceTo(location);
+        return new PortalTarget(portal, npc, nearbyPlayers, distance);
+    }
+
+    private Rs2NpcModel findSpinnerNear(WorldPoint portalLocation) {
+        return Microbot.getRs2NpcCache().query()
+                .withIds(SPINNER_IDS.stream().mapToInt(Integer::intValue).toArray())
+                .where(spinner -> spinner.getNpc() != null
+                        && !spinner.getNpc().isDead()
+                        && spinner.getWorldLocation() != null
+                        && spinner.getWorldLocation().distanceTo(portalLocation) <= SPINNER_PORTAL_RADIUS)
+                .nearestOnClientThread(portalLocation, SPINNER_PORTAL_RADIUS);
+    }
+
+    private static int regionDistance(WorldPoint point, int regionX, int regionY) {
+        return Math.max(
+                Math.abs(point.getRegionX() - regionX),
+                Math.abs(point.getRegionY() - regionY));
+    }
+
+    private static final class PortalTarget {
+        private final Portal portal;
+        private final Rs2NpcModel npc;
+        private final int nearbyPlayers;
+        private final int distance;
+
+        private PortalTarget(Portal portal, Rs2NpcModel npc, int nearbyPlayers, int distance) {
+            this.portal = portal;
+            this.npc = npc;
+            this.nearbyPlayers = nearbyPlayers;
+            this.distance = distance;
+        }
     }
 
     private boolean attackSpinner() {
@@ -479,6 +579,7 @@ public class PestControlScript extends Script {
         initialise = true;
         walkToCenter = false;
         wasInPestControl = false;
+        selectedPortal = null;
         super.shutdown();
     }
 }
