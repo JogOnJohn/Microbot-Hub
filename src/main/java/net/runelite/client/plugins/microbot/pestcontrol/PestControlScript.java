@@ -10,6 +10,7 @@ import net.runelite.api.ObjectID;
 import net.runelite.api.Player;
 import net.runelite.api.Skill;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
@@ -84,6 +85,7 @@ public class PestControlScript extends Script {
     private static final int PORTAL_SWITCH_CROWD_MARGIN = 1;
     private static final int OPENING_SIDE_DISTANCE = 10;
     private static final int MINIMAP_STEP_DISTANCE = 14;
+    private static final int ACTIVITY_MAINTENANCE_PERCENT = 60;
     private static final long MOVEMENT_RETRY_MILLIS = 750L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
@@ -232,7 +234,12 @@ public class PestControlScript extends Script {
         if (target == null || !claimAttackCommand()) {
             return false;
         }
-        return target.click("Attack");
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                target.getNpc() != null
+                        && !target.getNpc().isDead()
+                        && hasAttackAction(target)
+                        && target.click("Attack")
+        ).orElse(false);
     }
 
     private boolean dispatchPortalAttack(Rs2NpcModel target) {
@@ -398,16 +405,22 @@ public class PestControlScript extends Script {
             return;
         }
 
-        if (isPlayerInteracting()) {
-            transitionTo(RuntimeState.HOLDING_COMBAT, "finishing current fallback target");
+        int activityPercent = getActivityPercent();
+        if (activityPercent >= 0 && activityPercent <= ACTIVITY_MAINTENANCE_PERCENT) {
+            if (isPlayerInteracting()) {
+                transitionTo(RuntimeState.ACTIVITY_FALLBACK, "maintaining activity");
+                runWatchdog(playerLocation);
+                return;
+            }
+            Rs2NpcModel attackableNpc = nearestAttackablePest();
+            transitionTo(RuntimeState.ACTIVITY_FALLBACK, "maintaining activity");
+            dispatchAttack(attackableNpc);
+            runWatchdog(playerLocation);
             return;
         }
 
-        if (isActivityLow()) {
-            Rs2NpcModel attackableNpc = nearestAttackablePest();
-            transitionTo(RuntimeState.ACTIVITY_FALLBACK, "activity bar low");
-            dispatchAttack(attackableNpc);
-            runWatchdog(playerLocation);
+        if (isPlayerInteracting()) {
+            transitionTo(RuntimeState.HOLDING_COMBAT, "finishing current fallback target");
             return;
         }
 
@@ -487,12 +500,20 @@ public class PestControlScript extends Script {
         Rs2Widget.clickWidget(ComponentID.MINIMAP_QUICK_PRAYER_ORB);
     }
 
-    private boolean isActivityLow() {
+    private int getActivityPercent() {
         return Microbot.getClientThread().runOnClientThreadOptional(() -> {
-            Widget activity = Microbot.getClient().getWidget(26738700); // 145 pixels = 100%
-            Widget activityBar = activity == null ? null : activity.getChild(0);
-            return activityBar != null && activityBar.getWidth() <= 20;
-        }).orElse(false);
+            Widget container = Microbot.getClient().getWidget(
+                    InterfaceID.PestStatusOverlay.ACTIVITY_CONTAINER);
+            Widget progress = Microbot.getClient().getWidget(
+                    InterfaceID.PestStatusOverlay.ACTIVITY_BAR);
+            Widget containerBar = container == null ? null : container.getChild(0);
+            Widget progressBar = progress == null ? null : progress.getChild(0);
+            if (containerBar == null || progressBar == null || containerBar.getWidth() <= 0) {
+                return -1;
+            }
+            return Math.max(0, Math.min(100, (int) Math.round(
+                    100.0 * progressBar.getWidth() / containerBar.getWidth())));
+        }).orElse(-1);
     }
 
     private Rs2NpcModel nearestAttackablePest() {
@@ -501,7 +522,8 @@ public class PestControlScript extends Script {
                         .where(n -> n.getNpc() != null
                                 && !n.getNpc().isDead()
                                 && !"Brawler".equalsIgnoreCase(n.getNpc().getName())
-                                && n.getNpc().getCombatLevel() > 0)
+                                && n.getNpc().getCombatLevel() > 0
+                                && hasAttackAction(n))
                         .nearest());
     }
 
@@ -559,19 +581,24 @@ public class PestControlScript extends Script {
     }
 
     private static boolean attackPortal(Rs2NpcModel npcPortal) {
-        if (npcPortal == null) return false;
-        NPCComposition npc = Microbot.getClientThread().runOnClientThreadOptional(() ->
-                Microbot.getClient().getNpcDefinition(npcPortal.getId())).orElse(null);
-        if (npc == null) return false;
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            if (npcPortal == null || npcPortal.getNpc() == null || npcPortal.getNpc().isDead()) {
+                return false;
+            }
+            NPCComposition npc = Microbot.getClient().getNpcDefinition(npcPortal.getId());
+            if (npc == null) {
+                return false;
+            }
 
-        String[] actions = npc.getActions();
-        if (actions != null
-                && Arrays.stream(actions).anyMatch(x -> x != null && x.equalsIgnoreCase("attack"))) {
-            // Rs2NpcModel.click uses the actor's LocalPoint for camera rotation, so it
-            // remains valid inside the Pest Control instance and can preempt a pest.
-            return npcPortal.click("Attack");
-        }
-        return false;
+            String[] actions = npc.getActions();
+            if (actions != null
+                    && Arrays.stream(actions).anyMatch(x -> x != null && x.equalsIgnoreCase("attack"))) {
+                // Rs2NpcModel.click uses the actor's LocalPoint for camera rotation, so it
+                // remains valid inside the Pest Control instance and can preempt a pest.
+                return npcPortal.click("Attack");
+            }
+            return false;
+        }).orElse(false);
     }
 
 
@@ -944,9 +971,15 @@ public class PestControlScript extends Script {
                     .collect(Collectors.toList());
 
             WorldPoint playerLocation = Rs2Player.getWorldLocation();
-            List<PortalTarget> targets = visiblePortals.stream()
-                    .map(npc -> toPortalTarget(npc, otherPlayers, playerLocation))
-                    .filter(Objects::nonNull)
+            List<PortalTarget> targets = portals.stream()
+                    .map(portal -> toPortalTarget(
+                            portal,
+                            visiblePortals.stream()
+                                    .filter(npc -> matchesPortal(npc, portal))
+                                    .findFirst()
+                                    .orElse(null),
+                            otherPlayers,
+                            playerLocation))
                     .filter(this::isPortalReady)
                     .collect(Collectors.toList());
 
@@ -998,29 +1031,18 @@ public class PestControlScript extends Script {
         return true;
     }
 
+    private boolean matchesPortal(Rs2NpcModel npc, Portal portal) {
+        WorldPoint location = npc == null ? null : npc.getWorldLocation();
+        return location != null
+                && regionDistance(location, portal.getRegionX(), portal.getRegionY())
+                <= PORTAL_MATCH_RADIUS;
+    }
+
     private PortalTarget toPortalTarget(
+            Portal portal,
             Rs2NpcModel npc,
             List<WorldPoint> otherPlayers,
             WorldPoint playerLocation) {
-        WorldPoint location = npc.getWorldLocation();
-        if (location == null) {
-            return null;
-        }
-
-        Portal portal = portals.stream()
-                .min(Comparator.comparingInt(candidate -> regionDistance(
-                        location,
-                        candidate.getRegionX(),
-                        candidate.getRegionY())))
-                .filter(candidate -> regionDistance(
-                        location,
-                        candidate.getRegionX(),
-                        candidate.getRegionY()) <= PORTAL_MATCH_RADIUS)
-                .orElse(null);
-        if (portal == null) {
-            return null;
-        }
-
         int nearbyPlayers = (int) otherPlayers.stream()
                 .filter(player -> regionDistance(
                         player,
