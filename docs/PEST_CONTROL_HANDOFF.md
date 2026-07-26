@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.13`
+- Plugin version: `2.4.14`
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -101,8 +101,8 @@ desired portal without enabling specials elsewhere.
   fallback pests therefore cannot delay a portal chase; the portal or its
   healing Spinner becomes the activity source once a shield drops.
 - Movement commands retry after 750 ms when stationary and 1.5 seconds while
-  already moving. This preserves prompt stall recovery without repeatedly
-  issuing minimap clicks during healthy travel.
+  already moving. Every command attempt is throttled even if the walker cannot
+  confirm dispatch, while only observed movement counts as watchdog progress.
 - A sub-five-second login-state gap immediately after leaving a round is
   reported as a requeue transition. A longer gap still becomes a genuine
   `INITIALISING: waiting for login` state.
@@ -121,13 +121,13 @@ The focused build used the current shortest-path spike client jar:
 
 Packaged artifact:
 
-`build\libs\PestControlPlugin-2.4.13.jar`
+`build\libs\PestControlPlugin-2.4.14.jar`
 
 Installed artifact:
 
 `C:\Users\Billy\.runelite\microbot-plugins\PestControlPlugin.jar`
 
-The 2.4.13 installed/package SHA-256 will be recorded after packaging and
+The 2.4.14 installed/package SHA-256 will be recorded after packaging and
 replacement. The previous validated 2.4.10 SHA-256 was:
 
 `C9EBD537FA25D07D1D590F384CFB05160CA081680866CFC338F4EFDAD0535A13`
@@ -145,7 +145,7 @@ Launch the validated spike client with:
 
 `C:\Users\Billy\IdeaProjects\Microbot-shortestpath-sync\launch-microbot-shortestpath-spike.bat`
 
-## Version 2.4.13 validation status
+## Version 2.4.14 validation status
 
 The implementation addresses the 2.4.10 diagnostic findings: portal pursuit
 now outranks activity fallback, overlay state is isolated from global utility
@@ -156,7 +156,10 @@ instance. Version 2.4.12 instead reads status through the plugin's actual
 running script. Its first complete round then showed that the login grace could
 still miss a transition after `wasInPestControl` had already been cleared.
 Version 2.4.13 preserves a separate round-exit timestamp so the grace survives
-that state reset. Focused build, installation, and two-round live smoke evidence
+that state reset. A subsequent death/loading transition showed that an in-round
+login gap should preserve the current combat state rather than report
+`REQUEUE`; version 2.4.14 distinguishes those cases and also throttles ambiguous
+walker attempts. Focused build, installation, and two-round live smoke evidence
 are pending.
 
 ## Historical 2.4.10 live validation on 2026-07-27

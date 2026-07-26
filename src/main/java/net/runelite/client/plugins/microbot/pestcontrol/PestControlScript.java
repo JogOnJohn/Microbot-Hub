@@ -245,9 +245,10 @@ public class PestControlScript extends Script {
             WorldPoint clickTarget = stepTowards(playerLocation, target, MINIMAP_STEP_DISTANCE);
             // walkFastCanvas prefers a direct scene click when the tile is visible,
             // and only falls back to the minimap when it is not.
-            if (Rs2Walker.walkFastCanvas(clickTarget)) {
-                lastMovementCommandAt = now;
-            }
+            Rs2Walker.walkFastCanvas(clickTarget);
+            // Throttle the attempt even when the walker cannot confirm dispatch.
+            // Progress is still based only on observed player movement.
+            lastMovementCommandAt = now;
         }
         return true;
     }
@@ -441,8 +442,12 @@ public class PestControlScript extends Script {
                     }
                     boolean recentRoundExit = lastRoundExitAt > 0L
                             && now - lastRoundExitAt < ROUND_TRANSITION_LOGIN_GRACE_MILLIS;
-                    if ((wasInPestControl || recentRoundExit)
-                            && now - loginUnavailableSince < ROUND_TRANSITION_LOGIN_GRACE_MILLIS) {
+                    boolean withinGrace = now - loginUnavailableSince
+                            < ROUND_TRANSITION_LOGIN_GRACE_MILLIS;
+                    if (wasInPestControl && withinGrace) {
+                        return;
+                    }
+                    if (recentRoundExit && withinGrace) {
                         transitionTo(RuntimeState.REQUEUE, "round transition");
                     } else {
                         transitionTo(RuntimeState.INITIALISING, "waiting for login");
