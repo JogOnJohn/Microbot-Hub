@@ -10,38 +10,10 @@ import net.runelite.client.config.Range;
 @ConfigInformation("Start near a boat of your combat level")
 public interface PestControlConfig extends Config {
     @ConfigItem(
-            keyName = "NPC Priority 1",
-            name = "NPC Priority 1",
-            description = "What npc to attack as first option",
-            position = 2
-    )
-    default PestControlNpc Priority1() {
-        return PestControlNpc.PORTAL;
-    }
-    @ConfigItem(
-            keyName = "NPC Priority 2",
-            name = "NPC Priority 2",
-            description = "What npc to attack as second option",
-            position = 3
-    )
-    default PestControlNpc Priority2() {
-        return PestControlNpc.SPINNER;
-    }
-    @ConfigItem(
-            keyName = "NPC Priority 3",
-            name = "NPC Priority 3",
-            description = "What npc to attack as third option",
-            position = 4
-    )
-    default PestControlNpc Priority3() {
-        return PestControlNpc.BRAWLER;
-    }
-
-    @ConfigItem(
             keyName = "Alch in boat",
             name = "Alch while waiting",
             description = "Alch while waiting",
-            position = 5
+            position = 2
     )
     default boolean alchInBoat() {
         return false;
@@ -51,7 +23,7 @@ public interface PestControlConfig extends Config {
             keyName = "itemToAlch",
             name = "Item to alch",
             description = "Item to alch",
-            position = 6
+            position = 3
     )
     default String alchItem() {
         return "";
@@ -61,7 +33,7 @@ public interface PestControlConfig extends Config {
             keyName = "QuickPrayer",
             name = "Enable QuickPrayer",
             description = "Enables quick prayer",
-            position = 7
+            position = 4
     )
     default boolean quickPrayer() {
         return false;
@@ -71,7 +43,7 @@ public interface PestControlConfig extends Config {
             keyName = "Special Attack",
             name = "Use Special Attack on %",
             description = "What percentage to use Special Attack",
-            position = 8
+            position = 5
     )
     default int specialAttackPercentage() {
         return 100;
@@ -81,7 +53,7 @@ public interface PestControlConfig extends Config {
             keyName = "World",
             name = "World",
             description = "Pest Control world",
-            position = 9
+            position = 6
     )
 
     default int world() {
@@ -92,7 +64,7 @@ public interface PestControlConfig extends Config {
             keyName = "primaryCombatStyle",
             name = "Primary combat style",
             description = "Combat style used whenever a portal weapon is set to None",
-            position = 10
+            position = 7
     )
     default PestControlCombatStyle primaryCombatStyle() {
         return PestControlCombatStyle.RANGED;
@@ -102,7 +74,7 @@ public interface PestControlConfig extends Config {
             keyName = "rangedWeapon",
             name = "Ranged weapon (purple)",
             description = "Exact weapon name for the ranged-weak purple portal, or None to use the primary weapon",
-            position = 11
+            position = 8
     )
     default String rangedWeapon() {
         return "Adamant crossbow";
@@ -112,7 +84,7 @@ public interface PestControlConfig extends Config {
             keyName = "magicWeapon",
             name = "Magic weapon (blue)",
             description = "Exact weapon name for the magic-weak blue portal, or None to use the primary weapon",
-            position = 12
+            position = 9
     )
     default String magicWeapon() {
         return "None";
@@ -122,7 +94,7 @@ public interface PestControlConfig extends Config {
             keyName = "slashStabWeapon",
             name = "Slash/stab weapon (yellow)",
             description = "Exact weapon name for the slash/stab-weak yellow portal, or None to use the primary weapon",
-            position = 13
+            position = 10
     )
     default String slashStabWeapon() {
         return "Dragon scimitar";
@@ -132,7 +104,7 @@ public interface PestControlConfig extends Config {
             keyName = "crushWeapon",
             name = "Crush weapon (red)",
             description = "Exact weapon name for the crush-weak red portal, or None to use the primary weapon",
-            position = 14
+            position = 11
     )
     default String crushWeapon() {
         return "None";
@@ -146,7 +118,7 @@ public interface PestControlConfig extends Config {
             keyName = "rangedOpeningWeight",
             name = "Ranged-side opening weight",
             description = "Chance to stage near the ranged-weak purple portal at the start of each round; other sides share the remainder",
-            position = 15
+            position = 12
     )
     default int rangedOpeningWeight() {
         return 55;
