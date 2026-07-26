@@ -4,6 +4,7 @@ import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigInformation;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.Range;
 
 @ConfigGroup("pestcontrol")
 @ConfigInformation("Start near a boat of your combat level")
@@ -135,5 +136,19 @@ public interface PestControlConfig extends Config {
     )
     default String crushWeapon() {
         return "None";
+    }
+
+    @Range(
+            min = 0,
+            max = 100
+    )
+    @ConfigItem(
+            keyName = "rangedOpeningWeight",
+            name = "Ranged-side opening weight",
+            description = "Chance to stage near the ranged-weak purple portal at the start of each round; other sides share the remainder",
+            position = 15
+    )
+    default int rangedOpeningWeight() {
+        return 55;
     }
 }

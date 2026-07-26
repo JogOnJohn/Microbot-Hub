@@ -8,16 +8,17 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.PluginConstants;
 import net.runelite.client.plugins.pestcontrol.Portal;
 import net.runelite.client.ui.overlay.OverlayManager;
+import net.runelite.client.util.Text;
 
 import javax.inject.Inject;
 import java.awt.*;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import static net.runelite.client.plugins.microbot.pestcontrol.PestControlScript.portals;
 
 @PluginDescriptor(
         name = PluginConstants.MOCROSOFT + "Pest Control",
@@ -34,7 +35,7 @@ import static net.runelite.client.plugins.microbot.pestcontrol.PestControlScript
 @Slf4j
 public class PestControlPlugin extends Plugin {
 
-	static final String version = "2.3.9";
+	static final String version = "2.4.0";
 
     @Inject
     PestControlScript pestControlScript;
@@ -52,7 +53,9 @@ public class PestControlPlugin extends Plugin {
     @Inject
     private PestControlOverlay pestControlOverlay;
 
-    private final Pattern SHIELD_DROP = Pattern.compile("The ([a-z]+), [^ ]+ portal shield has dropped!", Pattern.CASE_INSENSITIVE);
+    private static final Pattern SHIELD_DROP = Pattern.compile(
+            "The\\s+(purple|blue|yellow|red)\\s*,.*?portal shield has dropped!",
+            Pattern.CASE_INSENSITIVE);
 
 
     @Override
@@ -71,24 +74,18 @@ public class PestControlPlugin extends Plugin {
 
     @Subscribe
     public void onChatMessage(ChatMessage chatMessage) {
-        if (chatMessage.getType() == ChatMessageType.GAMEMESSAGE) {
-            Matcher matcher = SHIELD_DROP.matcher(chatMessage.getMessage());
-            if (matcher.lookingAt()) {
-                switch (matcher.group(1)) {
-                    case "purple":
-                        portals.stream().filter(x -> x == Portal.PURPLE).findFirst().get().setHasShield(false);
-                        break;
-                    case "blue":
-                        portals.stream().filter(x -> x == Portal.BLUE).findFirst().get().setHasShield(false);
-                        break;
-                    case "red":
-                        portals.stream().filter(x -> x == Portal.RED).findFirst().get().setHasShield(false);
-                        break;
-                    case "yellow":
-                        portals.stream().filter(x -> x == Portal.YELLOW).findFirst().get().setHasShield(false);
-                        break;
-                }
-            }
+        if (chatMessage.getType() != ChatMessageType.GAMEMESSAGE) {
+            return;
         }
+
+        String message = Text.removeTags(chatMessage.getMessage());
+        Matcher matcher = SHIELD_DROP.matcher(message);
+        if (!matcher.find()) {
+            return;
+        }
+
+        Portal portal = Portal.valueOf(matcher.group(1).toUpperCase(Locale.ROOT));
+        portal.setHasShield(false);
+        Microbot.log("Pest Control shield dropped: " + portal + " portal");
     }
 }
