@@ -60,6 +60,7 @@ public class PestControlScript extends Script {
     private String managedAttackOptionName = null;
     private int managedAttackOptionIndex = -1;
     private long lastBoardingAttemptAt = 0L;
+    private boolean boardingAttemptPending = false;
     PestControlConfig config;
     private final PestControlPlugin plugin;
 
@@ -94,6 +95,7 @@ public class PestControlScript extends Script {
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
     private static final long WATCHDOG_LOG_INTERVAL_MILLIS = 6_000L;
     private static final long BOARDING_RETRY_MILLIS = 600L;
+    private static final long BOARDING_CONFIRM_TIMEOUT_MILLIS = 5_000L;
     public static final boolean DEBUG = false;
 
     public static List<Portal> portals = List.of(PURPLE, BLUE, RED, YELLOW);
@@ -319,6 +321,7 @@ public class PestControlScript extends Script {
         managedAttackOptionName = null;
         managedAttackOptionIndex = -1;
         lastBoardingAttemptAt = 0L;
+        boardingAttemptPending = false;
         runtimeState = RuntimeState.STOPPED;
         runtimeDetail = "";
         stateEnteredAt = 0L;
@@ -381,6 +384,7 @@ public class PestControlScript extends Script {
 
         pendingPostRoundRestore = false;
         lastBoardingAttemptAt = 0L;
+        boardingAttemptPending = false;
         handleQuickPrayerOnce();
         activateSpecialAttackIfReady();
 
@@ -440,6 +444,7 @@ public class PestControlScript extends Script {
             quickPrayerHandled = false;
             lastMovementCommandAt = 0L;
             lastAttackCommandAt = 0L;
+            boardingAttemptPending = false;
             resetPortals();
             Microbot.log("Pest Control round ended; reboarding immediately");
         }
@@ -464,7 +469,8 @@ public class PestControlScript extends Script {
         }
 
         if (!isInBoat && !initialise) {
-            transitionTo(RuntimeState.REQUEUE, "boarding now");
+            transitionTo(RuntimeState.REQUEUE,
+                    boardingAttemptPending ? "waiting for boat entry" : "boarding now");
             boardBoat();
             return;
         }
@@ -474,6 +480,7 @@ public class PestControlScript extends Script {
         if (isInBoat) {
             transitionTo(RuntimeState.BOAT, "waiting for launch");
             lastBoardingAttemptAt = 0L;
+            boardingAttemptPending = false;
             if (pendingPostRoundRestore) {
                 restorePrimaryWeapon();
                 applyPrimaryAttackMode();
@@ -554,6 +561,13 @@ public class PestControlScript extends Script {
 
     private boolean boardBoat() {
         long now = System.currentTimeMillis();
+        if (boardingAttemptPending) {
+            if (now - lastBoardingAttemptAt < BOARDING_CONFIRM_TIMEOUT_MILLIS) {
+                return false;
+            }
+            boardingAttemptPending = false;
+            Microbot.log("Pest Control boat entry was not observed; retrying gangplank");
+        }
         if (now - lastBoardingAttemptAt < BOARDING_RETRY_MILLIS) {
             return false;
         }
@@ -565,7 +579,11 @@ public class PestControlScript extends Script {
                 : combatLevel >= 70
                 ? ObjectID.GANGPLANK_25631
                 : ObjectID.GANGPLANK_14315;
-        return Microbot.getRs2TileObjectCache().query().interact(gangplankId);
+        boolean dispatched = Microbot.getRs2TileObjectCache().query().interact(gangplankId);
+        if (dispatched) {
+            boardingAttemptPending = true;
+        }
+        return dispatched;
     }
 
     public boolean isOutside() {
@@ -1297,6 +1315,7 @@ public class PestControlScript extends Script {
         selectedPortal = null;
         openingPortal = null;
         lastBoardingAttemptAt = 0L;
+        boardingAttemptPending = false;
         super.shutdown();
     }
 }
