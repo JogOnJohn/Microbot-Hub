@@ -153,4 +153,32 @@ public interface PestControlConfig extends Config {
     default int rangedOpeningWeight() {
         return 55;
     }
+
+    @Range(
+            min = 0,
+            max = 100
+    )
+    @ConfigItem(
+            keyName = "activityRecoveryStart",
+            name = "Activity recovery start",
+            description = "Pause portal travel and acquire a nearby combat target when activity falls to this percentage",
+            position = 16
+    )
+    default int activityRecoveryStart() {
+        return 60;
+    }
+
+    @Range(
+            min = 0,
+            max = 100
+    )
+    @ConfigItem(
+            keyName = "activityRecoveryTarget",
+            name = "Activity recovery target",
+            description = "Resume the portal strategy after activity recovers to this percentage",
+            position = 17
+    )
+    default int activityRecoveryTarget() {
+        return 75;
+    }
 }

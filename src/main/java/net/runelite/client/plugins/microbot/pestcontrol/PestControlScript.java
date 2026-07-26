@@ -17,6 +17,7 @@ import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
+import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
@@ -89,7 +90,7 @@ public class PestControlScript extends Script {
     private static final int RANGED_STAGING_DISTANCE = 6;
     private static final int MELEE_ENGAGEMENT_DISTANCE = 1;
     private static final int MINIMAP_STEP_DISTANCE = 14;
-    private static final int ACTIVITY_MAINTENANCE_PERCENT = 60;
+    private static final int ACTIVITY_TARGET_RADIUS = 12;
     private static final long MOVEMENT_RETRY_MILLIS = 750L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
     private static final long PORTAL_REAFFIRM_MILLIS = 3_000L;
@@ -110,6 +111,7 @@ public class PestControlScript extends Script {
     private long lastAttackCommandAt = 0L;
     private WorldPoint lastProgressLocation = null;
     private boolean quickPrayerHandled = false;
+    private boolean activityRecoveryActive = false;
 
     private enum RuntimeState {
         INITIALISING,
@@ -138,9 +140,12 @@ public class PestControlScript extends Script {
     private void transitionTo(RuntimeState state, String detail) {
         String normalizedDetail = detail == null ? "" : detail;
         if (runtimeState != state || !runtimeDetail.equals(normalizedDetail)) {
+            long now = System.currentTimeMillis();
             runtimeState = state;
             runtimeDetail = normalizedDetail;
-            stateEnteredAt = System.currentTimeMillis();
+            stateEnteredAt = now;
+            lastProgressAt = now;
+            lastProgressLocation = null;
             lastWatchdogLogAt = 0L;
             lastAttackCommandAt = 0L;
             Microbot.log("Pest Control state: " + state
@@ -223,7 +228,9 @@ public class PestControlScript extends Script {
         long now = System.currentTimeMillis();
         if (!Rs2Player.isMoving() || now - lastMovementCommandAt >= MOVEMENT_RETRY_MILLIS) {
             WorldPoint clickTarget = stepTowards(playerLocation, target, MINIMAP_STEP_DISTANCE);
-            if (Rs2Walker.walkMiniMap(clickTarget)) {
+            // walkFastCanvas prefers a direct scene click when the tile is visible,
+            // and only falls back to the minimap when it is not.
+            if (Rs2Walker.walkFastCanvas(clickTarget)) {
                 lastMovementCommandAt = now;
             }
         }
@@ -256,6 +263,16 @@ public class PestControlScript extends Script {
             return false;
         }
         return attackPortal(target);
+    }
+
+    private static boolean isNpcOnCanvas(Rs2NpcModel target) {
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                target != null
+                        && target.getNpc() != null
+                        && !target.getNpc().isDead()
+                        && target.getLocalLocation() != null
+                        && Rs2Camera.isTileOnScreen(target.getLocalLocation())
+        ).orElse(false);
     }
 
     private Portal chooseOpeningPortal() {
@@ -336,6 +353,7 @@ public class PestControlScript extends Script {
         lastAttackCommandAt = 0L;
         lastProgressLocation = null;
         quickPrayerHandled = false;
+        activityRecoveryActive = false;
         transitionTo(RuntimeState.INITIALISING, "starting script");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
@@ -374,6 +392,7 @@ public class PestControlScript extends Script {
             openingSideReached = false;
             selectedPortal = null;
             quickPrayerHandled = false;
+            activityRecoveryActive = false;
             lastProgressLocation = null;
             lastProgressAt = System.currentTimeMillis();
             lastMovementCommandAt = 0L;
@@ -392,6 +411,13 @@ public class PestControlScript extends Script {
         boardingAttemptPending = false;
         handleQuickPrayerOnce();
         WorldPoint playerLocation = Rs2Player.getWorldLocation();
+        int activityPercent = getActivityPercent();
+        updateActivityRecovery(activityPercent);
+        if (activityRecoveryActive && recoverActivity(playerLocation, activityPercent)) {
+            runWatchdog(playerLocation);
+            return;
+        }
+
         PortalTarget portalTarget = selectAdaptivePortalTarget();
         if (portalTarget != null) {
             openingSideReached = true;
@@ -411,10 +437,7 @@ public class PestControlScript extends Script {
             return;
         }
 
-        int activityPercent = getActivityPercent();
         Portal lastShieldedPortal = soleShieldedPortal();
-        boolean activityNeedsMaintenance = activityPercent >= 0
-                && activityPercent <= ACTIVITY_MAINTENANCE_PERCENT;
         if (lastShieldedPortal != null
                 && moveToLastShieldedPortal(lastShieldedPortal, playerLocation)) {
             runWatchdog(playerLocation);
@@ -422,18 +445,6 @@ public class PestControlScript extends Script {
         }
 
         if (attackSpinner()) {
-            runWatchdog(playerLocation);
-            return;
-        }
-
-        if (activityNeedsMaintenance) {
-            if (isPlayerInteracting()) {
-                transitionTo(RuntimeState.ACTIVITY_FALLBACK, "maintaining activity");
-                runWatchdog(playerLocation);
-                return;
-            }
-            Rs2NpcModel attackableNpc = nearestAttackablePest();
-            maintainActivityWith(attackableNpc, playerLocation);
             runWatchdog(playerLocation);
             return;
         }
@@ -484,6 +495,7 @@ public class PestControlScript extends Script {
             openingPortal = null;
             openingSideReached = false;
             quickPrayerHandled = false;
+            activityRecoveryActive = false;
             lastMovementCommandAt = 0L;
             lastAttackCommandAt = 0L;
             boardingAttemptPending = false;
@@ -567,16 +579,125 @@ public class PestControlScript extends Script {
         }).orElse(-1);
     }
 
-    private Rs2NpcModel nearestAttackablePest() {
+    private void updateActivityRecovery(int activityPercent) {
+        if (activityPercent < 0) {
+            return;
+        }
+        int recoveryStart = Math.max(0, Math.min(100, config.activityRecoveryStart()));
+        int recoveryTarget = Math.max(
+                recoveryStart,
+                Math.max(0, Math.min(100, config.activityRecoveryTarget())));
+        if (activityPercent <= recoveryStart) {
+            if (!activityRecoveryActive) {
+                Microbot.log("Pest Control activity recovery started at " + activityPercent + "%");
+            }
+            activityRecoveryActive = true;
+        } else if (activityPercent >= recoveryTarget) {
+            if (activityRecoveryActive) {
+                Microbot.log("Pest Control activity recovered to " + activityPercent + "%");
+            }
+            activityRecoveryActive = false;
+        }
+    }
+
+    private boolean recoverActivity(WorldPoint playerLocation, int activityPercent) {
+        disableSpecialAttackIfEnabled();
+        restorePrimaryWeapon();
+        applyPrimaryAttackMode();
+
+        Rs2NpcModel spinner = nearestActivitySpinner();
+        if (spinner != null) {
+            maintainActivityWith(spinner, playerLocation);
+            return true;
+        }
+
+        // A portal already being attacked is excellent activity. Do not abandon it
+        // for an ordinary pest, but do preempt it for a nearby Spinner above.
+        if (isMaintainingActivityCombat()) {
+            transitionTo(RuntimeState.ACTIVITY_FALLBACK,
+                    "activity " + activityPercent + "% - maintaining combat");
+            return true;
+        }
+
+        Rs2NpcModel attackableNpc = preferredActivityPest();
+        if (attackableNpc == null) {
+            // With no nearby fallback, keep pursuing a portal instead of wandering.
+            return false;
+        }
+
+        maintainActivityWith(attackableNpc, playerLocation);
+        return true;
+    }
+
+    private Rs2NpcModel nearestActivitySpinner() {
         return Microbot.getClientThread().invoke(() ->
                 Microbot.getRs2NpcCache().query()
-                        .where(n -> n.getNpc() != null
-                                && !n.getNpc().isDead()
-                                && !"Brawler".equalsIgnoreCase(n.getNpc().getName())
-                                && !"Portal".equalsIgnoreCase(n.getNpc().getName())
-                                && n.getNpc().getCombatLevel() > 0
-                                && hasAttackAction(n))
+                        .withIds(SPINNER_IDS.stream().mapToInt(Integer::intValue).toArray())
+                        .where(this::isNearbyActivityTarget)
                         .nearest());
+    }
+
+    private Rs2NpcModel preferredActivityPest() {
+        return Microbot.getClientThread().invoke(() ->
+                Microbot.getRs2NpcCache().query()
+                        .where(this::isOrdinaryActivityTarget)
+                        .toList()
+                        .stream()
+                        .min(Comparator
+                                .comparingInt((Rs2NpcModel npc) ->
+                                        "Torcher".equalsIgnoreCase(npc.getName()) ? 0 : 1)
+                                .thenComparingInt(npc -> npc.getNpc().getCombatLevel())
+                                .thenComparingInt(PestControlScript::distanceFromPlayerInTiles))
+                        .orElse(null));
+    }
+
+    private boolean isNearbyActivityTarget(Rs2NpcModel npc) {
+        return npc != null
+                && npc.getNpc() != null
+                && !npc.getNpc().isDead()
+                && npc.getNpc().getCombatLevel() > 0
+                && (npc.getNpc().getHealthScale() <= 0 || npc.getNpc().getHealthRatio() > 0)
+                && distanceFromPlayerInTiles(npc) <= ACTIVITY_TARGET_RADIUS
+                && hasAttackAction(npc);
+    }
+
+    private static int distanceFromPlayerInTiles(Rs2NpcModel npc) {
+        if (npc == null) {
+            return Integer.MAX_VALUE;
+        }
+        int localDistance = npc.getDistanceFromPlayer();
+        if (localDistance == Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return Math.max(0, (localDistance + 127) / 128);
+    }
+
+    private boolean isOrdinaryActivityTarget(Rs2NpcModel npc) {
+        if (!isNearbyActivityTarget(npc)) {
+            return false;
+        }
+        String name = npc.getName();
+        return name != null
+                && !"Brawler".equalsIgnoreCase(name)
+                && !"Portal".equalsIgnoreCase(name)
+                && !"Spinner".equalsIgnoreCase(name);
+    }
+
+    private boolean isMaintainingActivityCombat() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Player player = Microbot.getClient().getLocalPlayer();
+            if (player == null || !(player.getInteracting() instanceof NPC)) {
+                return false;
+            }
+            NPC target = (NPC) player.getInteracting();
+            String name = target.getName();
+            if (target.isDead() || name == null || "Brawler".equalsIgnoreCase(name)) {
+                return false;
+            }
+            return "Portal".equalsIgnoreCase(name)
+                    || "Spinner".equalsIgnoreCase(name)
+                    || target.getCombatLevel() > 0;
+        }).orElse(false);
     }
 
     private void maintainActivityWith(Rs2NpcModel target, WorldPoint playerLocation) {
@@ -590,6 +711,12 @@ public class PestControlScript extends Script {
         ).orElse(null);
         if (targetLocation == null) {
             transitionTo(RuntimeState.ACTIVITY_FALLBACK, "no attackable pest nearby");
+            return;
+        }
+
+        if (isNpcOnCanvas(target)) {
+            transitionTo(RuntimeState.ACTIVITY_FALLBACK, "attacking visible activity target");
+            dispatchAttack(target);
             return;
         }
 
@@ -705,19 +832,6 @@ public class PestControlScript extends Script {
         prepareWeaponForPortal(target.portal);
 
         int engagementDistance = engagementDistanceForPortal(target.portal);
-        WorldPoint portalLocation = logicalPortalLocation(target.portal, playerLocation);
-        WorldPoint approachLocation = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
-                ? rangedPortalStagingLocation(target.portal, playerLocation)
-                : logicalPortalLocation(target.portal, playerLocation);
-        int arrivalDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
-                ? STAGING_ARRIVAL_DISTANCE
-                : MELEE_ENGAGEMENT_DISTANCE;
-        if (playerLocation.distanceTo(portalLocation) > engagementDistance) {
-            transitionTo(RuntimeState.CHASE_PORTAL, target.portal + " portal");
-            moveToward(playerLocation, approachLocation, arrivalDistance);
-            return;
-        }
-
         if (isInteractingWithSpinnerNear(target.portal)) {
             disableSpecialAttackIfEnabled();
             transitionTo(RuntimeState.KILL_SPINNER, target.portal + " portal");
@@ -731,10 +845,44 @@ public class PestControlScript extends Script {
             if (isInteractingWith(spinner.getNpc())) {
                 return;
             }
+
+            WorldPoint spinnerLocation = Microbot.getClientThread().runOnClientThreadOptional(
+                    spinner::getWorldLocation).orElse(null);
+            if (isNpcOnCanvas(spinner)) {
+                dispatchAttack(spinner);
+                return;
+            }
+            if (spinnerLocation != null
+                    && playerLocation.distanceTo(spinnerLocation) > engagementDistance) {
+                moveToward(playerLocation, spinnerLocation, engagementDistance);
+                return;
+            }
             dispatchAttack(spinner);
             return;
         }
 
+        if (target.attackActionAvailable && isNpcOnCanvas(target.npc)) {
+            engagePortal(target);
+            return;
+        }
+
+        WorldPoint portalLocation = logicalPortalLocation(target.portal, playerLocation);
+        WorldPoint approachLocation = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                ? rangedPortalStagingLocation(target.portal, playerLocation)
+                : logicalPortalLocation(target.portal, playerLocation);
+        int arrivalDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                ? STAGING_ARRIVAL_DISTANCE
+                : MELEE_ENGAGEMENT_DISTANCE;
+        if (playerLocation.distanceTo(portalLocation) > engagementDistance) {
+            transitionTo(RuntimeState.CHASE_PORTAL, target.portal + " portal");
+            moveToward(playerLocation, approachLocation, arrivalDistance);
+            return;
+        }
+
+        engagePortal(target);
+    }
+
+    private void engagePortal(PortalTarget target) {
         transitionTo(RuntimeState.ATTACK_PORTAL, target.portal + " portal");
         activateSpecialAttackIfReady(target.portal);
         if (isInteractingWithPortal(target.portal)) {
@@ -1325,7 +1473,7 @@ public class PestControlScript extends Script {
                 .withIds(SPINNER_IDS.stream().mapToInt(Integer::intValue).toArray())
                 .where(npc -> npc.getNpc() != null
                         && !npc.getNpc().isDead()
-                        && npc.getDistanceFromPlayer() <= SPINNER_PORTAL_RADIUS)
+                        && distanceFromPlayerInTiles(npc) <= SPINNER_PORTAL_RADIUS)
                 .nearestOnClientThread();
         if (spinner == null) {
             return false;
