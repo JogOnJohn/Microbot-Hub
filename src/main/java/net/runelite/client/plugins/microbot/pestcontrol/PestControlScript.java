@@ -55,10 +55,9 @@ public class PestControlScript extends Script {
     private String primaryWeaponName = null;
     private final Set<String> missingWeaponsLogged = new HashSet<>();
     private final Set<String> missingAttackOptionsLogged = new HashSet<>();
+    private final Map<String, Integer> attackOptionIndexByWeaponStyle = new HashMap<>();
+    private String activeAttackOptionKey = null;
     private boolean missingPrimaryWeaponLogged = false;
-    private String managedAttackOptionWeapon = null;
-    private String managedAttackOptionName = null;
-    private int managedAttackOptionIndex = -1;
     private long lastBoardingAttemptAt = 0L;
     private boolean boardingAttemptPending = false;
     private final Set<Portal> destroyedPortals = EnumSet.noneOf(Portal.class);
@@ -90,6 +89,10 @@ public class PestControlScript extends Script {
     private static final int RANGED_STAGING_DISTANCE = 6;
     private static final int MELEE_ENGAGEMENT_DISTANCE = 1;
     private static final int MINIMAP_STEP_DISTANCE = 14;
+    private static final int SOUTH_PERIMETER_REGION_Y = 20;
+    private static final int WEST_PERIMETER_REGION_X = 15;
+    private static final int EAST_PERIMETER_REGION_X = 48;
+    private static final int PERIMETER_WAYPOINT_ARRIVAL_DISTANCE = 2;
     private static final int ACTIVITY_TARGET_RADIUS = 12;
     private static final long MOVEMENT_RETRY_MILLIS = 750L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
@@ -237,6 +240,67 @@ public class PestControlScript extends Script {
         return true;
     }
 
+    private boolean moveTowardPortal(
+            WorldPoint playerLocation,
+            WorldPoint target,
+            int arrivalDistance,
+            Portal portal) {
+        WorldPoint perimeterWaypoint = southPerimeterWaypoint(playerLocation, portal);
+        if (perimeterWaypoint != null) {
+            return moveToward(
+                    playerLocation,
+                    perimeterWaypoint,
+                    PERIMETER_WAYPOINT_ARRIVAL_DISTANCE);
+        }
+        return moveToward(playerLocation, target, arrivalDistance);
+    }
+
+    /**
+     * Once outside the Void Knight enclosure, cross between the east and west
+     * portal lanes around the south fence. This avoids repeatedly clicking
+     * through a closed gate while still keeping the player in the pest lanes.
+     */
+    private static WorldPoint southPerimeterWaypoint(WorldPoint playerLocation, Portal portal) {
+        if (playerLocation == null || portal == null) {
+            return null;
+        }
+
+        int regionX = playerLocation.getRegionX();
+        int regionY = playerLocation.getRegionY();
+        boolean westOutside = regionX <= WEST_PERIMETER_REGION_X + 1;
+        boolean eastOutside = regionX >= EAST_PERIMETER_REGION_X - 1;
+        boolean southOutside = regionY <= SOUTH_PERIMETER_REGION_Y + 2;
+
+        if (portal == BLUE || portal == YELLOW) {
+            if (westOutside && !southOutside) {
+                return regionPoint(playerLocation, WEST_PERIMETER_REGION_X, SOUTH_PERIMETER_REGION_Y);
+            }
+            if (portal == BLUE
+                    && southOutside
+                    && regionX < EAST_PERIMETER_REGION_X - PERIMETER_WAYPOINT_ARRIVAL_DISTANCE) {
+                return regionPoint(playerLocation, EAST_PERIMETER_REGION_X, SOUTH_PERIMETER_REGION_Y);
+            }
+        } else if (portal == PURPLE || portal == RED) {
+            if (eastOutside && !southOutside) {
+                return regionPoint(playerLocation, EAST_PERIMETER_REGION_X, SOUTH_PERIMETER_REGION_Y);
+            }
+            if (portal == PURPLE
+                    && southOutside
+                    && regionX > WEST_PERIMETER_REGION_X + PERIMETER_WAYPOINT_ARRIVAL_DISTANCE) {
+                return regionPoint(playerLocation, WEST_PERIMETER_REGION_X, SOUTH_PERIMETER_REGION_Y);
+            }
+        }
+        return null;
+    }
+
+    private static WorldPoint regionPoint(WorldPoint playerLocation, int regionX, int regionY) {
+        return WorldPoint.fromRegion(
+                playerLocation.getRegionID(),
+                regionX,
+                regionY,
+                playerLocation.getPlane());
+    }
+
     private boolean claimAttackCommand() {
         long now = System.currentTimeMillis();
         if (now - lastAttackCommandAt < ATTACK_RETRY_MILLIS) {
@@ -301,7 +365,7 @@ public class PestControlScript extends Script {
             return false;
         }
 
-        return moveToward(playerLocation, target, STAGING_ARRIVAL_DISTANCE);
+        return moveTowardPortal(playerLocation, target, STAGING_ARRIVAL_DISTANCE, openingPortal);
     }
 
     private boolean confirmAutoRetaliateOff() {
@@ -338,10 +402,9 @@ public class PestControlScript extends Script {
         primaryWeaponName = configuredPrimaryWeaponName();
         missingWeaponsLogged.clear();
         missingAttackOptionsLogged.clear();
+        attackOptionIndexByWeaponStyle.clear();
+        activeAttackOptionKey = null;
         missingPrimaryWeaponLogged = false;
-        managedAttackOptionWeapon = null;
-        managedAttackOptionName = null;
-        managedAttackOptionIndex = -1;
         lastBoardingAttemptAt = 0L;
         boardingAttemptPending = false;
         runtimeState = RuntimeState.STOPPED;
@@ -483,7 +546,7 @@ public class PestControlScript extends Script {
         }
 
         transitionTo(RuntimeState.PREPOSITION_PORTAL, portal + " shield pending");
-        return moveToward(playerLocation, target, STAGING_ARRIVAL_DISTANCE);
+        return moveTowardPortal(playerLocation, target, STAGING_ARRIVAL_DISTANCE, portal);
     }
 
     private void handleLobbyTick(boolean isInBoat) {
@@ -615,7 +678,7 @@ public class PestControlScript extends Script {
         // for an ordinary pest, but do preempt it for a nearby Spinner above.
         if (isMaintainingActivityCombat()) {
             transitionTo(RuntimeState.ACTIVITY_FALLBACK,
-                    "activity " + activityPercent + "% - maintaining combat");
+                    "maintaining activity combat");
             return true;
         }
 
@@ -854,7 +917,7 @@ public class PestControlScript extends Script {
             }
             if (spinnerLocation != null
                     && playerLocation.distanceTo(spinnerLocation) > engagementDistance) {
-                moveToward(playerLocation, spinnerLocation, engagementDistance);
+                moveTowardPortal(playerLocation, spinnerLocation, engagementDistance, target.portal);
                 return;
             }
             dispatchAttack(spinner);
@@ -875,7 +938,7 @@ public class PestControlScript extends Script {
                 : MELEE_ENGAGEMENT_DISTANCE;
         if (playerLocation.distanceTo(portalLocation) > engagementDistance) {
             transitionTo(RuntimeState.CHASE_PORTAL, target.portal + " portal");
-            moveToward(playerLocation, approachLocation, arrivalDistance);
+            moveTowardPortal(playerLocation, approachLocation, arrivalDistance, target.portal);
             return;
         }
 
@@ -1084,9 +1147,16 @@ public class PestControlScript extends Script {
 
     private boolean selectAttackOption(String desiredStyle) {
         String equippedWeapon = getEquippedWeaponName();
-        if (equippedWeapon.equalsIgnoreCase(managedAttackOptionWeapon)
-                && desiredStyle.equalsIgnoreCase(managedAttackOptionName)
-                && Microbot.getVarbitPlayerValue(VarPlayerID.COM_MODE) == managedAttackOptionIndex) {
+        String attackOptionKey = normalizeWeaponName(equippedWeapon)
+                + ":" + desiredStyle.toLowerCase(Locale.ROOT);
+        Integer rememberedIndex = attackOptionIndexByWeaponStyle.get(attackOptionKey);
+        if (rememberedIndex != null
+                && Microbot.getVarbitPlayerValue(VarPlayerID.COM_MODE) == rememberedIndex) {
+            if (!attackOptionKey.equals(activeAttackOptionKey)) {
+                Microbot.log("Pest Control retained attack style: " + desiredStyle
+                        + " (" + equippedWeapon + "); combat tab unchanged");
+            }
+            activeAttackOptionKey = attackOptionKey;
             return true;
         }
 
@@ -1117,8 +1187,7 @@ public class PestControlScript extends Script {
         }
 
         if (selectedIndex < 0) {
-            String missingKey = normalizeWeaponName(equippedWeapon) + ":" + desiredStyle.toLowerCase(Locale.ROOT);
-            if (missingAttackOptionsLogged.add(missingKey)) {
+            if (missingAttackOptionsLogged.add(attackOptionKey)) {
                 Microbot.log("Pest Control could not find " + desiredStyle
                         + " combat option for " + equippedWeapon);
             }
@@ -1136,11 +1205,9 @@ public class PestControlScript extends Script {
                     && sleepUntil(() -> Microbot.getVarbitPlayerValue(VarPlayerID.COM_MODE) == expectedIndex, 2000);
         }
         if (selected) {
-            managedAttackOptionWeapon = equippedWeapon;
-            managedAttackOptionName = desiredStyle;
-            managedAttackOptionIndex = expectedIndex;
-            missingAttackOptionsLogged.remove(normalizeWeaponName(equippedWeapon)
-                    + ":" + desiredStyle.toLowerCase(Locale.ROOT));
+            attackOptionIndexByWeaponStyle.put(attackOptionKey, expectedIndex);
+            activeAttackOptionKey = attackOptionKey;
+            missingAttackOptionsLogged.remove(attackOptionKey);
             Microbot.log("Pest Control attack style confirmed: " + desiredStyle
                     + " (" + equippedWeapon + ")");
         }
