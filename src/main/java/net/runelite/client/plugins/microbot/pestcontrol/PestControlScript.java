@@ -94,19 +94,21 @@ public class PestControlScript extends Script {
     private static final int EAST_PERIMETER_REGION_X = 48;
     private static final int PERIMETER_WAYPOINT_ARRIVAL_DISTANCE = 2;
     private static final int ACTIVITY_TARGET_RADIUS = 12;
-    private static final long MOVEMENT_RETRY_MILLIS = 750L;
+    private static final long MOVEMENT_RETRY_IDLE_MILLIS = 750L;
+    private static final long MOVEMENT_RETRY_MOVING_MILLIS = 1_500L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
     private static final long PORTAL_REAFFIRM_MILLIS = 3_000L;
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
     private static final long WATCHDOG_LOG_INTERVAL_MILLIS = 6_000L;
     private static final long BOARDING_RETRY_MILLIS = 600L;
     private static final long BOARDING_CONFIRM_TIMEOUT_MILLIS = 3_000L;
+    private static final long ROUND_TRANSITION_LOGIN_GRACE_MILLIS = 5_000L;
     public static final boolean DEBUG = false;
 
     public static List<Portal> portals = List.of(PURPLE, BLUE, RED, YELLOW);
 
-    private RuntimeState runtimeState = RuntimeState.STOPPED;
-    private String runtimeDetail = "";
+    private volatile RuntimeState runtimeState = RuntimeState.STOPPED;
+    private volatile String runtimeDetail = "";
     private long stateEnteredAt = 0L;
     private long lastProgressAt = 0L;
     private long lastWatchdogLogAt = 0L;
@@ -115,6 +117,7 @@ public class PestControlScript extends Script {
     private WorldPoint lastProgressLocation = null;
     private boolean quickPrayerHandled = false;
     private boolean activityRecoveryActive = false;
+    private long loginUnavailableSince = 0L;
 
     private enum RuntimeState {
         INITIALISING,
@@ -154,7 +157,13 @@ public class PestControlScript extends Script {
             Microbot.log("Pest Control state: " + state
                     + (normalizedDetail.isEmpty() ? "" : " - " + normalizedDetail));
         }
-        Microbot.status = state + (normalizedDetail.isEmpty() ? "" : ": " + normalizedDetail);
+        Microbot.status = getRuntimeStatus();
+    }
+
+    String getRuntimeStatus() {
+        RuntimeState state = runtimeState;
+        String detail = runtimeDetail;
+        return state + (detail.isEmpty() ? "" : ": " + detail);
     }
 
     private void observeProgress(WorldPoint location) {
@@ -229,7 +238,9 @@ public class PestControlScript extends Script {
 
         observeProgress(playerLocation);
         long now = System.currentTimeMillis();
-        if (!Rs2Player.isMoving() || now - lastMovementCommandAt >= MOVEMENT_RETRY_MILLIS) {
+        boolean isMoving = Rs2Player.isMoving();
+        long retryMillis = isMoving ? MOVEMENT_RETRY_MOVING_MILLIS : MOVEMENT_RETRY_IDLE_MILLIS;
+        if (now - lastMovementCommandAt >= retryMillis) {
             WorldPoint clickTarget = stepTowards(playerLocation, target, MINIMAP_STEP_DISTANCE);
             // walkFastCanvas prefers a direct scene click when the tile is visible,
             // and only falls back to the minimap when it is not.
@@ -417,13 +428,24 @@ public class PestControlScript extends Script {
         lastProgressLocation = null;
         quickPrayerHandled = false;
         activityRecoveryActive = false;
+        loginUnavailableSince = 0L;
         transitionTo(RuntimeState.INITIALISING, "starting script");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 if (!Microbot.isLoggedIn()) {
-                    transitionTo(RuntimeState.INITIALISING, "waiting for login");
+                    long now = System.currentTimeMillis();
+                    if (loginUnavailableSince == 0L) {
+                        loginUnavailableSince = now;
+                    }
+                    if (wasInPestControl
+                            && now - loginUnavailableSince < ROUND_TRANSITION_LOGIN_GRACE_MILLIS) {
+                        transitionTo(RuntimeState.REQUEUE, "round transition");
+                    } else {
+                        transitionTo(RuntimeState.INITIALISING, "waiting for login");
+                    }
                     return;
                 }
+                loginUnavailableSince = 0L;
                 if (!super.run()) return;
                 if (!confirmAutoRetaliateOff()) {
                     transitionTo(RuntimeState.INITIALISING, "disabling Auto Retaliate");
@@ -476,15 +498,15 @@ public class PestControlScript extends Script {
         WorldPoint playerLocation = Rs2Player.getWorldLocation();
         int activityPercent = getActivityPercent();
         updateActivityRecovery(activityPercent);
-        if (activityRecoveryActive && recoverActivity(playerLocation, activityPercent)) {
-            runWatchdog(playerLocation);
-            return;
-        }
-
         PortalTarget portalTarget = selectAdaptivePortalTarget();
         if (portalTarget != null) {
             openingSideReached = true;
             handlePortalTarget(portalTarget, playerLocation);
+            runWatchdog(playerLocation);
+            return;
+        }
+
+        if (activityRecoveryActive && recoverActivity(playerLocation, activityPercent)) {
             runWatchdog(playerLocation);
             return;
         }
@@ -1615,6 +1637,7 @@ public class PestControlScript extends Script {
         openingPortal = null;
         lastBoardingAttemptAt = 0L;
         boardingAttemptPending = false;
+        loginUnavailableSince = 0L;
         super.shutdown();
     }
 }

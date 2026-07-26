@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.10`
+- Plugin version: `2.4.11`
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -46,10 +46,11 @@ When several portals are ready, the script joins the largest nearby player
 group, retains the current target across one-player differences, and favours
 Purple on a tie. A newly ready portal preempts ordinary-pest combat.
 
-The explicit runtime states are published through `Microbot.status` and logged
-on transition. They include initialization, travel, boat/requeue, opening and
-pre-position travel, portal chase/attack, Spinner combat, activity recovery,
-holding combat, error, and stopped states.
+The explicit runtime states are published through `Microbot.status`, rendered
+from the script's own state snapshot, and logged on transition. They include
+initialization, travel, boat/requeue, opening and pre-position travel, portal
+chase/attack, Spinner combat, activity recovery, holding combat, error, and
+stopped states.
 
 ## Billy's validated configuration
 
@@ -96,6 +97,15 @@ desired portal without enabling specials elsewhere.
   portal/NPC interaction takes precedence when the target is visible.
 - Activity recovery uses stable state details so changing meter percentages do
   not reset attack throttling or cause state-log churn.
+- Attackable portal selection runs before sustained activity recovery. Ordinary
+  fallback pests therefore cannot delay a portal chase; the portal or its
+  healing Spinner becomes the activity source once a shield drops.
+- Movement commands retry after 750 ms when stationary and 1.5 seconds while
+  already moving. This preserves prompt stall recovery without repeatedly
+  issuing minimap clicks during healthy travel.
+- A sub-five-second login-state gap immediately after leaving a round is
+  reported as a requeue transition. A longer gap still becomes a genuine
+  `INITIALISING: waiting for login` state.
 - Gangplank boarding has a three-second confirmation guard. A retry is issued
   only when boat entry was not observed.
 - The watchdog requires observed movement or interaction; click dispatch alone
@@ -111,18 +121,20 @@ The focused build used the current shortest-path spike client jar:
 
 Packaged artifact:
 
-`build\libs\PestControlPlugin-2.4.10.jar`
+`build\libs\PestControlPlugin-2.4.11.jar`
 
 Installed artifact:
 
 `C:\Users\Billy\.runelite\microbot-plugins\PestControlPlugin.jar`
 
-Installed/package SHA-256:
+The 2.4.11 installed/package SHA-256 will be recorded after packaging and
+replacement. The previous 2.4.10 SHA-256 was:
 
 `C9EBD537FA25D07D1D590F384CFB05160CA081680866CFC338F4EFDAD0535A13`
 
-There was exactly one matching jar in the active plugin directory. The previous
-installed version is recoverable from:
+There was exactly one matching jar in the active plugin directory. The 2.4.10
+backup path will be recorded when 2.4.11 is installed. The previous 2.4.9
+backup remains at:
 
 `C:\Users\Billy\.runelite\microbot-plugin-backups\PestControl\PestControlPlugin.backup-2.4.9-20260727-075113.jar`
 
@@ -130,7 +142,15 @@ Launch the validated spike client with:
 
 `C:\Users\Billy\IdeaProjects\Microbot-shortestpath-sync\launch-microbot-shortestpath-spike.bat`
 
-## Live validation on 2026-07-27
+## Version 2.4.11 validation status
+
+The implementation addresses the 2.4.10 diagnostic findings: portal pursuit
+now outranks activity fallback, overlay state is isolated from global utility
+status text, healthy movement is clicked less often, and short round-loading
+gaps remain in `REQUEUE`. Focused build, installation, and two-round live smoke
+evidence are pending.
+
+## Historical 2.4.10 live validation on 2026-07-27
 
 Version 2.4.10 was restarted cleanly, logged into world 344, and completed two
 full mass-world rounds from launch through immediate requeue:

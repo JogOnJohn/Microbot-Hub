@@ -35,7 +35,7 @@ import java.util.regex.Pattern;
 @Slf4j
 public class PestControlPlugin extends Plugin {
 
-	static final String version = "2.4.10";
+	static final String version = "2.4.11";
 
     @Inject
     PestControlScript pestControlScript;
