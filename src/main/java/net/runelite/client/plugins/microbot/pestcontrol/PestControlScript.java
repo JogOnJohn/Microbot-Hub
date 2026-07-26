@@ -47,6 +47,7 @@ public class PestControlScript extends Script {
     boolean initialise = true;
     boolean walkToCenter = false;
     private boolean wasInPestControl = false;
+    private boolean pendingPostRoundRestore = false;
     private Portal selectedPortal = null;
     private String primaryWeaponName = null;
     private final Set<String> missingWeaponsLogged = new HashSet<>();
@@ -55,6 +56,7 @@ public class PestControlScript extends Script {
     private String managedAttackOptionWeapon = null;
     private String managedAttackOptionName = null;
     private int managedAttackOptionIndex = -1;
+    private long lastBoardingAttemptAt = 0L;
     PestControlConfig config;
     private final PestControlPlugin plugin;
 
@@ -85,6 +87,8 @@ public class PestControlScript extends Script {
     private static final int PORTAL_CROWD_RADIUS = 12;
     private static final int PORTAL_MATCH_RADIUS = 5;
     private static final int SPINNER_PORTAL_RADIUS = 8;
+    private static final int PORTAL_SWITCH_CROWD_MARGIN = 1;
+    private static final long BOARDING_RETRY_MILLIS = 600L;
     public static final boolean DEBUG = false;
 
     public static List<Portal> portals = List.of(PURPLE, BLUE, RED, YELLOW);
@@ -113,6 +117,7 @@ public class PestControlScript extends Script {
     public boolean run(PestControlConfig config) {
         this.config = config;
         selectedPortal = null;
+        pendingPostRoundRestore = false;
         primaryWeaponName = configuredPrimaryWeaponName();
         missingWeaponsLogged.clear();
         missingAttackOptionsLogged.clear();
@@ -120,6 +125,7 @@ public class PestControlScript extends Script {
         managedAttackOptionWeapon = null;
         managedAttackOptionName = null;
         managedAttackOptionIndex = -1;
+        lastBoardingAttemptAt = 0L;
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 if (!Microbot.isLoggedIn()) return;
@@ -127,20 +133,17 @@ public class PestControlScript extends Script {
 
                 final boolean isInPestControl = isInPestControl();
                 final boolean isInBoat = isInBoat();
-                System.out.println("Initialise: " + initialise);
-                System.out.println("Is in Pest Control: " + isInPestControl);
-                System.out.println("Is in Boat: " + isInBoat);
-
 
                 if (initialise && !isInPestControl && !isInBoat) {
                     Microbot.log("Initialising");
                     if (Rs2Player.getWorld() != config.world()) {
                         Microbot.hopToWorld(config.world());
-                        sleep(1000, 3000);
-                        Microbot.hopToWorld(config.world());
                         sleepUntil(() -> Rs2Player.getWorld() == config.world(), 7000);
                     }
-                    if (Rs2Player.getWorldLocation().getRegionID() == 10537 && Rs2Player.getWorld() == config.world()) {
+                    WorldPoint playerLocation = Rs2Player.getWorldLocation();
+                    if (playerLocation != null
+                            && playerLocation.getRegionID() == 10537
+                            && Rs2Player.getWorld() == config.world()) {
                         initialise = false;
                     } else {
                         Microbot.log("Traveling to Pest Island");
@@ -150,6 +153,8 @@ public class PestControlScript extends Script {
                 if (isInPestControl) {
                     initialise = false;
                     wasInPestControl = true;
+                    pendingPostRoundRestore = false;
+                    lastBoardingAttemptAt = 0L;
                     if (!isQuickPrayerEnabled() && Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER) != 0 && config.quickPrayer()) {
                         final Widget prayerOrb = Rs2Widget.getWidget(ComponentID.MINIMAP_QUICK_PRAYER_ORB);
                         if (prayerOrb != null) {
@@ -170,25 +175,26 @@ public class PestControlScript extends Script {
                     }
 
                     activateSpecialAttackIfReady();
-                    Widget activity = Rs2Widget.getWidget(26738700); //145 = 100%
-                    if (activity != null && activity.getChild(0).getWidth() <= 20 && !Rs2Combat.inCombat()) {
-                        Rs2NpcModel attackableNpc = Microbot.getClientThread().invoke(() ->
-                                Microbot.getRs2NpcCache().query()
-                                        .where(n -> n.getNpc() != null && !n.getNpc().isDead() && n.getNpc().getCombatLevel() > 0)
-                                        .nearest());
-                        if (attackableNpc != null) attackableNpc.click("Attack");
+
+                    if (Microbot.getClient().getLocalPlayer().isInteracting())
                         return;
-                    }
 
                     var brawler = Microbot.getRs2NpcCache().query().withName("brawler").nearestOnClientThread();
                     if (brawler != null && brawler.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) < 3) {
                         brawler.click("Attack");
-                        sleepUntil(() -> !Rs2Combat.inCombat());
                         return;
                     }
 
-                    if (Microbot.getClient().getLocalPlayer().isInteracting())
+                    if (isActivityLow()) {
+                        if (attackPortals()) {
+                            return;
+                        }
+                        Rs2NpcModel attackableNpc = nearestAttackablePest();
+                        if (attackableNpc != null) {
+                            attackableNpc.click("Attack");
+                        }
                         return;
+                    }
 
 
                     if (handleAttack(PestControlNpc.BRAWLER, 1)
@@ -219,22 +225,26 @@ public class PestControlScript extends Script {
                 } else {
                     if (wasInPestControl) {
                         Rs2Walker.setTarget(null);
-                        restorePrimaryWeapon();
                         wasInPestControl = false;
+                        pendingPostRoundRestore = true;
                         selectedPortal = null;
+                        walkToCenter = false;
+                        Microbot.log("Pest Control round ended; reboarding immediately");
                     }
+                    if (!isInBoat && !initialise) {
+                        boardBoat();
+                        return;
+                    }
+
                     resetPortals();
                     walkToCenter = false;
-                    if (!isInBoat && !initialise) {
-                        if (Microbot.getClient().getLocalPlayer().getCombatLevel() >= 100) {
-                            Microbot.getRs2TileObjectCache().query().interact(ObjectID.GANGPLANK_25632);
-                        } else if (Microbot.getClient().getLocalPlayer().getCombatLevel() >= 70) {
-                            Microbot.getRs2TileObjectCache().query().interact(ObjectID.GANGPLANK_25631);
-                        } else {
-                            Microbot.getRs2TileObjectCache().query().interact(ObjectID.GANGPLANK_14315);
+                    if (isInBoat) {
+                        lastBoardingAttemptAt = 0L;
+                        if (pendingPostRoundRestore) {
+                            restorePrimaryWeapon();
+                            applyPrimaryAttackMode();
+                            pendingPostRoundRestore = false;
                         }
-                        sleepUntil(this::isInBoat, 3000);
-                    } else {
                         if (config.alchInBoat() && !config.alchItem().equalsIgnoreCase("")) {
                             Rs2Magic.alch(config.alchItem());
                             sleep(Rs2Random.between(1600, 1800));
@@ -247,6 +257,37 @@ public class PestControlScript extends Script {
             }
         }, 0, 300, TimeUnit.MILLISECONDS);
         return true;
+    }
+
+    private boolean isActivityLow() {
+        Widget activity = Rs2Widget.getWidget(26738700); // 145 pixels = 100%
+        Widget activityBar = activity == null ? null : activity.getChild(0);
+        return activityBar != null && activityBar.getWidth() <= 20;
+    }
+
+    private Rs2NpcModel nearestAttackablePest() {
+        return Microbot.getClientThread().invoke(() ->
+                Microbot.getRs2NpcCache().query()
+                        .where(n -> n.getNpc() != null
+                                && !n.getNpc().isDead()
+                                && n.getNpc().getCombatLevel() > 0)
+                        .nearest());
+    }
+
+    private boolean boardBoat() {
+        long now = System.currentTimeMillis();
+        if (now - lastBoardingAttemptAt < BOARDING_RETRY_MILLIS) {
+            return false;
+        }
+        lastBoardingAttemptAt = now;
+
+        int combatLevel = Microbot.getClient().getLocalPlayer().getCombatLevel();
+        int gangplankId = combatLevel >= 100
+                ? ObjectID.GANGPLANK_25632
+                : combatLevel >= 70
+                ? ObjectID.GANGPLANK_25631
+                : ObjectID.GANGPLANK_14315;
+        return Microbot.getRs2TileObjectCache().query().interact(gangplankId);
     }
 
     public boolean isOutside() {
@@ -665,9 +706,9 @@ public class PestControlScript extends Script {
     }
 
     /**
-     * Select only portals that currently expose an Attack action. Among those,
-     * favour the least-covered portal and use purple as the tie-break because
-     * mass-world players commonly leave the safer west lane under-covered.
+     * Select only portals that currently expose an Attack action. Join the
+     * largest player group to finish one portal at a time, retain the current
+     * live target across small crowd fluctuations, and use purple as a tie-break.
      */
     private PortalTarget selectAdaptivePortalTarget() {
         return Microbot.getClientThread().runOnClientThreadOptional(() -> {
@@ -688,14 +729,31 @@ public class PestControlScript extends Script {
                     .collect(Collectors.toList());
 
             WorldPoint playerLocation = localPlayer.getWorldLocation();
-            return attackablePortals.stream()
+            List<PortalTarget> targets = attackablePortals.stream()
                     .map(npc -> toPortalTarget(npc, otherPlayers, playerLocation))
                     .filter(Objects::nonNull)
-                    .min(Comparator
+                    .collect(Collectors.toList());
+
+            PortalTarget crowdLeader = targets.stream()
+                    .max(Comparator
                             .comparingInt((PortalTarget target) -> target.nearbyPlayers)
-                            .thenComparingInt(target -> target.portal == PURPLE ? 0 : 1)
-                            .thenComparingInt(target -> target.distance))
+                            .thenComparingInt(target -> target.portal == PURPLE ? 1 : 0)
+                            .thenComparingInt(target -> -target.distance))
                     .orElse(null);
+            if (crowdLeader == null || selectedPortal == null) {
+                return crowdLeader;
+            }
+
+            PortalTarget currentTarget = targets.stream()
+                    .filter(target -> target.portal == selectedPortal)
+                    .findFirst()
+                    .orElse(null);
+            if (currentTarget != null
+                    && currentTarget.nearbyPlayers + PORTAL_SWITCH_CROWD_MARGIN
+                    >= crowdLeader.nearbyPlayers) {
+                return currentTarget;
+            }
+            return crowdLeader;
         }).orElse(null);
     }
 
@@ -776,7 +834,6 @@ public class PestControlScript extends Script {
     private boolean attackSpinner() {
         for (int spinner : SPINNER_IDS) {
             if (Microbot.getRs2NpcCache().query().withId(spinner).interact("Attack")) {
-                sleepUntil(() -> !Microbot.getClient().getLocalPlayer().isInteracting());
                 return true;
             }
         }
@@ -786,7 +843,6 @@ public class PestControlScript extends Script {
     private boolean attackBrawler() {
         for (int brawler : BRAWLER_IDS) {
             if (Microbot.getRs2NpcCache().query().withId(brawler).interact("Attack")) {
-                sleepUntil(() -> !Microbot.getClient().getLocalPlayer().isInteracting());
                 return true;
             }
         }
@@ -839,7 +895,9 @@ public class PestControlScript extends Script {
         initialise = true;
         walkToCenter = false;
         wasInPestControl = false;
+        pendingPostRoundRestore = false;
         selectedPortal = null;
+        lastBoardingAttemptAt = 0L;
         super.shutdown();
     }
 }

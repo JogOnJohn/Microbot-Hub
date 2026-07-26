@@ -19,14 +19,14 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 | **Quick Prayer**          | Automatically enables Quick Prayer at game start (optional).                |
 | **Special Attack**        | Uses special attack when above configured energy threshold.                  |
 | **Target Priority**       | Customizable attack order: Brawlers, Portals, Spinners.                      |
-| **Adaptive Portal Targeting** | Selects the least-covered live portal and uses purple as a tie-break.     |
+| **Portal Zerg Targeting** | Joins the largest group at a live portal, stays through small crowd changes, and uses purple as a tie-break. |
 | **Weapon and Style Switching** | Uses per-weakness weapon slots, selects the matching attack option, then restores the primary. |
 | **Combat Idle Handling**  | Attacks nearby NPCs when idle.                                               |
 | **Brawler Blocking Fix**  | Attacks brawlers if they block movement.                                     |
 | **Boat Alching**          | High-alchs a chosen item while waiting in the boat (optional).               |
 | **Error Handling**        | Catches exceptions and prevents script crashes.                              |
 | **Fast Loop**             | Runs every 300 ms for near real-time responses.                              |
-| **Automatic Requeue**     | Re-boards the correct boat after each game.                                  |
+| **Priority Requeue**      | Clicks the correct gangplank before post-round weapon restoration or cleanup. |
 
 
 ---
@@ -62,9 +62,9 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 4. During games:
     - Moves to the center.
     - Activates prayers and special attacks as configured.
-    - Attacks NPCs or portals based on your chosen priorities.
+    - Follows the largest live-portal group, kills nearby Spinners, then focuses the portal.
     - Keeps ranged on Rapid and selects Slash/Stab or Crush when using those configured portal weapons.
-5. After games, it restores the primary weapon and queues for the next round.
+5. After games, it immediately reboards, then restores the primary weapon once the boat is confirmed.
 
 ---
 
