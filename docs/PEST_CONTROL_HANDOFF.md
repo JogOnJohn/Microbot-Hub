@@ -127,13 +127,18 @@ Installed artifact:
 
 `C:\Users\Billy\.runelite\microbot-plugins\PestControlPlugin.jar`
 
-The 2.4.14 installed/package SHA-256 will be recorded after packaging and
-replacement. The previous validated 2.4.10 SHA-256 was:
+Installed/package SHA-256:
 
-`C9EBD537FA25D07D1D590F384CFB05160CA081680866CFC338F4EFDAD0535A13`
+`F51B0F41F66222C3BE17DD012026CCF1E0E13B48EE4947B0CAB098340BA24E24`
 
-There was exactly one matching jar in the active plugin directory. The 2.4.10
-backup created for the 2.4.11 pre-smoke install is:
+There was exactly one matching jar in the active plugin directory. The
+immediately previous 2.4.12 install is recoverable from:
+
+`C:\Users\Billy\.runelite\microbot-plugin-backups\PestControl\PestControlPlugin.backup-2.4.12-20260727-084501.jar`
+
+Pre-smoke 2.4.11 and 2.4.10 installs are also recoverable from:
+
+`C:\Users\Billy\.runelite\microbot-plugin-backups\PestControl\PestControlPlugin.backup-2.4.11-20260727-082858.jar`
 
 `C:\Users\Billy\.runelite\microbot-plugin-backups\PestControl\PestControlPlugin.backup-2.4.10-20260727-082401.jar`
 
@@ -145,7 +150,7 @@ Launch the validated spike client with:
 
 `C:\Users\Billy\IdeaProjects\Microbot-shortestpath-sync\launch-microbot-shortestpath-spike.bat`
 
-## Version 2.4.14 validation status
+## Version 2.4.14 live validation on 2026-07-27
 
 The implementation addresses the 2.4.10 diagnostic findings: portal pursuit
 now outranks activity fallback, overlay state is isolated from global utility
@@ -159,8 +164,38 @@ Version 2.4.13 preserves a separate round-exit timestamp so the grace survives
 that state reset. A subsequent death/loading transition showed that an in-round
 login gap should preserve the current combat state rather than report
 `REQUEUE`; version 2.4.14 distinguishes those cases and also throttles ambiguous
-walker attempts. Focused build, installation, and two-round live smoke evidence
-are pending.
+walker attempts.
+
+The final world-344 smoke window ran from 08:49:01 through the next launch at
+08:53:03:
+
+- Round 1 opened Yellow at 08:49:01 and ended at 08:50:58. It reached `BOAT`
+  at 08:51:00 and the next launch opened Blue at 08:51:03.
+- Round 2 ended at 08:53:00, reached `BOAT` at 08:53:02, and the following
+  launch opened Purple at 08:53:03.
+- The overlay visibly reported `Micro PestControl V2.4.14`, the script-owned
+  runtime state, Adamant crossbow/Rapid, and Auto Retaliate OFF.
+- The window contained eight shield drops and eight adaptive portal selections.
+  Low activity never delayed a selected portal: all five 39% recovery starts
+  recovered, portal combat remained in control while a target was attackable,
+  and a new selected portal immediately preempted ordinary fallback combat.
+- Portal Spinners preempted portal attacks twice. Yellow selected Dragon
+  scimitar/Slash, and Adamant crossbow/Rapid was restored with cached styles
+  leaving the Combat tab unchanged.
+- The sole remaining shielded portals were pre-positioned at Yellow in round 1
+  and Red in round 2.
+- Both round ends issued one gangplank interaction and had zero confirmation
+  retries. The sub-five-second next launches contained no `INITIALISING` or
+  false `round transition` state.
+- The final window had zero watchdog recoveries, script errors, client-thread
+  errors, and `must be called on client thread` messages.
+
+BreakHandler V2 auto-login won the first relaunch race and selected world 388.
+It was stopped through the Agent Server before the final window, after which
+Pest Control switched to world 344. Stop that break handler before future
+automated login smoke tests so it cannot override the requested world. The
+forced wrong-world recovery produced setup-only errors before 08:49:01; none
+recurred during either counted round.
 
 ## Historical 2.4.10 live validation on 2026-07-27
 
