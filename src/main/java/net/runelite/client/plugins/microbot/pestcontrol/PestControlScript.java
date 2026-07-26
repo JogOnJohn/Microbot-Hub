@@ -116,6 +116,7 @@ public class PestControlScript extends Script {
         REQUEUE,
         BOAT,
         OPENING_SIDE,
+        PREPOSITION_PORTAL,
         WAITING_FOR_PORTAL,
         CHASE_PORTAL,
         KILL_SPINNER,
@@ -159,6 +160,7 @@ public class PestControlScript extends Script {
     private void runWatchdog(WorldPoint location) {
         observeProgress(location);
         if (runtimeState != RuntimeState.OPENING_SIDE
+                && runtimeState != RuntimeState.PREPOSITION_PORTAL
                 && runtimeState != RuntimeState.CHASE_PORTAL
                 && runtimeState != RuntimeState.KILL_SPINNER
                 && runtimeState != RuntimeState.ATTACK_PORTAL
@@ -407,13 +409,23 @@ public class PestControlScript extends Script {
             return;
         }
 
+        int activityPercent = getActivityPercent();
+        Portal lastShieldedPortal = soleShieldedPortal();
+        boolean activityNeedsMaintenance = activityPercent >= 0
+                && activityPercent <= ACTIVITY_MAINTENANCE_PERCENT;
+        if (lastShieldedPortal != null
+                && !activityNeedsMaintenance
+                && moveToLastShieldedPortal(lastShieldedPortal, playerLocation)) {
+            runWatchdog(playerLocation);
+            return;
+        }
+
         if (attackSpinner()) {
             runWatchdog(playerLocation);
             return;
         }
 
-        int activityPercent = getActivityPercent();
-        if (activityPercent >= 0 && activityPercent <= ACTIVITY_MAINTENANCE_PERCENT) {
+        if (activityNeedsMaintenance) {
             if (isPlayerInteracting()) {
                 transitionTo(RuntimeState.ACTIVITY_FALLBACK, "maintaining activity");
                 runWatchdog(playerLocation);
@@ -430,7 +442,36 @@ public class PestControlScript extends Script {
             return;
         }
 
+        if (lastShieldedPortal != null) {
+            transitionTo(RuntimeState.WAITING_FOR_PORTAL,
+                    "pre-positioned for " + lastShieldedPortal + " shield drop");
+            return;
+        }
+
         transitionTo(RuntimeState.WAITING_FOR_PORTAL, "staged near " + openingPortal);
+    }
+
+    private Portal soleShieldedPortal() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            List<Portal> shieldedPortals = portals.stream()
+                    .filter(portal -> portal.hasShield)
+                    .collect(Collectors.toList());
+            return shieldedPortals.size() == 1 ? shieldedPortals.get(0) : null;
+        }).orElse(null);
+    }
+
+    private boolean moveToLastShieldedPortal(Portal portal, WorldPoint playerLocation) {
+        if (portal == null || playerLocation == null) {
+            return false;
+        }
+
+        WorldPoint target = safeRangedPortalLocation(portal, playerLocation);
+        if (playerLocation.distanceTo(target) <= STAGING_ARRIVAL_DISTANCE) {
+            return false;
+        }
+
+        transitionTo(RuntimeState.PREPOSITION_PORTAL, portal + " shield pending");
+        return moveToward(playerLocation, target, STAGING_ARRIVAL_DISTANCE);
     }
 
     private void handleLobbyTick(boolean isInBoat) {
@@ -1114,6 +1155,12 @@ public class PestControlScript extends Script {
             Rs2NpcModel npc,
             List<WorldPoint> otherPlayers,
             WorldPoint playerLocation) {
+        boolean attackActionAvailable = hasAttackAction(npc);
+        if (attackActionAvailable) {
+            // Keep shield tracking resilient when the script starts mid-round or
+            // a shield-drop chat message is missed.
+            portal.setHasShield(false);
+        }
         int nearbyPlayers = (int) otherPlayers.stream()
                 .filter(player -> regionDistance(
                         player,
@@ -1123,7 +1170,7 @@ public class PestControlScript extends Script {
         int distance = playerLocation == null
                 ? Integer.MAX_VALUE
                 : regionDistance(playerLocation, portal.getRegionX(), portal.getRegionY());
-        return new PortalTarget(portal, npc, nearbyPlayers, distance, hasAttackAction(npc));
+        return new PortalTarget(portal, npc, nearbyPlayers, distance, attackActionAvailable);
     }
 
     private Rs2NpcModel findSpinnerNear(Portal portal) {
