@@ -34,7 +34,7 @@ import static net.runelite.client.plugins.microbot.pestcontrol.PestControlScript
 @Slf4j
 public class PestControlPlugin extends Plugin {
 
-	static final String version = "2.3.7";
+	static final String version = "2.3.8";
 
     @Inject
     PestControlScript pestControlScript;

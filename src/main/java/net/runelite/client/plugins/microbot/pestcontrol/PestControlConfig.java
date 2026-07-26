@@ -104,7 +104,7 @@ public interface PestControlConfig extends Config {
             position = 11
     )
     default String rangedWeapon() {
-        return "None";
+        return "Adamant crossbow";
     }
 
     @ConfigItem(

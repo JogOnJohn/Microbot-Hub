@@ -113,7 +113,7 @@ public class PestControlScript extends Script {
     public boolean run(PestControlConfig config) {
         this.config = config;
         selectedPortal = null;
-        primaryWeaponName = null;
+        primaryWeaponName = configuredPrimaryWeaponName();
         missingWeaponsLogged.clear();
         missingAttackOptionsLogged.clear();
         missingPrimaryWeaponLogged = false;
@@ -489,6 +489,27 @@ public class PestControlScript extends Script {
             Microbot.log("Pest Control primary weapon: " + primaryWeaponName
                     + " (" + config.primaryCombatStyle() + ")");
         }
+    }
+
+    private String configuredPrimaryWeaponName() {
+        String configuredWeapon;
+        switch (config.primaryCombatStyle()) {
+            case RANGED:
+                configuredWeapon = config.rangedWeapon();
+                break;
+            case MAGIC:
+                configuredWeapon = config.magicWeapon();
+                break;
+            case MELEE:
+                configuredWeapon = !isPrimaryFallback(config.slashStabWeapon())
+                        ? config.slashStabWeapon()
+                        : config.crushWeapon();
+                break;
+            default:
+                configuredWeapon = null;
+                break;
+        }
+        return isPrimaryFallback(configuredWeapon) ? null : configuredWeapon.trim();
     }
 
     private void applyPrimaryAttackMode() {

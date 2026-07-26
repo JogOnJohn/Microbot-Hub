@@ -15,7 +15,7 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 |---------------------------|-----------------------------------------------------------------------------|
 | **Auto World Hop**        | Hops to your configured Pest Control world before starting.                 |
 | **Travel to Island**      | Walks to the Pest Control island if not already there.                      |
-| **Boat Selection**        | Boards the correct boat based on your combat level.                         |
+| **Boat Selection**        | Uses novice below 70, intermediate at 70-99, and veteran at 100+.           |
 | **Quick Prayer**          | Automatically enables Quick Prayer at game start (optional).                |
 | **Special Attack**        | Uses special attack when above configured energy threshold.                  |
 | **Target Priority**       | Customizable attack order: Brawlers, Portals, Spinners.                      |
@@ -46,7 +46,7 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 - **Alching in Boat**: Enable/disable high-alching between matches.
 - **Alch Item**: Name of item to alch.
 - **Primary Combat Style**: The style used whenever a portal weapon is `None` (preloaded as Ranged).
-- **Ranged Weapon (Purple)**: Preloaded as `None`, so the primary ranged weapon is used on Rapid.
+- **Ranged Weapon (Purple)**: Preloaded as `Adamant crossbow`; it is also the primary restore target while the primary style is Ranged and is kept on Rapid.
 - **Magic Weapon (Blue)**: Preloaded as `None`, so the primary ranged weapon is retained.
 - **Slash/Stab Weapon (Yellow)**: Preloaded as `Dragon scimitar`. The script prefers its Slash option and falls back to a Stab option when necessary.
 - **Crush Weapon (Red)**: Preloaded as `None`, so the primary ranged weapon is retained.
