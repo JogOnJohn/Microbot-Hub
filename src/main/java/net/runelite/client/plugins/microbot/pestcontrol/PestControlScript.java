@@ -61,6 +61,7 @@ public class PestControlScript extends Script {
     private int managedAttackOptionIndex = -1;
     private long lastBoardingAttemptAt = 0L;
     private boolean boardingAttemptPending = false;
+    private final Set<Portal> destroyedPortals = EnumSet.noneOf(Portal.class);
     PestControlConfig config;
     private final PestControlPlugin plugin;
 
@@ -84,14 +85,15 @@ public class PestControlScript extends Script {
     private static final int SPINNER_PORTAL_RADIUS = 8;
     private static final int PORTAL_SWITCH_CROWD_MARGIN = 1;
     private static final int PEST_CONTROL_CENTER_REGION_COORD = 32;
-    private static final int SAFE_STAGING_OFFSET = 5;
     private static final int STAGING_ARRIVAL_DISTANCE = 2;
     private static final int RANGED_ENGAGEMENT_DISTANCE = 6;
+    private static final int RANGED_STAGING_DISTANCE = 6;
     private static final int MELEE_ENGAGEMENT_DISTANCE = 1;
     private static final int MINIMAP_STEP_DISTANCE = 14;
     private static final int ACTIVITY_MAINTENANCE_PERCENT = 60;
     private static final long MOVEMENT_RETRY_MILLIS = 750L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
+    private static final long PORTAL_REAFFIRM_MILLIS = 3_000L;
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
     private static final long WATCHDOG_LOG_INTERVAL_MILLIS = 6_000L;
     private static final long BOARDING_RETRY_MILLIS = 600L;
@@ -128,6 +130,7 @@ public class PestControlScript extends Script {
     }
 
     private void resetPortals() {
+        destroyedPortals.clear();
         for (Portal portal : portals) {
             portal.setHasShield(true);
         }
@@ -273,11 +276,12 @@ public class PestControlScript extends Script {
             return false;
         }
 
-        WorldPoint target = safeRangedPortalLocation(openingPortal, playerLocation);
+        WorldPoint target = rangedPortalStagingLocation(openingPortal, playerLocation);
         transitionTo(RuntimeState.OPENING_SIDE, openingPortal + " portal");
         if (playerLocation.distanceTo(target) <= STAGING_ARRIVAL_DISTANCE) {
             openingSideReached = true;
-            Microbot.log("Pest Control staged safely behind " + openingPortal + " portal");
+            Microbot.log("Pest Control staged at ranged distance in front of "
+                    + openingPortal + " portal");
             return false;
         }
 
@@ -414,7 +418,6 @@ public class PestControlScript extends Script {
         boolean activityNeedsMaintenance = activityPercent >= 0
                 && activityPercent <= ACTIVITY_MAINTENANCE_PERCENT;
         if (lastShieldedPortal != null
-                && !activityNeedsMaintenance
                 && moveToLastShieldedPortal(lastShieldedPortal, playerLocation)) {
             runWatchdog(playerLocation);
             return;
@@ -465,7 +468,7 @@ public class PestControlScript extends Script {
             return false;
         }
 
-        WorldPoint target = safeRangedPortalLocation(portal, playerLocation);
+        WorldPoint target = rangedPortalStagingLocation(portal, playerLocation);
         if (playerLocation.distanceTo(target) <= STAGING_ARRIVAL_DISTANCE) {
             return false;
         }
@@ -572,6 +575,7 @@ public class PestControlScript extends Script {
                         .where(n -> n.getNpc() != null
                                 && !n.getNpc().isDead()
                                 && !"Brawler".equalsIgnoreCase(n.getNpc().getName())
+                                && !"Portal".equalsIgnoreCase(n.getNpc().getName())
                                 && n.getNpc().getCombatLevel() > 0
                                 && hasAttackAction(n))
                         .nearest());
@@ -579,7 +583,10 @@ public class PestControlScript extends Script {
 
     private void maintainActivityWith(Rs2NpcModel target, WorldPoint playerLocation) {
         WorldPoint targetLocation = Microbot.getClientThread().runOnClientThreadOptional(() ->
-                target == null || target.getNpc() == null || target.getNpc().isDead()
+                target == null
+                        || target.getNpc() == null
+                        || target.getNpc().isDead()
+                        || !hasAttackAction(target)
                         ? null
                         : target.getWorldLocation()
         ).orElse(null);
@@ -700,15 +707,16 @@ public class PestControlScript extends Script {
         prepareWeaponForPortal(target.portal);
 
         int engagementDistance = engagementDistanceForPortal(target.portal);
-        WorldPoint engagementLocation = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
-                ? safeRangedPortalLocation(target.portal, playerLocation)
+        WorldPoint portalLocation = logicalPortalLocation(target.portal, playerLocation);
+        WorldPoint approachLocation = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                ? rangedPortalStagingLocation(target.portal, playerLocation)
                 : logicalPortalLocation(target.portal, playerLocation);
         int arrivalDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
                 ? STAGING_ARRIVAL_DISTANCE
                 : MELEE_ENGAGEMENT_DISTANCE;
-        if (playerLocation.distanceTo(engagementLocation) > arrivalDistance) {
+        if (playerLocation.distanceTo(portalLocation) > engagementDistance) {
             transitionTo(RuntimeState.CHASE_PORTAL, target.portal + " portal");
-            moveToward(playerLocation, engagementLocation, arrivalDistance);
+            moveToward(playerLocation, approachLocation, arrivalDistance);
             return;
         }
 
@@ -729,7 +737,11 @@ public class PestControlScript extends Script {
 
         transitionTo(RuntimeState.ATTACK_PORTAL, target.portal + " portal");
         if (isInteractingWithPortal(target.portal)) {
-            return;
+            long sinceLastAttackCommand = System.currentTimeMillis() - lastAttackCommandAt;
+            if (isPlayerMovingOrAnimating()
+                    || sinceLastAttackCommand < PORTAL_REAFFIRM_MILLIS) {
+                return;
+            }
         }
 
         // The chat message can arrive a tick before the NPC composition gains
@@ -1132,6 +1144,10 @@ public class PestControlScript extends Script {
         Widget hitpoints = target.portal.getHitPoints();
         String text = hitpoints == null ? null : hitpoints.getText();
         if ("0".equals(Text.removeTags(text == null ? "" : text).trim())) {
+            destroyedPortals.add(target.portal);
+            return false;
+        }
+        if (destroyedPortals.contains(target.portal)) {
             return false;
         }
         if (target.attackActionAvailable) {
@@ -1194,14 +1210,14 @@ public class PestControlScript extends Script {
                 playerLocation.getPlane());
     }
 
-    private static WorldPoint safeRangedPortalLocation(Portal portal, WorldPoint playerLocation) {
+    private static WorldPoint rangedPortalStagingLocation(Portal portal, WorldPoint playerLocation) {
         int dx = portal.getRegionX() - PEST_CONTROL_CENTER_REGION_COORD;
         int dy = portal.getRegionY() - PEST_CONTROL_CENTER_REGION_COORD;
         int span = Math.max(Math.abs(dx), Math.abs(dy));
-        int offsetX = span == 0 ? 0 : (int) Math.round((double) dx * SAFE_STAGING_OFFSET / span);
-        int offsetY = span == 0 ? 0 : (int) Math.round((double) dy * SAFE_STAGING_OFFSET / span);
-        int regionX = Math.max(0, Math.min(63, portal.getRegionX() + offsetX));
-        int regionY = Math.max(0, Math.min(63, portal.getRegionY() + offsetY));
+        int offsetX = span == 0 ? 0 : (int) Math.round((double) dx * RANGED_STAGING_DISTANCE / span);
+        int offsetY = span == 0 ? 0 : (int) Math.round((double) dy * RANGED_STAGING_DISTANCE / span);
+        int regionX = Math.max(0, Math.min(63, portal.getRegionX() - offsetX));
+        int regionY = Math.max(0, Math.min(63, portal.getRegionY() - offsetY));
         return WorldPoint.fromRegion(
                 playerLocation.getRegionID(),
                 regionX,
@@ -1217,6 +1233,14 @@ public class PestControlScript extends Script {
             Player player = Microbot.getClient().getLocalPlayer();
             return player != null && player.getInteracting() == npc;
         }).orElse(false);
+    }
+
+    private static boolean isPlayerMovingOrAnimating() {
+        return Rs2Player.isMoving()
+                || Microbot.getClientThread().runOnClientThreadOptional(() -> {
+                    Player player = Microbot.getClient().getLocalPlayer();
+                    return player != null && player.getAnimation() != -1;
+                }).orElse(false);
     }
 
     private static boolean isInteractingWithPortal(Portal portal) {
