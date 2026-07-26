@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.11`
+- Plugin version: `2.4.12`
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -121,20 +121,23 @@ The focused build used the current shortest-path spike client jar:
 
 Packaged artifact:
 
-`build\libs\PestControlPlugin-2.4.11.jar`
+`build\libs\PestControlPlugin-2.4.12.jar`
 
 Installed artifact:
 
 `C:\Users\Billy\.runelite\microbot-plugins\PestControlPlugin.jar`
 
-The 2.4.11 installed/package SHA-256 will be recorded after packaging and
-replacement. The previous 2.4.10 SHA-256 was:
+The 2.4.12 installed/package SHA-256 will be recorded after packaging and
+replacement. The previous validated 2.4.10 SHA-256 was:
 
 `C9EBD537FA25D07D1D590F384CFB05160CA081680866CFC338F4EFDAD0535A13`
 
 There was exactly one matching jar in the active plugin directory. The 2.4.10
-backup path will be recorded when 2.4.11 is installed. The previous 2.4.9
-backup remains at:
+backup created for the 2.4.11 pre-smoke install is:
+
+`C:\Users\Billy\.runelite\microbot-plugin-backups\PestControl\PestControlPlugin.backup-2.4.10-20260727-082401.jar`
+
+The previous 2.4.9 backup remains at:
 
 `C:\Users\Billy\.runelite\microbot-plugin-backups\PestControl\PestControlPlugin.backup-2.4.9-20260727-075113.jar`
 
@@ -142,13 +145,16 @@ Launch the validated spike client with:
 
 `C:\Users\Billy\IdeaProjects\Microbot-shortestpath-sync\launch-microbot-shortestpath-spike.bat`
 
-## Version 2.4.11 validation status
+## Version 2.4.12 validation status
 
 The implementation addresses the 2.4.10 diagnostic findings: portal pursuit
 now outranks activity fallback, overlay state is isolated from global utility
 status text, healthy movement is clicked less often, and short round-loading
-gaps remain in `REQUEUE`. Focused build, installation, and two-round live smoke
-evidence are pending.
+gaps remain in `REQUEUE`. A pre-smoke 2.4.11 screenshot found that directly
+injecting `PestControlScript` into the overlay created a second, stopped script
+instance. Version 2.4.12 instead reads status through the plugin's actual
+running script. Focused build, installation, and two-round live smoke evidence
+are pending.
 
 ## Historical 2.4.10 live validation on 2026-07-27
 

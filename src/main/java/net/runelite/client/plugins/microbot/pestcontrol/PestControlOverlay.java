@@ -14,14 +14,12 @@ import static net.runelite.client.plugins.microbot.pestcontrol.PestControlScript
 
 public class PestControlOverlay  extends OverlayPanel {
     private final PestControlPlugin plugin;
-    private final PestControlScript script;
 
     @Inject
-    PestControlOverlay(PestControlPlugin plugin, PestControlScript script)
+    PestControlOverlay(PestControlPlugin plugin)
     {
         super(plugin);
         this.plugin = plugin;
-        this.script = script;
         setPosition(OverlayPosition.TOP_LEFT);
         setNaughty();
     }
@@ -37,7 +35,7 @@ public class PestControlOverlay  extends OverlayPanel {
             panelComponent.getChildren().add(LineComponent.builder().build());
 
             panelComponent.getChildren().add(LineComponent.builder()
-                    .left(script.getRuntimeStatus())
+                    .left(plugin.getRuntimeStatus())
                     .build());
 
             if (PestControlScript.DEBUG) {
