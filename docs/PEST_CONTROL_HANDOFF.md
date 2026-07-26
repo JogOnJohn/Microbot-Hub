@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.14`
+- Plugin version: `2.4.15`
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -82,6 +82,13 @@ desired portal without enabling specials elsewhere.
   the removed generic NPC-priority chain unless the strategy itself changes.
 - `PestControlPlugin.java` reads shield-drop game chat and owns the plugin
   version. Bump the version for every installable behavior change.
+- `PestControlScript.java` publishes one immutable diagnostic snapshot after
+  each scheduled tick. The overlay reads only that snapshot; it must not read
+  client, player, portal-widget, or combat-widget state while rendering.
+- The expanded overlay reports state/detail and age, round location, activity
+  percentage and recovery target, active portal/crowd/readiness source, opening
+  side, remaining/ready portal counts, confirmed weapon/style, Auto Retaliate,
+  progress and command ages, and conditional boat-entry status.
 - Client/player/widget reads in the scheduled loop must stay behind client
   thread helpers. Attack-style widget discovery and `Rs2Combat.setAttackStyle`
   must run on the client thread.
@@ -121,15 +128,24 @@ The focused build used the current shortest-path spike client jar:
 
 Packaged artifact:
 
-`build\libs\PestControlPlugin-2.4.14.jar`
+`build\libs\PestControlPlugin-2.4.15.jar`
+
+Packaged 2.4.15 SHA-256:
+
+`454CB6CC64E92D037CBDD7E7C7303181DB9F3F47FE05E914ADB4EBA6D3302E6B`
 
 Installed artifact:
 
 `C:\Users\Billy\.runelite\microbot-plugins\PestControlPlugin.jar`
 
-Installed/package SHA-256:
+Installed version: `2.4.14`
+
+Installed SHA-256:
 
 `F51B0F41F66222C3BE17DD012026CCF1E0E13B48EE4947B0CAB098340BA24E24`
+
+Version 2.4.15 was intentionally compiled and packaged only. It was not copied
+over the active 2.4.14 jar and was not live-smoked in this pass.
 
 There was exactly one matching jar in the active plugin directory. The
 immediately previous 2.4.12 install is recoverable from:
@@ -149,6 +165,19 @@ The previous 2.4.9 backup remains at:
 Launch the validated spike client with:
 
 `C:\Users\Billy\IdeaProjects\Microbot-shortestpath-sync\launch-microbot-shortestpath-spike.bat`
+
+## Version 2.4.15 compile-only validation on 2026-07-27
+
+Version 2.4.15 replaces the minimal one-line overlay and dormant debug portal
+widget reads with an immutable script-owned diagnostic snapshot. This preserves
+the binding to the plugin's actual running script while ensuring rendering does
+not perform client/widget reads on the overlay thread.
+
+The focused `compilePestControlJava` task and `PestControlPluginJar` packaging
+both passed against Microbot 2.6.15. The packaged jar hash is recorded above.
+Per the requested boundary, the installed plugin remains the live-validated
+2.4.14 build; 2.4.15 still needs a visual overlay check and live runtime smoke
+after it is installed.
 
 ## Version 2.4.14 live validation on 2026-07-27
 

@@ -35,13 +35,17 @@ import java.util.regex.Pattern;
 @Slf4j
 public class PestControlPlugin extends Plugin {
 
-	static final String version = "2.4.14";
+	static final String version = "2.4.15";
 
     @Inject
     PestControlScript pestControlScript;
 
     String getRuntimeStatus() {
         return pestControlScript.getRuntimeStatus();
+    }
+
+    PestControlScript.OverlaySnapshot getOverlaySnapshot() {
+        return pestControlScript.getOverlaySnapshot();
     }
 
     @Inject

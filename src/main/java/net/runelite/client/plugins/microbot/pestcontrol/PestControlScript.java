@@ -119,6 +119,14 @@ public class PestControlScript extends Script {
     private boolean activityRecoveryActive = false;
     private long loginUnavailableSince = 0L;
     private long lastRoundExitAt = 0L;
+    private String overlayLocation = "Stopped";
+    private int overlayActivityPercent = -1;
+    private Portal overlayTargetPortal = null;
+    private int overlayTargetCrowd = 0;
+    private boolean overlayTargetHasAttackAction = false;
+    private String overlayCombatWeapon = "Unknown";
+    private String overlayCombatStyle = "Unknown";
+    private volatile OverlaySnapshot overlaySnapshot = OverlaySnapshot.initial();
 
     private enum RuntimeState {
         INITIALISING,
@@ -159,12 +167,53 @@ public class PestControlScript extends Script {
                     + (normalizedDetail.isEmpty() ? "" : " - " + normalizedDetail));
         }
         Microbot.status = getRuntimeStatus();
+        publishOverlaySnapshot();
     }
 
     String getRuntimeStatus() {
         RuntimeState state = runtimeState;
         String detail = runtimeDetail;
         return state + (detail.isEmpty() ? "" : ": " + detail);
+    }
+
+    OverlaySnapshot getOverlaySnapshot() {
+        return overlaySnapshot;
+    }
+
+    private void publishOverlaySnapshot() {
+        int readyPortals = (int) portals.stream()
+                .filter(portal -> !destroyedPortals.contains(portal) && !portal.hasShield)
+                .count();
+        int remainingPortals = Math.max(0, portals.size() - destroyedPortals.size());
+        int recoveryStart = config == null
+                ? -1
+                : Math.max(0, Math.min(100, config.activityRecoveryStart()));
+        int recoveryTarget = config == null
+                ? -1
+                : Math.max(recoveryStart, Math.max(0, Math.min(100, config.activityRecoveryTarget())));
+
+        overlaySnapshot = new OverlaySnapshot(
+                runtimeState.name(),
+                runtimeDetail,
+                overlayLocation,
+                overlayActivityPercent,
+                activityRecoveryActive,
+                recoveryStart,
+                recoveryTarget,
+                overlayTargetPortal == null ? "None" : overlayTargetPortal.name(),
+                overlayTargetCrowd,
+                overlayTargetHasAttackAction,
+                openingPortal == null ? "None" : openingPortal.name(),
+                remainingPortals,
+                readyPortals,
+                overlayCombatWeapon,
+                overlayCombatStyle,
+                autoRetaliateConfirmedOff,
+                boardingAttemptPending,
+                stateEnteredAt,
+                lastProgressAt,
+                lastMovementCommandAt,
+                lastAttackCommandAt);
     }
 
     private void observeProgress(WorldPoint location) {
@@ -432,10 +481,24 @@ public class PestControlScript extends Script {
         activityRecoveryActive = false;
         loginUnavailableSince = 0L;
         lastRoundExitAt = 0L;
+        overlayLocation = "Starting";
+        overlayActivityPercent = -1;
+        overlayTargetPortal = null;
+        overlayTargetCrowd = 0;
+        overlayTargetHasAttackAction = false;
+        overlayCombatWeapon = primaryWeaponName == null ? "Unknown" : primaryWeaponName;
+        overlayCombatStyle = config.primaryCombatStyle() == PestControlCombatStyle.RANGED
+                ? "Rapid (pending)"
+                : config.primaryCombatStyle() + " (preserve)";
         transitionTo(RuntimeState.INITIALISING, "starting script");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 if (!Microbot.isLoggedIn()) {
+                    overlayLocation = "Loading";
+                    overlayActivityPercent = -1;
+                    overlayTargetPortal = null;
+                    overlayTargetCrowd = 0;
+                    overlayTargetHasAttackAction = false;
                     long now = System.currentTimeMillis();
                     if (loginUnavailableSince == 0L) {
                         loginUnavailableSince = now;
@@ -463,6 +526,7 @@ public class PestControlScript extends Script {
 
                 final boolean isInPestControl = isInPestControl();
                 final boolean isInBoat = isInBoat();
+                overlayLocation = isInPestControl ? "Round" : isInBoat ? "Boat" : "Island";
                 if (isInPestControl) {
                     handleRoundTick();
                 } else {
@@ -472,6 +536,8 @@ public class PestControlScript extends Script {
                 ex.printStackTrace();
                 transitionTo(RuntimeState.ERROR,
                         ex.getClass().getSimpleName() + ": " + String.valueOf(ex.getMessage()));
+            } finally {
+                publishOverlaySnapshot();
             }
         }, 0, 300, TimeUnit.MILLISECONDS);
         return true;
@@ -507,14 +573,21 @@ public class PestControlScript extends Script {
         handleQuickPrayerOnce();
         WorldPoint playerLocation = Rs2Player.getWorldLocation();
         int activityPercent = getActivityPercent();
+        overlayActivityPercent = activityPercent;
         updateActivityRecovery(activityPercent);
         PortalTarget portalTarget = selectAdaptivePortalTarget();
         if (portalTarget != null) {
+            overlayTargetPortal = portalTarget.portal;
+            overlayTargetCrowd = portalTarget.nearbyPlayers;
+            overlayTargetHasAttackAction = portalTarget.attackActionAvailable;
             openingSideReached = true;
             handlePortalTarget(portalTarget, playerLocation);
             runWatchdog(playerLocation);
             return;
         }
+        overlayTargetPortal = null;
+        overlayTargetCrowd = 0;
+        overlayTargetHasAttackAction = false;
 
         if (activityRecoveryActive && recoverActivity(playerLocation, activityPercent)) {
             runWatchdog(playerLocation);
@@ -582,6 +655,10 @@ public class PestControlScript extends Script {
     }
 
     private void handleLobbyTick(boolean isInBoat) {
+        overlayActivityPercent = -1;
+        overlayTargetPortal = null;
+        overlayTargetCrowd = 0;
+        overlayTargetHasAttackAction = false;
         if (wasInPestControl) {
             lastRoundExitAt = System.currentTimeMillis();
             Rs2Walker.clearWalkingRoute("pest-control:round-ended");
@@ -1156,6 +1233,8 @@ public class PestControlScript extends Script {
     private void applyPrimaryAttackMode() {
         if (config.primaryCombatStyle() == PestControlCombatStyle.RANGED) {
             applyAttackMode(PortalAttackMode.RAPID);
+        } else {
+            recordCombatMode(getEquippedWeaponName(), config.primaryCombatStyle() + " (preserve)");
         }
     }
 
@@ -1173,6 +1252,7 @@ public class PestControlScript extends Script {
                 selectAttackOption("Crush");
                 break;
             case PRESERVE:
+                recordCombatMode(getEquippedWeaponName(), "Preserve");
             default:
                 break;
         }
@@ -1180,6 +1260,7 @@ public class PestControlScript extends Script {
 
     private boolean selectAttackOption(String desiredStyle) {
         String equippedWeapon = getEquippedWeaponName();
+        recordCombatMode(equippedWeapon, desiredStyle + " (setting)");
         String attackOptionKey = normalizeWeaponName(equippedWeapon)
                 + ":" + desiredStyle.toLowerCase(Locale.ROOT);
         Integer rememberedIndex = attackOptionIndexByWeaponStyle.get(attackOptionKey);
@@ -1190,6 +1271,7 @@ public class PestControlScript extends Script {
                         + " (" + equippedWeapon + "); combat tab unchanged");
             }
             activeAttackOptionKey = attackOptionKey;
+            recordCombatMode(equippedWeapon, desiredStyle);
             return true;
         }
 
@@ -1241,10 +1323,20 @@ public class PestControlScript extends Script {
             attackOptionIndexByWeaponStyle.put(attackOptionKey, expectedIndex);
             activeAttackOptionKey = attackOptionKey;
             missingAttackOptionsLogged.remove(attackOptionKey);
+            recordCombatMode(equippedWeapon, desiredStyle);
             Microbot.log("Pest Control attack style confirmed: " + desiredStyle
                     + " (" + equippedWeapon + ")");
         }
         return selected;
+    }
+
+    private void recordCombatMode(String weapon, String style) {
+        overlayCombatWeapon = weapon == null || weapon.trim().isEmpty()
+                ? "Unarmed"
+                : weapon.trim();
+        overlayCombatStyle = style == null || style.trim().isEmpty()
+                ? "Unknown"
+                : style.trim();
     }
 
     static int scoreAttackOption(String widgetText, String desiredStyle) {
@@ -1563,6 +1655,100 @@ public class PestControlScript extends Script {
         }
     }
 
+    static final class OverlaySnapshot {
+        final String state;
+        final String detail;
+        final String location;
+        final int activityPercent;
+        final boolean activityRecoveryActive;
+        final int activityRecoveryStart;
+        final int activityRecoveryTarget;
+        final String targetPortal;
+        final int targetCrowd;
+        final boolean targetHasAttackAction;
+        final String openingPortal;
+        final int remainingPortals;
+        final int readyPortals;
+        final String combatWeapon;
+        final String combatStyle;
+        final boolean autoRetaliateOff;
+        final boolean boardingAttemptPending;
+        final long stateEnteredAt;
+        final long lastProgressAt;
+        final long lastMovementCommandAt;
+        final long lastAttackCommandAt;
+
+        private OverlaySnapshot(
+                String state,
+                String detail,
+                String location,
+                int activityPercent,
+                boolean activityRecoveryActive,
+                int activityRecoveryStart,
+                int activityRecoveryTarget,
+                String targetPortal,
+                int targetCrowd,
+                boolean targetHasAttackAction,
+                String openingPortal,
+                int remainingPortals,
+                int readyPortals,
+                String combatWeapon,
+                String combatStyle,
+                boolean autoRetaliateOff,
+                boolean boardingAttemptPending,
+                long stateEnteredAt,
+                long lastProgressAt,
+                long lastMovementCommandAt,
+                long lastAttackCommandAt) {
+            this.state = state;
+            this.detail = detail;
+            this.location = location;
+            this.activityPercent = activityPercent;
+            this.activityRecoveryActive = activityRecoveryActive;
+            this.activityRecoveryStart = activityRecoveryStart;
+            this.activityRecoveryTarget = activityRecoveryTarget;
+            this.targetPortal = targetPortal;
+            this.targetCrowd = targetCrowd;
+            this.targetHasAttackAction = targetHasAttackAction;
+            this.openingPortal = openingPortal;
+            this.remainingPortals = remainingPortals;
+            this.readyPortals = readyPortals;
+            this.combatWeapon = combatWeapon;
+            this.combatStyle = combatStyle;
+            this.autoRetaliateOff = autoRetaliateOff;
+            this.boardingAttemptPending = boardingAttemptPending;
+            this.stateEnteredAt = stateEnteredAt;
+            this.lastProgressAt = lastProgressAt;
+            this.lastMovementCommandAt = lastMovementCommandAt;
+            this.lastAttackCommandAt = lastAttackCommandAt;
+        }
+
+        private static OverlaySnapshot initial() {
+            return new OverlaySnapshot(
+                    RuntimeState.STOPPED.name(),
+                    "",
+                    "Stopped",
+                    -1,
+                    false,
+                    -1,
+                    -1,
+                    "None",
+                    0,
+                    false,
+                    "None",
+                    portals.size(),
+                    0,
+                    "Unknown",
+                    "Unknown",
+                    false,
+                    false,
+                    0L,
+                    0L,
+                    0L,
+                    0L);
+        }
+    }
+
     private boolean attackSpinner() {
         if (isInteractingWithSpinner()) {
             disableSpecialAttackIfEnabled();
@@ -1650,6 +1836,15 @@ public class PestControlScript extends Script {
         boardingAttemptPending = false;
         loginUnavailableSince = 0L;
         lastRoundExitAt = 0L;
+        overlayLocation = "Stopped";
+        overlayActivityPercent = -1;
+        overlayTargetPortal = null;
+        overlayTargetCrowd = 0;
+        overlayTargetHasAttackAction = false;
+        runtimeState = RuntimeState.STOPPED;
+        runtimeDetail = "";
+        stateEnteredAt = System.currentTimeMillis();
+        publishOverlaySnapshot();
         super.shutdown();
     }
 }
