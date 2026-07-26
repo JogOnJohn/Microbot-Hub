@@ -20,7 +20,7 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 | **Special Attack**        | Uses special attack when above configured energy threshold.                  |
 | **Target Priority**       | Customizable attack order: Brawlers, Portals, Spinners.                      |
 | **Adaptive Portal Targeting** | Selects the least-covered live portal and uses purple as a tie-break.     |
-| **Weapon Switching**      | Captures the equipped primary weapon, uses a configured weakness switch, then restores the primary. |
+| **Weapon and Style Switching** | Uses per-weakness weapon slots, selects the matching attack option, then restores the primary. |
 | **Combat Idle Handling**  | Attacks nearby NPCs when idle.                                               |
 | **Brawler Blocking Fix**  | Attacks brawlers if they block movement.                                     |
 | **Boat Alching**          | High-alchs a chosen item while waiting in the boat (optional).               |
@@ -33,7 +33,7 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 
 ## Requirements
 - Microbot RuneLite client
-- A primary weapon equipped and the configured switch weapon in inventory
+- A primary weapon equipped and every configured non-None portal weapon in inventory
 - Pest Control world access
 
 ---
@@ -45,9 +45,13 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 - **Target Priority**: Set the attack order for Brawlers, Portals, and Spinners.
 - **Alching in Boat**: Enable/disable high-alching between matches.
 - **Alch Item**: Name of item to alch.
-- **Primary Combat Style**: The normal style used across the minigame (preloaded as Ranged).
-- **Switch Combat Style**: The configured alternate style (preloaded as Melee).
-- **Switch Weapon**: Exact inventory weapon name (preloaded as Dragon scimitar). A scimitar is used at the yellow slash/stab-weak portal; ranged remains active elsewhere.
+- **Primary Combat Style**: The style used whenever a portal weapon is `None` (preloaded as Ranged).
+- **Ranged Weapon (Purple)**: Preloaded as `None`, so the primary ranged weapon is used on Rapid.
+- **Magic Weapon (Blue)**: Preloaded as `None`, so the primary ranged weapon is retained.
+- **Slash/Stab Weapon (Yellow)**: Preloaded as `Dragon scimitar`. The script prefers its Slash option and falls back to a Stab option when necessary.
+- **Crush Weapon (Red)**: Preloaded as `None`, so the primary ranged weapon is retained.
+
+`None` (or a blank value) means to restore and use the captured primary weapon. A configured magic weapon preserves its existing spell/autocast setup; spell selection is not changed.
 
 ---
 
@@ -59,6 +63,7 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
     - Moves to the center.
     - Activates prayers and special attacks as configured.
     - Attacks NPCs or portals based on your chosen priorities.
+    - Keeps ranged on Rapid and selects Slash/Stab or Crush when using those configured portal weapons.
 5. After games, it restores the primary weapon and queues for the next round.
 
 ---

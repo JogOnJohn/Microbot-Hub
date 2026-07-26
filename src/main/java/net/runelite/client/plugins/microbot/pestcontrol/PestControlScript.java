@@ -10,11 +10,13 @@ import net.runelite.api.Player;
 import net.runelite.api.Skill;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.widgets.ComponentID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
+import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
@@ -26,9 +28,11 @@ import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 
 import net.runelite.client.plugins.microbot.util.misc.SpecialAttackWeaponEnum;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
+import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 import net.runelite.client.plugins.pestcontrol.Portal;
+import net.runelite.client.util.Text;
 
 import javax.inject.Inject;
 import java.util.*;
@@ -45,8 +49,12 @@ public class PestControlScript extends Script {
     private boolean wasInPestControl = false;
     private Portal selectedPortal = null;
     private String primaryWeaponName = null;
-    private boolean missingSwitchWeaponLogged = false;
+    private final Set<String> missingWeaponsLogged = new HashSet<>();
+    private final Set<String> missingAttackOptionsLogged = new HashSet<>();
     private boolean missingPrimaryWeaponLogged = false;
+    private String managedAttackOptionWeapon = null;
+    private String managedAttackOptionName = null;
+    private int managedAttackOptionIndex = -1;
     PestControlConfig config;
     private final PestControlPlugin plugin;
 
@@ -106,8 +114,12 @@ public class PestControlScript extends Script {
         this.config = config;
         selectedPortal = null;
         primaryWeaponName = null;
-        missingSwitchWeaponLogged = false;
+        missingWeaponsLogged.clear();
+        missingAttackOptionsLogged.clear();
         missingPrimaryWeaponLogged = false;
+        managedAttackOptionWeapon = null;
+        managedAttackOptionName = null;
+        managedAttackOptionIndex = -1;
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 if (!Microbot.isLoggedIn()) return;
@@ -369,76 +381,91 @@ public class PestControlScript extends Script {
     }
 
     private void prepareWeaponForPortal(Portal portal) {
-        if (isSwitchWeaponAdvantagedAt(portal)) {
-            equipSwitchWeapon();
-        } else {
+        String configuredWeapon = configuredWeaponForPortal(portal);
+        PortalAttackMode attackMode = attackModeForPortal(portal);
+
+        if (isPrimaryFallback(configuredWeapon)) {
             restorePrimaryWeapon();
-        }
-    }
-
-    private boolean isSwitchWeaponAdvantagedAt(Portal portal) {
-        if (config.primaryCombatStyle() == config.switchCombatStyle()) {
-            return false;
-        }
-
-        switch (config.switchCombatStyle()) {
-            case RANGED:
-                return portal == PURPLE;
-            case MAGIC:
-                return portal == BLUE;
-            case MELEE:
-                String weapon = normalizeWeaponName(config.switchWeapon());
-                if (weapon.contains("scimitar")) {
-                    return portal == YELLOW;
-                }
-                if (weapon.contains("mace")
-                        || weapon.contains("warhammer")
-                        || weapon.contains("maul")) {
-                    return portal == RED;
-                }
-                return false;
-            default:
-                return false;
-        }
-    }
-
-    private void equipSwitchWeapon() {
-        String switchWeapon = config.switchWeapon() == null
-                ? ""
-                : config.switchWeapon().trim();
-        if (switchWeapon.isEmpty() || isWeaponEquipped(switchWeapon)) {
+            applyPrimaryAttackMode();
             return;
         }
 
-        capturePrimaryWeapon();
-        if (Rs2Inventory.interact(switchWeapon, "Wield", true)) {
-            sleepUntil(() -> isWeaponEquipped(switchWeapon), 2000);
-            missingSwitchWeaponLogged = false;
-        } else if (!missingSwitchWeaponLogged) {
-            Microbot.log("Pest Control switch weapon not found in inventory: " + switchWeapon);
-            missingSwitchWeaponLogged = true;
+        if (equipConfiguredWeapon(configuredWeapon.trim())) {
+            applyAttackMode(attackMode);
+        } else {
+            restorePrimaryWeapon();
+            applyPrimaryAttackMode();
         }
+    }
+
+    private String configuredWeaponForPortal(Portal portal) {
+        switch (portal) {
+            case PURPLE:
+                return config.rangedWeapon();
+            case BLUE:
+                return config.magicWeapon();
+            case YELLOW:
+                return config.slashStabWeapon();
+            case RED:
+                return config.crushWeapon();
+            default:
+                return "None";
+        }
+    }
+
+    private static PortalAttackMode attackModeForPortal(Portal portal) {
+        switch (portal) {
+            case PURPLE:
+                return PortalAttackMode.RAPID;
+            case YELLOW:
+                return PortalAttackMode.SLASH_STAB;
+            case RED:
+                return PortalAttackMode.CRUSH;
+            default:
+                return PortalAttackMode.PRESERVE;
+        }
+    }
+
+    private boolean equipConfiguredWeapon(String weaponName) {
+        if (isWeaponEquipped(weaponName)) {
+            return true;
+        }
+
+        capturePrimaryWeapon();
+        if (Rs2Inventory.interact(weaponName, "Wield", true)
+                && sleepUntil(() -> isWeaponEquipped(weaponName), 2000)) {
+            missingWeaponsLogged.remove(normalizeWeaponName(weaponName));
+            return true;
+        }
+
+        String normalizedWeapon = normalizeWeaponName(weaponName);
+        if (missingWeaponsLogged.add(normalizedWeapon)) {
+            Microbot.log("Pest Control portal weapon not found in inventory: " + weaponName);
+        }
+        return false;
     }
 
     private void restorePrimaryWeapon() {
         capturePrimaryWeapon();
-        String switchWeapon = config.switchWeapon() == null
-                ? ""
-                : config.switchWeapon().trim();
-        if (switchWeapon.isEmpty() || !isWeaponEquipped(switchWeapon)) {
+        String equippedWeapon = getEquippedWeaponName();
+        if (primaryWeaponName != null && primaryWeaponName.equalsIgnoreCase(equippedWeapon)) {
             return;
         }
 
         if (primaryWeaponName == null || primaryWeaponName.isEmpty()) {
-            if (!missingPrimaryWeaponLogged) {
+            if (isConfiguredPortalWeapon(equippedWeapon) && !missingPrimaryWeaponLogged) {
                 Microbot.log("Pest Control could not identify the primary weapon before switching");
                 missingPrimaryWeaponLogged = true;
             }
             return;
         }
 
-        if (Rs2Inventory.interact(primaryWeaponName, "Wield", true)) {
-            sleepUntil(() -> isWeaponEquipped(primaryWeaponName), 2000);
+        if (!isConfiguredPortalWeapon(equippedWeapon)) {
+            return;
+        }
+
+        if (Rs2Inventory.interact(primaryWeaponName, "Wield", true)
+                && sleepUntil(() -> isWeaponEquipped(primaryWeaponName), 2000)) {
             missingPrimaryWeaponLogged = false;
         } else if (!missingPrimaryWeaponLogged) {
             Microbot.log("Pest Control primary weapon not found in inventory: " + primaryWeaponName);
@@ -457,14 +484,145 @@ public class PestControlScript extends Script {
         }
 
         String equippedName = equippedWeapon.getName().trim();
-        String switchWeapon = config.switchWeapon() == null
-                ? ""
-                : config.switchWeapon().trim();
-        if (!equippedName.isEmpty() && !equippedName.equalsIgnoreCase(switchWeapon)) {
+        if (!equippedName.isEmpty() && !isConfiguredPortalWeapon(equippedName)) {
             primaryWeaponName = equippedName;
             Microbot.log("Pest Control primary weapon: " + primaryWeaponName
                     + " (" + config.primaryCombatStyle() + ")");
         }
+    }
+
+    private void applyPrimaryAttackMode() {
+        if (config.primaryCombatStyle() == PestControlCombatStyle.RANGED) {
+            applyAttackMode(PortalAttackMode.RAPID);
+        }
+    }
+
+    private void applyAttackMode(PortalAttackMode attackMode) {
+        switch (attackMode) {
+            case RAPID:
+                selectAttackOption("Rapid");
+                break;
+            case SLASH_STAB:
+                if (!selectAttackOption("Slash")) {
+                    selectAttackOption("Stab");
+                }
+                break;
+            case CRUSH:
+                selectAttackOption("Crush");
+                break;
+            case PRESERVE:
+            default:
+                break;
+        }
+    }
+
+    private boolean selectAttackOption(String desiredStyle) {
+        String equippedWeapon = getEquippedWeaponName();
+        if (equippedWeapon.equalsIgnoreCase(managedAttackOptionWeapon)
+                && desiredStyle.equalsIgnoreCase(managedAttackOptionName)
+                && Microbot.getVarbitPlayerValue(VarPlayerID.COM_MODE) == managedAttackOptionIndex) {
+            return true;
+        }
+
+        Rs2Tab.switchTo(InterfaceTab.COMBAT);
+        if (!sleepUntil(() -> Rs2Tab.getCurrentTab() == InterfaceTab.COMBAT, 2000)) {
+            return false;
+        }
+
+        WidgetInfo[] styleWidgets = {
+                WidgetInfo.COMBAT_STYLE_ONE,
+                WidgetInfo.COMBAT_STYLE_TWO,
+                WidgetInfo.COMBAT_STYLE_THREE,
+                WidgetInfo.COMBAT_STYLE_FOUR
+        };
+        int selectedIndex = -1;
+        int selectedScore = 0;
+        for (int index = 0; index < styleWidgets.length; index++) {
+            Widget styleText = Rs2Widget.getWidget(styleWidgets[index].getId() + 3);
+            int score = scoreAttackOption(styleText == null ? null : styleText.getText(), desiredStyle);
+            if (score > selectedScore) {
+                selectedIndex = index;
+                selectedScore = score;
+            }
+        }
+
+        if (selectedIndex < 0) {
+            String missingKey = normalizeWeaponName(equippedWeapon) + ":" + desiredStyle.toLowerCase(Locale.ROOT);
+            if (missingAttackOptionsLogged.add(missingKey)) {
+                Microbot.log("Pest Control could not find " + desiredStyle
+                        + " combat option for " + equippedWeapon);
+            }
+            return false;
+        }
+
+        int expectedIndex = selectedIndex;
+        boolean selected = Microbot.getVarbitPlayerValue(VarPlayerID.COM_MODE) == expectedIndex
+                || Rs2Combat.setAttackStyle(styleWidgets[selectedIndex])
+                && sleepUntil(() -> Microbot.getVarbitPlayerValue(VarPlayerID.COM_MODE) == expectedIndex, 2000);
+        if (selected) {
+            managedAttackOptionWeapon = equippedWeapon;
+            managedAttackOptionName = desiredStyle;
+            managedAttackOptionIndex = expectedIndex;
+            missingAttackOptionsLogged.remove(normalizeWeaponName(equippedWeapon)
+                    + ":" + desiredStyle.toLowerCase(Locale.ROOT));
+        }
+        return selected;
+    }
+
+    static int scoreAttackOption(String widgetText, String desiredStyle) {
+        if (widgetText == null || desiredStyle == null) {
+            return 0;
+        }
+
+        String lineSeparatedText = widgetText.replaceAll("(?i)<br\\s*/?>", "\n");
+        String[] lines = Text.removeTags(lineSeparatedText).split("\\R");
+        String desired = desiredStyle.trim().toLowerCase(Locale.ROOT);
+        int score = 0;
+        for (int index = 0; index < lines.length; index++) {
+            String line = lines[index].trim().toLowerCase(Locale.ROOT);
+            if (line.equals(desired)) {
+                score = Math.max(score, index == 0 ? 100 : 50);
+            } else if (line.contains(desired)) {
+                score = Math.max(score, index == 0 ? 75 : 25);
+            }
+            if (line.contains("strength xp")) {
+                score += 10;
+            }
+        }
+        return score;
+    }
+
+    private boolean isConfiguredPortalWeapon(String weaponName) {
+        if (weaponName == null || weaponName.isEmpty()) {
+            return false;
+        }
+        return configuredPortalWeapons().stream()
+                .anyMatch(configured -> configured.equalsIgnoreCase(weaponName));
+    }
+
+    private List<String> configuredPortalWeapons() {
+        return Arrays.asList(
+                        config.rangedWeapon(),
+                        config.magicWeapon(),
+                        config.slashStabWeapon(),
+                        config.crushWeapon())
+                .stream()
+                .filter(weapon -> !isPrimaryFallback(weapon))
+                .map(String::trim)
+                .collect(Collectors.toList());
+    }
+
+    private static boolean isPrimaryFallback(String weaponName) {
+        return weaponName == null
+                || weaponName.trim().isEmpty()
+                || weaponName.trim().equalsIgnoreCase("None");
+    }
+
+    private static String getEquippedWeaponName() {
+        Rs2ItemModel equippedWeapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
+        return equippedWeapon == null || equippedWeapon.getName() == null
+                ? ""
+                : equippedWeapon.getName().trim();
     }
 
     private static boolean isWeaponEquipped(String weaponName) {
@@ -476,6 +634,13 @@ public class PestControlScript extends Script {
 
     private static String normalizeWeaponName(String weaponName) {
         return weaponName == null ? "" : weaponName.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private enum PortalAttackMode {
+        RAPID,
+        SLASH_STAB,
+        CRUSH,
+        PRESERVE
     }
 
     /**

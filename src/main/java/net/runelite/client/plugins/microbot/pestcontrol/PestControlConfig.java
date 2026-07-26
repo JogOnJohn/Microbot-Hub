@@ -90,7 +90,7 @@ public interface PestControlConfig extends Config {
     @ConfigItem(
             keyName = "primaryCombatStyle",
             name = "Primary combat style",
-            description = "Combat style used unless the configured switch has a portal advantage",
+            description = "Combat style used whenever a portal weapon is set to None",
             position = 10
     )
     default PestControlCombatStyle primaryCombatStyle() {
@@ -98,22 +98,42 @@ public interface PestControlConfig extends Config {
     }
 
     @ConfigItem(
-            keyName = "switchCombatStyle",
-            name = "Switch combat style",
-            description = "Combat style of the configured switch weapon",
+            keyName = "rangedWeapon",
+            name = "Ranged weapon (purple)",
+            description = "Exact weapon name for the ranged-weak purple portal, or None to use the primary weapon",
             position = 11
     )
-    default PestControlCombatStyle switchCombatStyle() {
-        return PestControlCombatStyle.MELEE;
+    default String rangedWeapon() {
+        return "None";
     }
 
     @ConfigItem(
-            keyName = "switchWeapon",
-            name = "Switch weapon",
-            description = "Weapon to wield at a portal weak to the switch style; the equipped primary weapon is restored automatically",
+            keyName = "magicWeapon",
+            name = "Magic weapon (blue)",
+            description = "Exact weapon name for the magic-weak blue portal, or None to use the primary weapon",
             position = 12
     )
-    default String switchWeapon() {
+    default String magicWeapon() {
+        return "None";
+    }
+
+    @ConfigItem(
+            keyName = "slashStabWeapon",
+            name = "Slash/stab weapon (yellow)",
+            description = "Exact weapon name for the slash/stab-weak yellow portal, or None to use the primary weapon",
+            position = 13
+    )
+    default String slashStabWeapon() {
         return "Dragon scimitar";
+    }
+
+    @ConfigItem(
+            keyName = "crushWeapon",
+            name = "Crush weapon (red)",
+            description = "Exact weapon name for the crush-weak red portal, or None to use the primary weapon",
+            position = 14
+    )
+    default String crushWeapon() {
+        return "None";
     }
 }
