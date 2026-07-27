@@ -165,7 +165,7 @@ public interface PestControlConfig extends Config {
             position = 16
     )
     default int activityRecoveryStart() {
-        return 60;
+        return 40;
     }
 
     @Range(
@@ -179,6 +179,6 @@ public interface PestControlConfig extends Config {
             position = 17
     )
     default int activityRecoveryTarget() {
-        return 75;
+        return 70;
     }
 }

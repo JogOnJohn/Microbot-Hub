@@ -21,6 +21,8 @@ import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
+import net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban;
+import net.runelite.client.plugins.microbot.util.antiban.enums.ActivityIntensity;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
@@ -105,11 +107,19 @@ public class PestControlScript extends Script {
     private static final int RANGED_STAGING_DISTANCE = 6;
     private static final int MELEE_ENGAGEMENT_DISTANCE = 1;
     private static final int MINIMAP_STEP_DISTANCE = 14;
-    private static final int PORTAL_CAMERA_MIN_DISTANCE = 14;
     private static final int SOUTH_PERIMETER_REGION_Y = 23;
     private static final int SOUTH_PERIMETER_DETOUR_REGION_Y = 26;
     private static final int WEST_PERIMETER_REGION_X = 15;
     private static final int EAST_PERIMETER_REGION_X = 48;
+    private static final int WEST_LANE_GATE_REGION_X = 19;
+    private static final int EAST_LANE_GATE_REGION_X = 46;
+    private static final int LANE_GATE_REGION_Y = 32;
+    private static final int WEST_LANE_INNER_REGION_X = 22;
+    private static final int EAST_LANE_INNER_REGION_X = 43;
+    private static final int WEST_LANE_OUTER_REGION_X = 16;
+    private static final int EAST_LANE_OUTER_REGION_X = 49;
+    private static final int LANE_GATE_APPROACH_DISTANCE = 2;
+    private static final int LANE_GATE_MATCH_DISTANCE = 2;
     private static final int PERIMETER_WAYPOINT_ARRIVAL_DISTANCE = 2;
     private static final int ACTIVITY_TARGET_RADIUS = 12;
     private static final int BLOCKING_GATE_RADIUS = 10;
@@ -124,6 +134,8 @@ public class PestControlScript extends Script {
     private static final long MOVEMENT_RETRY_IDLE_MILLIS = 750L;
     private static final long MOVEMENT_RETRY_MOVING_MILLIS = 1_500L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
+    private static final long SAME_TARGET_ATTACK_RETRY_MILLIS = 1_200L;
+    private static final long DUPLICATE_COMMAND_LOG_MILLIS = 5_000L;
     private static final long PORTAL_REAFFIRM_MILLIS = 3_000L;
     private static final long PORTAL_TARGET_MIN_HOLD_MILLIS = 15_000L;
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
@@ -153,11 +165,13 @@ public class PestControlScript extends Script {
     private long lastMovementCommandAt = 0L;
     private long lastAttackCommandAt = 0L;
     private long lastPortalCameraTurnAt = 0L;
+    private Portal lastCameraPivotPortal = null;
     private long lastSouthwestDetourLogAt = 0L;
     private long selectedPortalSince = 0L;
     private long lastGateInteractionAt = 0L;
     private WorldPoint lastGateLocation = null;
     private final Map<WorldPoint, Long> gateReuseCooldowns = new HashMap<>();
+    private long lastGateDiagnosticAt = 0L;
     private Portal brawlerCommitPortal = null;
     private WorldPoint brawlerFlankTarget = null;
     private long brawlerFlankStartedAt = 0L;
@@ -171,6 +185,10 @@ public class PestControlScript extends Script {
     private WorldPoint lastProgressLocation = null;
     private boolean quickPrayerHandled = false;
     private boolean activityRecoveryActive = false;
+    private Portal stagingPortal = null;
+    private String lastAttackCommandKey = null;
+    private long lastDuplicateAttackLogAt = 0L;
+    private int suppressedDuplicateAttackCommands = 0;
     private long loginUnavailableSince = 0L;
     private long lastRoundExitAt = 0L;
     private boolean roundCompletionPending = false;
@@ -238,7 +256,6 @@ public class PestControlScript extends Script {
             lastProgressAt = now;
             lastProgressLocation = null;
             lastWatchdogLogAt = 0L;
-            lastAttackCommandAt = 0L;
             Microbot.log("Pest Control state: " + state
                     + (normalizedDetail.isEmpty() ? "" : " - " + normalizedDetail));
         }
@@ -427,22 +444,19 @@ public class PestControlScript extends Script {
             return;
         }
 
-        WorldPoint portalLocation = logicalPortalLocation(portal, playerLocation);
-        if (playerLocation.distanceTo(portalLocation) < PORTAL_CAMERA_MIN_DISTANCE) {
-            return;
-        }
-
         long now = System.currentTimeMillis();
-        if (now - lastPortalCameraTurnAt < PORTAL_CAMERA_TURN_COOLDOWN_MILLIS) {
+        boolean newTarget = lastCameraPivotPortal != portal;
+        long minimumCooldown = newTarget
+                ? MOVEMENT_RETRY_MOVING_MILLIS
+                : PORTAL_CAMERA_TURN_COOLDOWN_MILLIS;
+        if (now - lastPortalCameraTurnAt < minimumCooldown) {
             return;
         }
 
+        WorldPoint portalLocation = logicalPortalLocation(portal, playerLocation);
         LocalPoint portalLocal = Microbot.getClientThread().runOnClientThreadOptional(() -> {
-            LocalPoint localPoint = LocalPoint.fromWorld(
+            return LocalPoint.fromWorld(
                     Microbot.getClient().getTopLevelWorldView(), portalLocation);
-            return localPoint != null && !Rs2Camera.isTileOnScreen(localPoint)
-                    ? localPoint
-                    : null;
         }
         ).orElse(null);
         if (portalLocal == null) {
@@ -451,6 +465,9 @@ public class PestControlScript extends Script {
 
         Rs2Camera.turnTo(portalLocal);
         lastPortalCameraTurnAt = now;
+        lastCameraPivotPortal = portal;
+        Microbot.log("Pest Control camera pivot: " + portal
+                + " portal at distance " + playerLocation.distanceTo(portalLocation));
     }
 
     void noteRoundOutcome(boolean won) {
@@ -588,17 +605,134 @@ public class PestControlScript extends Script {
                 playerLocation.getPlane());
     }
 
-    private boolean claimAttackCommand() {
+    /**
+     * Own passage out of the central enclosure before any portal or Spinner
+     * interaction is allowed. This prevents direct NPC clicks from repeatedly
+     * targeting an otherwise visible portal through a closed perimeter gate.
+     */
+    private boolean ensurePortalLaneAccess(WorldPoint playerLocation, Portal portal) {
+        if (playerLocation == null || portal == null || !isInsideCentralEnclosure(playerLocation)) {
+            return false;
+        }
+
+        boolean east = isEastSide(portal);
+        String side = east ? "east" : "west";
+        WorldPoint gateCenter = regionPoint(
+                playerLocation,
+                east ? EAST_LANE_GATE_REGION_X : WEST_LANE_GATE_REGION_X,
+                LANE_GATE_REGION_Y);
+        WorldPoint innerApproach = regionPoint(
+                playerLocation,
+                east ? EAST_LANE_INNER_REGION_X : WEST_LANE_INNER_REGION_X,
+                LANE_GATE_REGION_Y);
+        WorldPoint outerCrossing = regionPoint(
+                playerLocation,
+                east ? EAST_LANE_OUTER_REGION_X : WEST_LANE_OUTER_REGION_X,
+                LANE_GATE_REGION_Y);
+
+        if (playerLocation.distanceTo(innerApproach) > LANE_GATE_APPROACH_DISTANCE) {
+            transitionTo(RuntimeState.OPEN_GATE,
+                    "approaching " + side + " lane gate for " + portal);
+            moveToward(playerLocation, innerApproach, LANE_GATE_APPROACH_DISTANCE);
+            return true;
+        }
+
+        if (lastGateLocation != null
+                && lastGateLocation.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE) {
+            openBlockingGate(playerLocation, outerCrossing);
+            return true;
+        }
+
+        List<Rs2TileObjectModel> nearbyGateLeaves = Microbot.getRs2TileObjectCache().query()
+                .withName("Gate")
+                .within(BLOCKING_GATE_RADIUS)
+                .toListOnClientThread()
+                .stream()
+                .filter(candidate -> {
+                    WorldPoint location = templateLocation(candidate);
+                    return location != null
+                            && location.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE;
+                })
+                .collect(Collectors.toList());
+
+        Rs2TileObjectModel closedGate = nearbyGateLeaves.stream()
+                .filter(this::hasOpenAction)
+                .min(Comparator.comparingInt(candidate ->
+                        playerLocation.distanceTo(templateLocation(candidate))))
+                .orElse(null);
+        if (closedGate != null) {
+            WorldPoint gateLocation = templateLocation(closedGate);
+            transitionTo(RuntimeState.OPEN_GATE,
+                    "opening " + side + " lane gate for " + portal);
+            long now = System.currentTimeMillis();
+            boolean dispatched = closedGate.click("Open");
+            lastMovementCommandAt = now;
+            if (dispatched) {
+                lastGateLocation = gateLocation;
+                lastGateInteractionAt = now;
+                Microbot.log("Pest Control opened " + side + " lane gate at "
+                        + gateLocation + " for " + portal + " portal");
+            }
+            return true;
+        }
+
+        boolean gateObservedOpen = nearbyGateLeaves.stream().anyMatch(this::hasCloseAction);
+        if (gateObservedOpen) {
+            transitionTo(RuntimeState.OPEN_GATE,
+                    "crossing open " + side + " lane gate for " + portal);
+            long now = System.currentTimeMillis();
+            boolean moving = Rs2Player.isMoving();
+            long retryMillis = moving ? MOVEMENT_RETRY_MOVING_MILLIS : MOVEMENT_RETRY_IDLE_MILLIS;
+            if (now - lastMovementCommandAt >= retryMillis) {
+                Rs2Walker.walkFastCanvas(outerCrossing);
+                lastMovementCommandAt = now;
+            }
+            return true;
+        }
+
+        transitionTo(RuntimeState.OPEN_GATE,
+                "waiting for " + side + " lane gate state for " + portal);
         long now = System.currentTimeMillis();
-        if (now - lastAttackCommandAt < ATTACK_RETRY_MILLIS) {
+        if (now - lastGateDiagnosticAt >= WATCHDOG_LOG_INTERVAL_MILLIS) {
+            Microbot.log("Pest Control gate diagnostic: no open/closed leaf observed near "
+                    + gateCenter + " for " + portal + "; holding safe-side position");
+            lastGateDiagnosticAt = now;
+        }
+        return true;
+    }
+
+    private static boolean isInsideCentralEnclosure(WorldPoint point) {
+        return point != null
+                && point.getRegionX() >= WEST_LANE_GATE_REGION_X
+                && point.getRegionX() <= EAST_LANE_GATE_REGION_X
+                && point.getRegionY() > SOUTH_PERIMETER_DETOUR_REGION_Y;
+    }
+
+    private boolean claimAttackCommand(String commandKey) {
+        long now = System.currentTimeMillis();
+        boolean sameTarget = Objects.equals(lastAttackCommandKey, commandKey);
+        long retryMillis = sameTarget
+                ? SAME_TARGET_ATTACK_RETRY_MILLIS
+                : ATTACK_RETRY_MILLIS;
+        if (now - lastAttackCommandAt < retryMillis) {
+            suppressedDuplicateAttackCommands++;
+            if (now - lastDuplicateAttackLogAt >= DUPLICATE_COMMAND_LOG_MILLIS) {
+                Microbot.log("Pest Control command guard: suppressed "
+                        + suppressedDuplicateAttackCommands + " duplicate attack clicks; latest="
+                        + commandKey);
+                suppressedDuplicateAttackCommands = 0;
+                lastDuplicateAttackLogAt = now;
+            }
             return false;
         }
         lastAttackCommandAt = now;
+        lastAttackCommandKey = commandKey;
         return true;
     }
 
     private boolean dispatchAttack(Rs2NpcModel target) {
-        if (target == null || !claimAttackCommand()) {
+        String commandKey = attackCommandKey(target, "npc");
+        if (target == null || !claimAttackCommand(commandKey)) {
             return false;
         }
         return Microbot.getClientThread().runOnClientThreadOptional(() ->
@@ -610,10 +744,18 @@ public class PestControlScript extends Script {
     }
 
     private boolean dispatchPortalAttack(Rs2NpcModel target) {
-        if (target == null || !claimAttackCommand()) {
+        String commandKey = attackCommandKey(target, "portal");
+        if (target == null || !claimAttackCommand(commandKey)) {
             return false;
         }
         return attackPortal(target);
+    }
+
+    private static String attackCommandKey(Rs2NpcModel target, String kind) {
+        if (target == null) {
+            return kind + ":missing";
+        }
+        return kind + ":" + target.getId();
     }
 
     private static boolean isNpcOnCanvas(Rs2NpcModel target) {
@@ -641,6 +783,10 @@ public class PestControlScript extends Script {
         WorldPoint playerLocation = Rs2Player.getWorldLocation();
         if (playerLocation == null || openingPortal == null) {
             return false;
+        }
+
+        if (ensurePortalLaneAccess(playerLocation, openingPortal)) {
+            return true;
         }
 
         WorldPoint target = rangedPortalStagingLocation(openingPortal, playerLocation);
@@ -679,6 +825,8 @@ public class PestControlScript extends Script {
 
     public boolean run(PestControlConfig config) {
         this.config = config;
+        Rs2Antiban.setActivityIntensity(ActivityIntensity.MODERATE);
+        Microbot.log("Pest Control mouse speed: Moderate");
         resetPortals();
         selectedPortal = null;
         openingPortal = null;
@@ -701,16 +849,22 @@ public class PestControlScript extends Script {
         lastWatchdogLogAt = 0L;
         lastMovementCommandAt = 0L;
         lastAttackCommandAt = 0L;
+        lastAttackCommandKey = null;
+        lastDuplicateAttackLogAt = 0L;
+        suppressedDuplicateAttackCommands = 0;
         lastPortalCameraTurnAt = 0L;
+        lastCameraPivotPortal = null;
         lastGateInteractionAt = 0L;
         lastGateLocation = null;
         gateReuseCooldowns.clear();
+        lastGateDiagnosticAt = 0L;
         perimeterDetourUntil = 0L;
         clearSpinnerCommitment();
         clearBrawlerCommitment();
         lastProgressLocation = null;
         quickPrayerHandled = false;
         activityRecoveryActive = false;
+        stagingPortal = null;
         loginUnavailableSince = 0L;
         lastRoundExitAt = 0L;
         roundCompletionPending = false;
@@ -801,16 +955,21 @@ public class PestControlScript extends Script {
             openingPortal = chooseOpeningPortal();
             openingSideReached = false;
             selectedPortal = null;
+            stagingPortal = null;
             quickPrayerHandled = false;
             activityRecoveryActive = false;
             lastProgressLocation = null;
             lastProgressAt = System.currentTimeMillis();
             lastMovementCommandAt = 0L;
             lastAttackCommandAt = 0L;
+            lastAttackCommandKey = null;
+            suppressedDuplicateAttackCommands = 0;
             lastPortalCameraTurnAt = 0L;
+            lastCameraPivotPortal = null;
             lastGateInteractionAt = 0L;
             lastGateLocation = null;
             gateReuseCooldowns.clear();
+            lastGateDiagnosticAt = 0L;
             perimeterDetourUntil = 0L;
             clearSpinnerCommitment();
             clearBrawlerCommitment();
@@ -870,9 +1029,9 @@ public class PestControlScript extends Script {
             return;
         }
 
-        Portal lastShieldedPortal = soleShieldedPortal();
-        if (lastShieldedPortal != null
-                && moveToLastShieldedPortal(lastShieldedPortal, playerLocation)) {
+        Portal desiredStagingPortal = selectStagingPortal(playerLocation);
+        if (desiredStagingPortal != null
+                && moveToShieldedPortal(desiredStagingPortal, playerLocation)) {
             runWatchdog(playerLocation);
             return;
         }
@@ -887,27 +1046,49 @@ public class PestControlScript extends Script {
             return;
         }
 
-        if (lastShieldedPortal != null) {
+        if (desiredStagingPortal != null) {
             transitionTo(RuntimeState.WAITING_FOR_PORTAL,
-                    "pre-positioned for " + lastShieldedPortal + " shield drop");
+                    "staged for " + desiredStagingPortal + " shield drop");
             return;
         }
 
-        transitionTo(RuntimeState.WAITING_FOR_PORTAL, "staged near " + openingPortal);
+        transitionTo(RuntimeState.WAITING_FOR_PORTAL, "no surviving shielded portal");
     }
 
-    private Portal soleShieldedPortal() {
-        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
-            List<Portal> shieldedPortals = portals.stream()
-                    .filter(portal -> portal.hasShield)
-                    .collect(Collectors.toList());
-            return shieldedPortals.size() == 1 ? shieldedPortals.get(0) : null;
-        }).orElse(null);
+    private Portal selectStagingPortal(WorldPoint playerLocation) {
+        List<Portal> candidates = portals.stream()
+                .filter(portal -> portal.hasShield && !destroyedPortals.contains(portal))
+                .collect(Collectors.toList());
+        if (candidates.isEmpty()) {
+            stagingPortal = null;
+            return null;
+        }
+        if (stagingPortal != null && candidates.contains(stagingPortal)) {
+            return stagingPortal;
+        }
+        if (openingPortal != null && candidates.contains(openingPortal)) {
+            stagingPortal = openingPortal;
+            return stagingPortal;
+        }
+        stagingPortal = candidates.stream()
+                .min(Comparator
+                        .comparingInt((Portal portal) -> playerLocation == null
+                                ? Integer.MAX_VALUE
+                                : regionDistance(playerLocation, portal.getRegionX(), portal.getRegionY()))
+                        .thenComparingInt(portal -> portal == PURPLE ? 0 : 1))
+                .orElse(candidates.get(0));
+        Microbot.log("Pest Control staging target: " + stagingPortal
+                + " (surviving shielded portal)");
+        return stagingPortal;
     }
 
-    private boolean moveToLastShieldedPortal(Portal portal, WorldPoint playerLocation) {
+    private boolean moveToShieldedPortal(Portal portal, WorldPoint playerLocation) {
         if (portal == null || playerLocation == null) {
             return false;
+        }
+
+        if (ensurePortalLaneAccess(playerLocation, portal)) {
+            return true;
         }
 
         WorldPoint target = rangedPortalStagingLocation(portal, playerLocation);
@@ -915,7 +1096,13 @@ public class PestControlScript extends Script {
             return false;
         }
 
-        transitionTo(RuntimeState.PREPOSITION_PORTAL, portal + " shield pending");
+        long shieldedRemaining = portals.stream()
+                .filter(candidate -> candidate.hasShield && !destroyedPortals.contains(candidate))
+                .count();
+        transitionTo(RuntimeState.PREPOSITION_PORTAL,
+                portal + (shieldedRemaining == 1
+                        ? " sole shield pending"
+                        : " surviving shield staging"));
         return moveTowardPortal(playerLocation, target, STAGING_ARRIVAL_DISTANCE, portal);
     }
 
@@ -1180,15 +1367,18 @@ public class PestControlScript extends Script {
         if (lastGateLocation != null) {
             long elapsed = now - lastGateInteractionAt;
             if (hasPassedGate(playerLocation, lastGateLocation, target)) {
-                gateReuseCooldowns.put(lastGateLocation, now + GATE_REUSE_COOLDOWN_MILLIS);
+                registerLogicalGateCooldown(lastGateLocation, now);
                 lastGateLocation = null;
             } else if (elapsed >= GATE_CROSSING_TIMEOUT_MILLIS) {
                 Microbot.log("Pest Control gate crossing timed out at " + lastGateLocation
                         + "; suppressing immediate reopen");
-                gateReuseCooldowns.put(lastGateLocation, now + GATE_REUSE_COOLDOWN_MILLIS);
+                registerLogicalGateCooldown(lastGateLocation, now);
                 lastGateLocation = null;
             } else if (elapsed < GATE_OPEN_ANIMATION_MILLIS) {
                 transitionTo(RuntimeState.OPEN_GATE, "waiting for gate to open");
+                return true;
+            } else if (!isLogicalGateObservedOpen(lastGateLocation)) {
+                transitionTo(RuntimeState.OPEN_GATE, "waiting for open gate confirmation");
                 return true;
             } else {
                 transitionTo(RuntimeState.OPEN_GATE, "crossing opened gate");
@@ -1231,6 +1421,46 @@ public class PestControlScript extends Script {
         return true;
     }
 
+    private boolean isLogicalGateObservedOpen(WorldPoint gateLocation) {
+        if (gateLocation == null) {
+            return false;
+        }
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                Microbot.getRs2TileObjectCache().query()
+                        .withName("Gate")
+                        .within(BLOCKING_GATE_RADIUS)
+                        .toList()
+                        .stream()
+                        .filter(this::hasCloseAction)
+                        .anyMatch(candidate -> {
+                            LocalPoint local = candidate.getLocalLocation();
+                            if (local == null) {
+                                return false;
+                            }
+                            WorldPoint location = WorldPoint.fromLocalInstance(
+                                    Microbot.getClient(), local, candidate.getPlane());
+                            return location != null
+                                    && location.distanceTo(gateLocation)
+                                    <= LANE_GATE_MATCH_DISTANCE;
+                        })
+        ).orElse(false);
+    }
+
+    private void registerLogicalGateCooldown(WorldPoint gateLocation, long now) {
+        if (gateLocation == null) {
+            return;
+        }
+        long expiresAt = now + GATE_REUSE_COOLDOWN_MILLIS;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                gateReuseCooldowns.put(new WorldPoint(
+                        gateLocation.getX() + dx,
+                        gateLocation.getY() + dy,
+                        gateLocation.getPlane()), expiresAt);
+            }
+        }
+    }
+
     private static WorldPoint gateCrossingPoint(WorldPoint gate, WorldPoint target) {
         int dx = Integer.compare(target.getX(), gate.getX());
         int dy = Integer.compare(target.getY(), gate.getY());
@@ -1259,6 +1489,16 @@ public class PestControlScript extends Script {
         String[] actions = composition == null ? null : composition.getActions();
         return actions != null && Arrays.stream(actions)
                 .anyMatch(action -> action != null && action.equalsIgnoreCase("Open"));
+    }
+
+    private boolean hasCloseAction(Rs2TileObjectModel object) {
+        if (object == null) {
+            return false;
+        }
+        ObjectComposition composition = object.getObjectComposition();
+        String[] actions = composition == null ? null : composition.getActions();
+        return actions != null && Arrays.stream(actions)
+                .anyMatch(action -> action != null && action.equalsIgnoreCase("Close"));
     }
 
     private static boolean isOnMovementRoute(
@@ -1511,6 +1751,22 @@ public class PestControlScript extends Script {
 
         if (playerLocation == null) {
             transitionTo(RuntimeState.ERROR, "player location unavailable");
+            return;
+        }
+        maybeTurnCameraTowardPortal(playerLocation, target.portal);
+        if (ensurePortalLaneAccess(playerLocation, target.portal)) {
+            return;
+        }
+        if (southPerimeterWaypoint(playerLocation, target.portal) != null) {
+            transitionTo(RuntimeState.CHASE_PORTAL,
+                    target.portal + " portal via outer perimeter");
+            WorldPoint approachLocation = rangedPortalStagingLocation(
+                    target.portal, playerLocation);
+            moveTowardPortal(
+                    playerLocation,
+                    approachLocation,
+                    STAGING_ARRIVAL_DISTANCE,
+                    target.portal);
             return;
         }
         prepareWeaponForPortal(target.portal);

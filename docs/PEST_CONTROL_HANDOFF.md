@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.29`
+- Plugin version: `2.4.30` (work in progress)
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -25,6 +25,22 @@ git worktree add ..\Microbot-Hub-pest-control -b fix/pest-control-strategy origi
 
 Read `CLAUDE.md`, `docs/PLUGIN_DEBUGGING_NOTES.md`, and
 `docs/AGENT_SERVER.md` before changing or live-testing the plugin.
+
+## Known-good rollback baseline
+
+Before the 2.4.30 gate-entry and diagnostics work, the known-good local
+rollback point was:
+
+- Strategy commit: `ed5074f2523ce99f0171fd816271601ccefd2749`
+- Handover-only follow-up commit: `83794a546275b371e36ae2d648903b296b6bd112`
+- Plugin version: `2.4.29`
+- Packaged and installed JAR size: `55,733` bytes
+- SHA-256: `B9B3571495420E5AFB664CA7F490D0E13DE834F381D4713B02E177684E9F0A95`
+
+This is a functional rollback baseline, not a claim that it is bug-free. Its
+known limitations include activity losses during long portal engagements,
+adjacent gate leaves being treated independently, stale destroyed-portal
+staging, and movement/interaction attempts through closed perimeter gates.
 
 ## Current Bizza runtime state
 
@@ -94,12 +110,12 @@ stopped states.
 - Yellow: Dragon scimitar, Slash with Stab fallback
 - Red: `None`, falling back to primary ranged
 - Opening Purple/ranged weight: `55%`
-- Live activity recovery profile: start at `40%`, resume at `60%`
+- Live activity recovery profile: start at `40%`, resume at `70%`
 - Quick Prayer: enabled
 - All four portal special-attack toggles: disabled
 
-Source defaults for activity recovery remain `60%` start and `75%` target;
-both thresholds are exposed in config. Old persisted settings named NPC
+Source defaults for activity recovery are `40%` start and `70%` target; both
+thresholds are exposed in config. Old persisted settings named NPC
 Priority 1/2/3, `switchWeapon`, and `switchCombatStyle` can remain in the
 RuneLite properties file but are no longer declared or read by this strategy.
 
@@ -136,9 +152,11 @@ desired portal without enabling specials elsewhere.
   portal/NPC interaction takes precedence when the target is visible.
 - Activity recovery uses stable state details so changing meter percentages do
   not reset attack throttling or cause state-log churn.
-- Attackable portal selection runs before sustained activity recovery. Ordinary
-  fallback pests therefore cannot delay a portal chase; the portal or its
-  healing Spinner becomes the activity source once a shield drops.
+- Once activity recovery starts, it owns combat until the target threshold is
+  reached. Portal hits are not treated as reliable activity recovery because
+  misses and low damage can leave the bar falling. The ready portal remains
+  the next objective and is re-selected immediately after recovery reaches
+  70 percent.
 - Movement commands retry after 750 ms when stationary and 1.5 seconds while
   already moving. Every command attempt is throttled even if the walker cannot
   confirm dispatch, while only observed movement counts as watchdog progress.
@@ -209,6 +227,49 @@ Current extant bugs and follow-up work:
    recovered to 81 percent, then decayed to 7 percent during portal chasing and
    attacks before the game ended.
 
+Deferred strategy work, deliberately outside the 2.4.30 fixes: track the Void
+Knight's health and, after a player death, enter a defense-assist state when
+that health is below a configurable threshold. Treat this as an independent
+strategy run with its own live validation; do not mix it into gate or activity
+recovery fixes.
+
+## Version 2.4.30 work in progress
+
+A live 2.4.29 capture at about 20:23 AEST reproduced repeated `I can't reach
+that!` messages while the script owned a portal/Spinner objective across a
+closed fence. Earlier round-entry logs also showed Yellow opening movement
+reaching its staging state without first recording a gate open. This is now a
+first-class regression case: no portal, Spinner, or Brawler click may bypass
+gate passage while the player is inside the central enclosure.
+
+The 2.4.30 implementation pass adds:
+
+- Gate-first east/west lane entry using safe inner approach points, observed
+  open/closed gate state, and observed passage before portal logic resumes.
+- Outer-perimeter ownership before direct NPC interaction when transferring
+  between east and west portal lanes.
+- One logical cooldown covering both adjacent leaves of a gate.
+- Source activity defaults of 40/70 while preserving recovery ownership once
+  recovery begins.
+- Moderate Microbot mouse intensity at plugin start without applying an
+  antiban template, action delay, or microbreak profile.
+- A single camera pivot for each newly selected portal, with an eight-second
+  same-target cooldown.
+- Stable staging on a surviving shielded portal; a destroyed opening portal
+  can no longer remain the waiting destination.
+- A same-target attack acknowledgment guard and rate-limited duplicate-command
+  diagnostics. State-detail transitions no longer reset the attack throttle.
+
+Focused compilation and `PestControlPluginJar` packaging passed against
+Microbot 2.6.15. The packaged 2.4.30 JAR is 58,872 bytes with SHA-256:
+
+```text
+254413EF0648A463C026FF6DE65664F924F756AC42C034E5DD91485F09579374
+```
+
+Installation and live validation remain pending at this point in the
+handover.
+
 Keep these fixes local to Pest Control unless a separate reproduction proves a
 shared WebWalker defect.
 
@@ -229,8 +290,7 @@ installed 2.4.29 JAR was 55,733 bytes with SHA-256:
 B9B3571495420E5AFB664CA7F490D0E13DE834F381D4713B02E177684E9F0A95
 ```
 
-Runtime activity settings were restored from stale `35/65` persisted values to
-the source defaults:
+The 2.4.29 runtime activity settings at that validation point were:
 
 ```text
 pestcontrol.activityRecoveryStart = 60
