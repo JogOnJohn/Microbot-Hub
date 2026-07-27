@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.32` (work in progress)
+- Plugin version: `2.4.33` (work in progress)
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -319,7 +319,31 @@ with SHA-256:
 3B3CCAB4C19ABFBD6A74CD250B284BD5ED4E8D25B158EF381249F893C418D89A
 ```
 
-Version 2.4.32 still requires installation and live validation.
+The first 2.4.32 round was a paid win (+4 points) and exercised all four portal
+colors, immediate first-drop pursuit, 39-to-75 activity recovery ownership,
+multiple Spinner preemptions, Brawler clearing, intelligent surviving-portal
+staging, sole-shield preposition, one-pivot camera steering, and immediate
+reboard. The second round reproduced a failed east-gate acknowledgment: the
+open click dispatched but the gate never exposed `Close`. The script safely
+held the inner side rather than clicking through the fence, but waited six
+seconds for timeout and then entered the eight-second pair cooldown.
+
+Version 2.4.33 separates open acknowledgment from crossing progress. If no
+open state appears within three seconds, it issues one fresh open attempt.
+Confirmed-open crossings retain the existing observed-passage and six-second
+movement timeout rules. It also prefers activity targets in the player's
+current accessible lane; if only a cross-fence target exists after a death,
+activity recovery owns the appropriate gate passage before attacking. Same-NPC
+attack acknowledgment retries are three seconds and include the NPC index in
+their command key, reducing repeated clicks without delaying a genuinely new
+target. Focused compilation and packaging passed. The 2.4.33 JAR is 59,638
+bytes with SHA-256:
+
+```text
+9D431F85E07ADC46C9B0331815A2B8E86936B1CA4E55678F71C01813C85F5A67
+```
+
+Installation and live validation remain pending.
 
 Keep these fixes local to Pest Control unless a separate reproduction proves a
 shared WebWalker defect.

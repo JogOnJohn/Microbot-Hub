@@ -134,8 +134,8 @@ public class PestControlScript extends Script {
     private static final long MOVEMENT_RETRY_IDLE_MILLIS = 750L;
     private static final long MOVEMENT_RETRY_MOVING_MILLIS = 1_500L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
-    private static final long SAME_TARGET_ATTACK_RETRY_MILLIS = 1_200L;
-    private static final long DUPLICATE_COMMAND_LOG_MILLIS = 5_000L;
+    private static final long SAME_TARGET_ATTACK_RETRY_MILLIS = 3_000L;
+    private static final long DUPLICATE_COMMAND_LOG_MILLIS = 10_000L;
     private static final long PORTAL_REAFFIRM_MILLIS = 3_000L;
     private static final long PORTAL_TARGET_MIN_HOLD_MILLIS = 15_000L;
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
@@ -145,6 +145,7 @@ public class PestControlScript extends Script {
     private static final long ROUND_TRANSITION_LOGIN_GRACE_MILLIS = 5_000L;
     private static final long ROUND_OUTCOME_GRACE_MILLIS = 6_000L;
     private static final long GATE_OPEN_ANIMATION_MILLIS = 1_200L;
+    private static final long GATE_OPEN_CONFIRM_TIMEOUT_MILLIS = 3_000L;
     private static final long GATE_CROSSING_TIMEOUT_MILLIS = 6_000L;
     private static final long GATE_REUSE_COOLDOWN_MILLIS = 8_000L;
     private static final long BRAWLER_FLANK_TIMEOUT_MILLIS = 4_500L;
@@ -771,7 +772,7 @@ public class PestControlScript extends Script {
         if (target == null) {
             return kind + ":missing";
         }
-        return kind + ":" + target.getId();
+        return kind + ":" + target.getId() + ":" + target.getIndex();
     }
 
     private static boolean isNpcOnCanvas(Rs2NpcModel target) {
@@ -1287,13 +1288,13 @@ public class PestControlScript extends Script {
         restorePrimaryWeapon();
         applyPrimaryAttackMode();
 
-        Rs2NpcModel spinner = nearestActivitySpinner();
+        Rs2NpcModel spinner = nearestActivitySpinner(playerLocation);
         if (spinner != null) {
             maintainActivityWith(spinner, playerLocation);
             return true;
         }
 
-        Rs2NpcModel attackableNpc = preferredActivityPest();
+        Rs2NpcModel attackableNpc = preferredActivityPest(playerLocation);
         if (attackableNpc != null) {
             maintainActivityWith(attackableNpc, playerLocation);
             return true;
@@ -1315,9 +1316,9 @@ public class PestControlScript extends Script {
             return true;
         }
 
-        Rs2NpcModel target = nearestActivitySpinner();
+        Rs2NpcModel target = nearestActivitySpinner(playerLocation);
         if (target == null) {
-            target = preferredActivityPest();
+            target = preferredActivityPest(playerLocation);
         }
         if (target == null) {
             return false;
@@ -1384,8 +1385,16 @@ public class PestControlScript extends Script {
         gateReuseCooldowns.entrySet().removeIf(entry -> entry.getValue() <= now);
         if (lastGateLocation != null) {
             long elapsed = now - lastGateInteractionAt;
+            boolean gateObservedOpen = elapsed >= GATE_OPEN_ANIMATION_MILLIS
+                    && isLogicalGateObservedOpen(lastGateLocation);
             if (hasPassedGate(playerLocation, lastGateLocation, target)) {
                 registerLogicalGateCooldown(lastGateLocation, now);
+                lastGateLocation = null;
+                activeGateCrossingTarget = null;
+            } else if (elapsed >= GATE_OPEN_CONFIRM_TIMEOUT_MILLIS
+                    && !gateObservedOpen) {
+                Microbot.log("Pest Control gate open was not confirmed at "
+                        + lastGateLocation + "; issuing one fresh open attempt");
                 lastGateLocation = null;
                 activeGateCrossingTarget = null;
             } else if (elapsed >= GATE_CROSSING_TIMEOUT_MILLIS) {
@@ -1397,7 +1406,7 @@ public class PestControlScript extends Script {
             } else if (elapsed < GATE_OPEN_ANIMATION_MILLIS) {
                 transitionTo(RuntimeState.OPEN_GATE, "waiting for gate to open");
                 return true;
-            } else if (!isLogicalGateObservedOpen(lastGateLocation)) {
+            } else if (!gateObservedOpen) {
                 transitionTo(RuntimeState.OPEN_GATE, "waiting for open gate confirmation");
                 return true;
             } else {
@@ -1568,29 +1577,37 @@ public class PestControlScript extends Script {
         return playerX * targetX + playerY * targetY > 0;
     }
 
-    private Rs2NpcModel nearestActivitySpinner() {
+    private Rs2NpcModel nearestActivitySpinner(WorldPoint playerLocation) {
         return Microbot.getClientThread().invoke(() ->
                 Microbot.getRs2NpcCache().query()
                         .withIds(SPINNER_IDS.stream().mapToInt(Integer::intValue).toArray())
-                        .where(this::isNearbyActivityTarget)
-                        .nearest());
-    }
-
-    private Rs2NpcModel preferredActivityPest() {
-        return Microbot.getClientThread().invoke(() ->
-                Microbot.getRs2NpcCache().query()
-                        .where(this::isOrdinaryActivityTarget)
+                        .where(npc -> isNearbyActivityTarget(npc, playerLocation))
                         .toList()
                         .stream()
                         .min(Comparator
                                 .comparingInt((Rs2NpcModel npc) ->
+                                        isActivityTargetAccessible(playerLocation, npc.getWorldLocation()) ? 0 : 1)
+                                .thenComparingInt(PestControlScript::distanceFromPlayerInTiles))
+                        .orElse(null));
+    }
+
+    private Rs2NpcModel preferredActivityPest(WorldPoint playerLocation) {
+        return Microbot.getClientThread().invoke(() ->
+                Microbot.getRs2NpcCache().query()
+                        .where(npc -> isOrdinaryActivityTarget(npc, playerLocation))
+                        .toList()
+                        .stream()
+                        .min(Comparator
+                                .comparingInt((Rs2NpcModel npc) ->
+                                        isActivityTargetAccessible(playerLocation, npc.getWorldLocation()) ? 0 : 1)
+                                .thenComparingInt((Rs2NpcModel npc) ->
                                         "Torcher".equalsIgnoreCase(npc.getName()) ? 0 : 1)
                                 .thenComparingInt(npc -> npc.getNpc().getCombatLevel())
                                 .thenComparingInt(PestControlScript::distanceFromPlayerInTiles))
                         .orElse(null));
     }
 
-    private boolean isNearbyActivityTarget(Rs2NpcModel npc) {
+    private boolean isNearbyActivityTarget(Rs2NpcModel npc, WorldPoint playerLocation) {
         return npc != null
                 && npc.getNpc() != null
                 && !npc.getNpc().isDead()
@@ -1612,8 +1629,8 @@ public class PestControlScript extends Script {
         return Math.max(0, (localDistance + 127) / 128);
     }
 
-    private boolean isOrdinaryActivityTarget(Rs2NpcModel npc) {
-        if (!isNearbyActivityTarget(npc)) {
+    private boolean isOrdinaryActivityTarget(Rs2NpcModel npc, WorldPoint playerLocation) {
+        if (!isNearbyActivityTarget(npc, playerLocation)) {
             return false;
         }
         String name = npc.getName();
@@ -1621,6 +1638,29 @@ public class PestControlScript extends Script {
                 && !"Brawler".equalsIgnoreCase(name)
                 && !"Portal".equalsIgnoreCase(name)
                 && !"Spinner".equalsIgnoreCase(name);
+    }
+
+    private static boolean isActivityTargetAccessible(
+            WorldPoint playerLocation,
+            WorldPoint targetLocation) {
+        if (playerLocation == null || targetLocation == null) {
+            return false;
+        }
+        boolean playerCentral = isInsideCentralEnclosure(playerLocation);
+        boolean targetCentral = isInsideCentralEnclosure(targetLocation);
+        if (playerCentral || targetCentral) {
+            return playerCentral == targetCentral;
+        }
+
+        boolean playerWest = playerLocation.getRegionX() <= WEST_LANE_GATE_REGION_X
+                && playerLocation.getRegionY() > SOUTH_PERIMETER_DETOUR_REGION_Y;
+        boolean playerEast = playerLocation.getRegionX() >= EAST_LANE_GATE_REGION_X
+                && playerLocation.getRegionY() > SOUTH_PERIMETER_DETOUR_REGION_Y;
+        boolean targetWest = targetLocation.getRegionX() <= WEST_LANE_GATE_REGION_X
+                && targetLocation.getRegionY() > SOUTH_PERIMETER_DETOUR_REGION_Y;
+        boolean targetEast = targetLocation.getRegionX() >= EAST_LANE_GATE_REGION_X
+                && targetLocation.getRegionY() > SOUTH_PERIMETER_DETOUR_REGION_Y;
+        return !(playerWest && targetEast) && !(playerEast && targetWest);
     }
 
     private boolean isMaintainingActivityCombat() {
@@ -1652,6 +1692,16 @@ public class PestControlScript extends Script {
         if (targetLocation == null) {
             transitionTo(RuntimeState.ACTIVITY_FALLBACK, "no attackable pest nearby");
             return;
+        }
+
+        if (!isActivityTargetAccessible(playerLocation, targetLocation)
+                && isInsideCentralEnclosure(playerLocation)) {
+            Portal lanePortal = targetLocation.getRegionX() >= PEST_CONTROL_CENTER_REGION_COORD
+                    ? BLUE
+                    : PURPLE;
+            if (ensurePortalLaneAccess(playerLocation, lanePortal)) {
+                return;
+            }
         }
 
         if (isNpcOnCanvas(target)
