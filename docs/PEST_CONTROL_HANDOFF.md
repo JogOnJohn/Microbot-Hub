@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.33` (work in progress)
+- Plugin version: `2.4.34` (packaged, not yet installed or live-smoked)
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -42,7 +42,24 @@ known limitations include activity losses during long portal engagements,
 adjacent gate leaves being treated independently, stale destroyed-portal
 staging, and movement/interaction attempts through closed perimeter gates.
 
-## Current Bizza runtime state
+## Current Billy local checkpoint
+
+- Source commit: `2ceb413` (`fix: recover around blocking Brawlers`)
+- Source/plugin version: `2.4.34`
+- Packaged 2.4.34 JAR: `build\libs\PestControlPlugin-2.4.34.jar`
+- Packaged size: `63,546` bytes
+- Packaged SHA-256: `213B84CEB2B496D733C062CFF6B287C3A8138561749588003A9E2607B35054AC`
+- Installed JAR remains live-tested version `2.4.33`
+- Installed size: `59,638` bytes
+- Installed SHA-256: `9D431F85E07ADC46C9B0331815A2B8E86936B1CA4E55678F71C01813C85F5A67`
+- Installed path: `C:\Users\Billy\.runelite\microbot-plugins\PestControlPlugin.jar`
+
+The visible client was not relaunched after packaging 2.4.34. Pest Control was
+stopped at a safe boat boundary after the 2.4.33 smoke, and the client was no
+longer running at final handover verification. Install 2.4.34 and start a fresh
+client before testing the new compass-flank path.
+
+## Historical Bizza guest runtime state
 
 - Strategy commit: `ed5074f2523ce99f0171fd816271601ccefd2749`
 - Strategy commit subject: `Stabilize Pest Control obstacle recovery`
@@ -146,8 +163,9 @@ desired portal without enabling specials elsewhere.
   unchanged` is the live confirmation path.
 - Movement uses short `walkFastCanvas` steps, which prefer direct scene clicks
   and fall back to the minimap. East/west portal transfers use the south outer
-  perimeter once outside the central enclosure: region waypoints `(15,20)` and
-  `(48,20)`. This avoids closed Void Knight gates and keeps travel in pest lanes.
+  perimeter once outside the central enclosure: current region waypoints
+  `(15,23)` and `(48,23)`. This avoids closed Void Knight gates and keeps
+  travel in the pest lanes.
 - Ranged portal staging is in front of the portal at normal Rapid range. Direct
   portal/NPC interaction takes precedence when the target is visible.
 - Activity recovery uses stable state details so changing meter percentages do
@@ -343,7 +361,49 @@ bytes with SHA-256:
 9D431F85E07ADC46C9B0331815A2B8E86936B1CA4E55678F71C01813C85F5A67
 ```
 
-Installation and live validation remain pending.
+Installation and live validation were still pending at the 2.4.33 packaging
+checkpoint; the following local smoke completed that boundary.
+
+The final 2.4.33 local smoke completed three paid world-344 wins in succession:
+
+```text
+3 played, 3 won, 0 lost, 12 points gained
+```
+
+The session confirmed Moderate mouse speed, 40/70 activity recovery, Auto
+Retaliate OFF, one camera pivot per selected portal, cached weapon styles that
+left the Combat tab unchanged, intelligent surviving-portal staging, Spinner
+preemption, immediate reboarding, and the next fast launch. The east opening
+gate was opened once at 21:11:04 and crossed at 21:11:05. No client-thread,
+configuration, or Java exception occurred in the clean 2.4.33 window.
+
+The same smoke also found a material movement limitation. During the second
+round, a Yellow/Blue-side transfer toward Red remained in `CHASE_PORTAL` for
+about 30 seconds while the watchdog repeatedly selected the same north-lane
+detour. A Brawler was the likely solid collision obstruction. The round still
+recovered activity from 39 to 72 percent and paid four points, but the delay is
+the reason 2.4.34 is not considered live-validated.
+
+Version 2.4.34 moves Brawler obstruction recovery into the shared movement
+path, so it also applies while following outer-perimeter waypoints and during
+activity recovery. It detects a nearby Brawler intersecting the requested
+route, evaluates collision-reachable north, north-east, east, south-east,
+south, south-west, west, and north-west flank points, tries viable candidates
+with bounded per-direction time, and logs each decision. If no compass flank
+works, it attacks the Brawler until it dies or the movement objective materially
+changes. Brawlers remain excluded from ordinary activity fallback.
+
+Focused 2.4.34 compilation and `PestControlPluginJar` packaging passed against
+Microbot 2.6.15. The artifact is 63,546 bytes with SHA-256:
+
+```text
+213B84CEB2B496D733C062CFF6B287C3A8138561749588003A9E2607B35054AC
+```
+
+Version 2.4.34 was deliberately not installed or relaunched at the end of this
+session. Its acceptance boundary is at least two complete rounds, including an
+east/west transfer with a Brawler on the movement line and the immediate
+winning-team requeue.
 
 Keep these fixes local to Pest Control unless a separate reproduction proves a
 shared WebWalker defect.
@@ -525,10 +585,11 @@ check the exact route/style/activity behavior affected by the change.
 - The outer-perimeter route is validated for the current ranged setup. A
   melee-primary profile may need different staging and route tuning.
 - Brawlers remain excluded from ordinary activity fallback targeting. When a
-  Brawler blocks portal line of sight, 2.4.29 attempts one reachable flank and
-  then attacks the blocker for a bounded commitment.
+  Brawler blocks portal line of sight, the portal-specific flank remains in
+  place. Version 2.4.34 additionally evaluates compass flanks in the shared
+  movement path and attacks the blocker when no reachable flank succeeds.
 - If gate-aware routing is added later, distinguish open IDs from closed IDs
   (`14233` through `14248`) and do not replace the validated outer route with
   unconditional gate clicking.
-- Current Bizza activity thresholds are the defensive source defaults `60/75`.
-  Reassess them only with several-round reward-backed data.
+- Current Billy activity thresholds and source defaults are `40/70`. Reassess
+  them only with several-round reward-backed data.
