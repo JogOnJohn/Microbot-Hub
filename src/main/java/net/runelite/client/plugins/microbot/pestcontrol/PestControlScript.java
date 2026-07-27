@@ -149,7 +149,6 @@ public class PestControlScript extends Script {
     private static final long GATE_REUSE_COOLDOWN_MILLIS = 8_000L;
     private static final long BRAWLER_FLANK_TIMEOUT_MILLIS = 4_500L;
     private static final long BRAWLER_CLEAR_COMMIT_MILLIS = 8_000L;
-    private static final long PORTAL_CAMERA_TURN_COOLDOWN_MILLIS = 8_000L;
     private static final long SPINNER_TARGET_GRACE_MILLIS = 2_500L;
     private static final long PERIMETER_DETOUR_MILLIS = 10_000L;
     private static final Pattern POINT_COUNT = Pattern.compile("([\\d,]+)");
@@ -170,6 +169,7 @@ public class PestControlScript extends Script {
     private long selectedPortalSince = 0L;
     private long lastGateInteractionAt = 0L;
     private WorldPoint lastGateLocation = null;
+    private WorldPoint activeGateCrossingTarget = null;
     private final Map<WorldPoint, Long> gateReuseCooldowns = new HashMap<>();
     private long lastGateDiagnosticAt = 0L;
     private Portal brawlerCommitPortal = null;
@@ -179,9 +179,7 @@ public class PestControlScript extends Script {
     private long perimeterDetourUntil = 0L;
     private Portal spinnerCommitPortal = null;
     private long spinnerCommitUntil = 0L;
-    private volatile Portal firstDroppedPortal = null;
     private volatile int shieldDropCount = 0;
-    private boolean firstDropHoldLogged = false;
     private WorldPoint lastProgressLocation = null;
     private boolean quickPrayerHandled = false;
     private boolean activityRecoveryActive = false;
@@ -238,9 +236,7 @@ public class PestControlScript extends Script {
 
     private void resetPortals() {
         destroyedPortals.clear();
-        firstDroppedPortal = null;
         shieldDropCount = 0;
-        firstDropHoldLogged = false;
         for (Portal portal : portals) {
             portal.setHasShield(true);
         }
@@ -445,11 +441,8 @@ public class PestControlScript extends Script {
         }
 
         long now = System.currentTimeMillis();
-        boolean newTarget = lastCameraPivotPortal != portal;
-        long minimumCooldown = newTarget
-                ? MOVEMENT_RETRY_MOVING_MILLIS
-                : PORTAL_CAMERA_TURN_COOLDOWN_MILLIS;
-        if (now - lastPortalCameraTurnAt < minimumCooldown) {
+        if (lastCameraPivotPortal == portal
+                || now - lastPortalCameraTurnAt < MOVEMENT_RETRY_MOVING_MILLIS) {
             return;
         }
 
@@ -494,9 +487,6 @@ public class PestControlScript extends Script {
         }
         if (portal.hasShield) {
             shieldDropCount++;
-            if (firstDroppedPortal == null) {
-                firstDroppedPortal = portal;
-            }
         }
         portal.setHasShield(false);
     }
@@ -625,7 +615,21 @@ public class PestControlScript extends Script {
      * targeting an otherwise visible portal through a closed perimeter gate.
      */
     private boolean ensurePortalLaneAccess(WorldPoint playerLocation, Portal portal) {
-        if (playerLocation == null || portal == null || !isInsideCentralEnclosure(playerLocation)) {
+        if (playerLocation == null || portal == null) {
+            return false;
+        }
+        long currentTime = System.currentTimeMillis();
+        gateReuseCooldowns.entrySet().removeIf(entry -> entry.getValue() <= currentTime);
+
+        // Fence and boundary tiles must not release an in-flight crossing.
+        // Finish it even when crowd selection changes the portal mid-step.
+        if (lastGateLocation != null && activeGateCrossingTarget != null) {
+            openBlockingGate(playerLocation, activeGateCrossingTarget);
+            if (lastGateLocation != null) {
+                return true;
+            }
+        }
+        if (!isInsideCentralEnclosure(playerLocation)) {
             return false;
         }
 
@@ -644,15 +648,6 @@ public class PestControlScript extends Script {
                 east ? EAST_LANE_OUTER_REGION_X : WEST_LANE_OUTER_REGION_X,
                 LANE_GATE_REGION_Y);
 
-        // Once a gate click has been accepted, crossing owns movement. Do not
-        // steer back to the inner approach point while the player is moving
-        // through the open doorway.
-        if (lastGateLocation != null
-                && lastGateLocation.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE) {
-            openBlockingGate(playerLocation, outerCrossing);
-            return true;
-        }
-
         if (playerLocation.distanceTo(innerApproach) > LANE_GATE_APPROACH_DISTANCE) {
             transitionTo(RuntimeState.OPEN_GATE,
                     "approaching " + side + " lane gate for " + portal);
@@ -668,7 +663,8 @@ public class PestControlScript extends Script {
                 .filter(candidate -> {
                     WorldPoint location = templateLocation(candidate);
                     return location != null
-                            && location.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE;
+                            && location.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE
+                            && !gateReuseCooldowns.containsKey(location);
                 })
                 .collect(Collectors.toList());
 
@@ -686,6 +682,7 @@ public class PestControlScript extends Script {
             lastMovementCommandAt = now;
             if (dispatched) {
                 lastGateLocation = gateLocation;
+                activeGateCrossingTarget = outerCrossing;
                 lastGateInteractionAt = now;
                 Microbot.log("Pest Control opened " + side + " lane gate at "
                         + gateLocation + " for " + portal + " portal");
@@ -701,6 +698,7 @@ public class PestControlScript extends Script {
         if (openGate != null) {
             long now = System.currentTimeMillis();
             lastGateLocation = templateLocation(openGate);
+            activeGateCrossingTarget = outerCrossing;
             lastGateInteractionAt = now - GATE_OPEN_ANIMATION_MILLIS;
             transitionTo(RuntimeState.OPEN_GATE,
                     "committing through open " + side + " lane gate for " + portal);
@@ -874,6 +872,7 @@ public class PestControlScript extends Script {
         lastCameraPivotPortal = null;
         lastGateInteractionAt = 0L;
         lastGateLocation = null;
+        activeGateCrossingTarget = null;
         gateReuseCooldowns.clear();
         lastGateDiagnosticAt = 0L;
         perimeterDetourUntil = 0L;
@@ -986,6 +985,7 @@ public class PestControlScript extends Script {
             lastCameraPivotPortal = null;
             lastGateInteractionAt = 0L;
             lastGateLocation = null;
+            activeGateCrossingTarget = null;
             gateReuseCooldowns.clear();
             lastGateDiagnosticAt = 0L;
             perimeterDetourUntil = 0L;
@@ -1387,11 +1387,13 @@ public class PestControlScript extends Script {
             if (hasPassedGate(playerLocation, lastGateLocation, target)) {
                 registerLogicalGateCooldown(lastGateLocation, now);
                 lastGateLocation = null;
+                activeGateCrossingTarget = null;
             } else if (elapsed >= GATE_CROSSING_TIMEOUT_MILLIS) {
                 Microbot.log("Pest Control gate crossing timed out at " + lastGateLocation
                         + "; suppressing immediate reopen");
                 registerLogicalGateCooldown(lastGateLocation, now);
                 lastGateLocation = null;
+                activeGateCrossingTarget = null;
             } else if (elapsed < GATE_OPEN_ANIMATION_MILLIS) {
                 transitionTo(RuntimeState.OPEN_GATE, "waiting for gate to open");
                 return true;
@@ -1424,6 +1426,7 @@ public class PestControlScript extends Script {
                 .orElse(null);
         if (gate == null) {
             lastGateLocation = null;
+            activeGateCrossingTarget = null;
             return false;
         }
 
@@ -1433,6 +1436,7 @@ public class PestControlScript extends Script {
         lastMovementCommandAt = now;
         if (dispatched) {
             lastGateLocation = gateLocation;
+            activeGateCrossingTarget = target;
             lastGateInteractionAt = now;
             Microbot.log("Pest Control opened blocking gate at " + gateLocation);
         }
@@ -2373,17 +2377,6 @@ public class PestControlScript extends Script {
                     .filter(this::isPortalReady)
                     .collect(Collectors.toList());
 
-            if (shouldHoldOppositeFirstDrop()) {
-                if (!firstDropHoldLogged) {
-                    firstDropHoldLogged = true;
-                    Microbot.log("Pest Control holding " + openingSideName()
-                            + " opening side; ignoring first opposite drop at "
-                            + firstDroppedPortal + " portal");
-                }
-                return null;
-            }
-            firstDropHoldLogged = false;
-
             PortalTarget crowdLeader = targets.stream()
                     .max(Comparator
                             .comparingInt((PortalTarget target) ->
@@ -2417,18 +2410,7 @@ public class PestControlScript extends Script {
     }
 
     private boolean shouldHoldOpeningSide() {
-        return shieldDropCount == 0 || shouldHoldOppositeFirstDrop();
-    }
-
-    private boolean shouldHoldOppositeFirstDrop() {
-        return shieldDropCount == 1
-                && openingPortal != null
-                && firstDroppedPortal != null
-                && isEastSide(openingPortal) != isEastSide(firstDroppedPortal);
-    }
-
-    private String openingSideName() {
-        return isEastSide(openingPortal) ? "east" : "west";
+        return shieldDropCount == 0;
     }
 
     private static boolean isEastSide(Portal portal) {
@@ -2900,6 +2882,7 @@ public class PestControlScript extends Script {
         lastPortalCameraTurnAt = 0L;
         lastGateInteractionAt = 0L;
         lastGateLocation = null;
+        activeGateCrossingTarget = null;
         gateReuseCooldowns.clear();
         perimeterDetourUntil = 0L;
         clearSpinnerCommitment();

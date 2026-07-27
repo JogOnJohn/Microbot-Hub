@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.31` (work in progress)
+- Plugin version: `2.4.32` (work in progress)
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -294,7 +294,32 @@ passed for 2.4.31. Its JAR is 59,109 bytes with SHA-256:
 6052BF9D992BE505AF5FFA0F40BA53BE4C0C4CF535CA9835CDA6EE3A29193FAF
 ```
 
-Version 2.4.31 still requires installation and live validation.
+The 2.4.31 live round then confirmed a clean opening sequence when the west
+gate was already open: one approach, one gate commitment, one crossing, and no
+return to the inner anchor. Portal-local camera targeting also worked. However,
+the later death/re-entry path briefly released gate ownership on fence boundary
+tiles, producing alternating `CHASE_PORTAL` and `OPEN_GATE` states before the
+player crossed. Same-portal camera turns also recurred every eight seconds.
+
+Version 2.4.32 addresses those findings:
+
+- A pending crossing stores its own outer target and remains authoritative on
+  boundary tiles and across portal target changes.
+- Gate-pair cooldowns are also honored by the dedicated lane-entry path.
+- Camera steering is exactly one pivot per selected portal, not a periodic
+  same-target steer.
+- The legacy first-opposite-drop hold is removed. With activity recovery still
+  authoritative once started, the first attackable portal now resumes the
+  agreed portal priority instead of being ignored for up to the next drop.
+
+Focused compilation and packaging passed for 2.4.32. Its JAR is 58,878 bytes
+with SHA-256:
+
+```text
+3B3CCAB4C19ABFBD6A74CD250B284BD5ED4E8D25B158EF381249F893C418D89A
+```
+
+Version 2.4.32 still requires installation and live validation.
 
 Keep these fixes local to Pest Control unless a separate reproduction proves a
 shared WebWalker defect.
