@@ -150,6 +150,8 @@ public class PestControlScript extends Script {
     private static final long GATE_REUSE_COOLDOWN_MILLIS = 8_000L;
     private static final long BRAWLER_FLANK_TIMEOUT_MILLIS = 4_500L;
     private static final long BRAWLER_CLEAR_COMMIT_MILLIS = 8_000L;
+    private static final long BRAWLER_COMPASS_STEP_TIMEOUT_MILLIS = 2_500L;
+    private static final int BRAWLER_COMPASS_CLEARANCE = 2;
     private static final long SPINNER_TARGET_GRACE_MILLIS = 2_500L;
     private static final long PERIMETER_DETOUR_MILLIS = 10_000L;
     private static final Pattern POINT_COUNT = Pattern.compile("([\\d,]+)");
@@ -177,6 +179,13 @@ public class PestControlScript extends Script {
     private WorldPoint brawlerFlankTarget = null;
     private long brawlerFlankStartedAt = 0L;
     private long brawlerClearUntil = 0L;
+    private int movementBlockingBrawlerIndex = -1;
+    private String movementBrawlerFlankDirection = null;
+    private WorldPoint movementBrawlerFlankTarget = null;
+    private WorldPoint movementBrawlerRouteTarget = null;
+    private long movementBrawlerFlankStartedAt = 0L;
+    private long movementBrawlerClearUntil = 0L;
+    private final Set<String> attemptedMovementBrawlerFlanks = new HashSet<>();
     private long perimeterDetourUntil = 0L;
     private Portal spinnerCommitPortal = null;
     private long spinnerCommitUntil = 0L;
@@ -398,6 +407,9 @@ public class PestControlScript extends Script {
             lastSouthwestDetourLogAt = now;
         }
         if (openBlockingGate(playerLocation, routeTarget)) {
+            return true;
+        }
+        if (handleMovementBrawlerObstruction(playerLocation, routeTarget)) {
             return true;
         }
         boolean isMoving = Rs2Player.isMoving();
@@ -2012,6 +2024,235 @@ public class PestControlScript extends Script {
         brawlerFlankTarget = null;
         brawlerFlankStartedAt = 0L;
         brawlerClearUntil = 0L;
+        clearMovementBrawlerRecovery();
+    }
+
+    /**
+     * Brawlers are solid 5x5 obstacles. Portal-specific avoidance cannot help
+     * while the script is following an outer-perimeter waypoint, so every
+     * movement command also checks its immediate route for a Brawler. Reachable
+     * compass points around the obstacle are tried in target-efficient order;
+     * if none produce a route, attacking the Brawler is the deterministic last
+     * resort.
+     */
+    private boolean handleMovementBrawlerObstruction(
+            WorldPoint playerLocation,
+            WorldPoint routeTarget) {
+        long now = System.currentTimeMillis();
+        Rs2NpcModel committedBrawler = findLiveBrawlerByIndex(movementBlockingBrawlerIndex);
+        boolean movementObjectiveChanged = movementBrawlerRouteTarget != null
+                && movementBrawlerRouteTarget.distanceTo(routeTarget) > MINIMAP_STEP_DISTANCE;
+        if (movementObjectiveChanged) {
+            clearMovementBrawlerRecovery();
+            committedBrawler = null;
+        } else if (movementBrawlerClearUntil > 0L && committedBrawler != null) {
+            return clearMovementBlockingBrawler(committedBrawler);
+        }
+        if (movementBrawlerClearUntil > 0L) {
+            clearMovementBrawlerRecovery();
+        }
+
+        Rs2NpcModel blockingBrawler = findMovementBlockingBrawler(playerLocation, routeTarget);
+        if (blockingBrawler == null) {
+            if (movementBlockingBrawlerIndex >= 0) {
+                Microbot.log("Pest Control Brawler recovery: compass flank cleared movement route");
+                clearMovementBrawlerRecovery();
+            }
+            return false;
+        }
+
+        int brawlerIndex = npcIndex(blockingBrawler);
+        if (brawlerIndex != movementBlockingBrawlerIndex
+                || movementBrawlerRouteTarget == null
+                || movementBrawlerRouteTarget.distanceTo(routeTarget) > MINIMAP_STEP_DISTANCE) {
+            clearMovementBrawlerRecovery();
+            movementBlockingBrawlerIndex = brawlerIndex;
+            movementBrawlerRouteTarget = routeTarget;
+            Microbot.log("Pest Control Brawler recovery: obstacle detected on movement route");
+        }
+
+        if (movementBrawlerFlankTarget != null) {
+            boolean reached = playerLocation.distanceTo(movementBrawlerFlankTarget) <= 1;
+            boolean timedOut = now - movementBrawlerFlankStartedAt
+                    >= BRAWLER_COMPASS_STEP_TIMEOUT_MILLIS;
+            if (!reached && !timedOut) {
+                transitionTo(RuntimeState.AVOID_BRAWLER,
+                        "compass flank " + movementBrawlerFlankDirection);
+                dispatchMovementStep(playerLocation, movementBrawlerFlankTarget);
+                return true;
+            }
+
+            attemptedMovementBrawlerFlanks.add(movementBrawlerFlankDirection);
+            Microbot.log("Pest Control Brawler recovery: compass "
+                    + movementBrawlerFlankDirection + (reached ? " reached" : " failed"));
+            movementBrawlerFlankDirection = null;
+            movementBrawlerFlankTarget = null;
+            movementBrawlerFlankStartedAt = 0L;
+        }
+
+        CompassFlank nextFlank = findNextMovementBrawlerFlank(
+                blockingBrawler, playerLocation, routeTarget);
+        if (nextFlank != null) {
+            movementBrawlerFlankDirection = nextFlank.direction;
+            movementBrawlerFlankTarget = nextFlank.location;
+            movementBrawlerFlankStartedAt = now;
+            transitionTo(RuntimeState.AVOID_BRAWLER,
+                    "compass flank " + nextFlank.direction);
+            Microbot.log("Pest Control Brawler recovery: trying compass "
+                    + nextFlank.direction + " via " + nextFlank.location);
+            dispatchMovementStep(playerLocation, nextFlank.location);
+            return true;
+        }
+
+        // Once every viable compass flank has failed, keep clearing this
+        // obstacle until it dies or the movement objective materially changes.
+        movementBrawlerClearUntil = Long.MAX_VALUE;
+        Microbot.log("Pest Control Brawler recovery: no reachable compass flank; attacking Brawler");
+        return clearMovementBlockingBrawler(blockingBrawler);
+    }
+
+    private void dispatchMovementStep(WorldPoint playerLocation, WorldPoint target) {
+        long now = System.currentTimeMillis();
+        boolean isMoving = Rs2Player.isMoving();
+        long retryMillis = isMoving ? MOVEMENT_RETRY_MOVING_MILLIS : MOVEMENT_RETRY_IDLE_MILLIS;
+        if (now - lastMovementCommandAt < retryMillis) {
+            return;
+        }
+        Rs2Walker.walkFastCanvas(stepTowards(playerLocation, target, MINIMAP_STEP_DISTANCE));
+        lastMovementCommandAt = now;
+    }
+
+    private boolean clearMovementBlockingBrawler(Rs2NpcModel brawler) {
+        if (brawler == null || brawler.getNpc() == null || brawler.getNpc().isDead()) {
+            clearMovementBrawlerRecovery();
+            return false;
+        }
+        transitionTo(RuntimeState.AVOID_BRAWLER, "clearing movement-blocking Brawler");
+        if (!isInteractingWith(brawler.getNpc())) {
+            dispatchAttack(brawler);
+        }
+        return true;
+    }
+
+    private Rs2NpcModel findMovementBlockingBrawler(
+            WorldPoint playerLocation,
+            WorldPoint routeTarget) {
+        if (playerLocation == null || routeTarget == null) {
+            return null;
+        }
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                Microbot.getRs2NpcCache().query()
+                        .withIds(BRAWLER_IDS.stream().mapToInt(Integer::intValue).toArray())
+                        .where(npc -> npc.getNpc() != null
+                                && !npc.getNpc().isDead()
+                                && npc.getNpc().getWorldArea() != null
+                                && playerLocation.distanceTo(npc.getNpc().getWorldLocation())
+                                <= ACTIVITY_TARGET_RADIUS
+                                && isRouteBlockedByBrawler(
+                                playerLocation,
+                                routeTarget.toWorldArea(),
+                                Collections.singletonList(npc.getNpc().getWorldArea())))
+                        .toList()
+                        .stream()
+                        .min(Comparator.comparingInt(PestControlScript::distanceFromPlayerInTiles))
+                        .orElse(null)
+        ).orElse(null);
+    }
+
+    private Rs2NpcModel findLiveBrawlerByIndex(int index) {
+        if (index < 0) {
+            return null;
+        }
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                Microbot.getRs2NpcCache().query()
+                        .withIds(BRAWLER_IDS.stream().mapToInt(Integer::intValue).toArray())
+                        .where(npc -> npc.getNpc() != null
+                                && !npc.getNpc().isDead()
+                                && npc.getNpc().getIndex() == index)
+                        .toList()
+                        .stream()
+                        .findFirst()
+                        .orElse(null)
+        ).orElse(null);
+    }
+
+    private CompassFlank findNextMovementBrawlerFlank(
+            Rs2NpcModel brawler,
+            WorldPoint playerLocation,
+            WorldPoint routeTarget) {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            if (brawler == null || brawler.getNpc() == null) {
+                return null;
+            }
+            WorldArea area = brawler.getNpc().getWorldArea();
+            if (area == null) {
+                return null;
+            }
+
+            int west = area.getX() - BRAWLER_COMPASS_CLEARANCE;
+            int east = area.getX() + area.getWidth() - 1 + BRAWLER_COMPASS_CLEARANCE;
+            int south = area.getY() - BRAWLER_COMPASS_CLEARANCE;
+            int north = area.getY() + area.getHeight() - 1 + BRAWLER_COMPASS_CLEARANCE;
+            int centerX = area.getX() + (area.getWidth() - 1) / 2;
+            int centerY = area.getY() + (area.getHeight() - 1) / 2;
+            int plane = area.getPlane();
+            List<CompassFlank> candidates = Arrays.asList(
+                    new CompassFlank("north", new WorldPoint(centerX, north, plane)),
+                    new CompassFlank("north-east", new WorldPoint(east, north, plane)),
+                    new CompassFlank("east", new WorldPoint(east, centerY, plane)),
+                    new CompassFlank("south-east", new WorldPoint(east, south, plane)),
+                    new CompassFlank("south", new WorldPoint(centerX, south, plane)),
+                    new CompassFlank("south-west", new WorldPoint(west, south, plane)),
+                    new CompassFlank("west", new WorldPoint(west, centerY, plane)),
+                    new CompassFlank("north-west", new WorldPoint(west, north, plane)));
+
+            Set<Integer> reachableTiles = new HashSet<>();
+            Rs2Reachable.getReachableTiles(playerLocation).forEach((int packed) ->
+                    reachableTiles.add(packed));
+            List<WorldArea> obstacle = Collections.singletonList(area);
+            return candidates.stream()
+                    .filter(candidate -> !attemptedMovementBrawlerFlanks.contains(candidate.direction))
+                    .filter(candidate -> playerLocation.distanceTo(candidate.location) > 1)
+                    .filter(candidate -> !isSouthwestNoGoTile(candidate.location))
+                    .filter(candidate -> Rs2Tile.isWalkable(candidate.location))
+                    .filter(candidate -> reachableTiles.contains(WorldPointUtil.packWorldPoint(
+                            candidate.location.getX(),
+                            candidate.location.getY(),
+                            candidate.location.getPlane())))
+                    .filter(candidate -> !isRouteBlockedByBrawler(
+                            playerLocation, candidate.location.toWorldArea(), obstacle))
+                    .sorted(Comparator
+                            .comparingInt((CompassFlank candidate) -> isRouteBlockedByBrawler(
+                                    candidate.location, routeTarget.toWorldArea(), obstacle) ? 1 : 0)
+                            .thenComparingInt(candidate -> candidate.location.distanceTo(routeTarget))
+                            .thenComparingInt(candidate -> playerLocation.distanceTo(candidate.location)))
+                    .findFirst()
+                    .orElse(null);
+        }).orElse(null);
+    }
+
+    private static int npcIndex(Rs2NpcModel npc) {
+        return npc == null || npc.getNpc() == null ? -1 : npc.getNpc().getIndex();
+    }
+
+    private void clearMovementBrawlerRecovery() {
+        movementBlockingBrawlerIndex = -1;
+        movementBrawlerFlankDirection = null;
+        movementBrawlerFlankTarget = null;
+        movementBrawlerRouteTarget = null;
+        movementBrawlerFlankStartedAt = 0L;
+        movementBrawlerClearUntil = 0L;
+        attemptedMovementBrawlerFlanks.clear();
+    }
+
+    private static final class CompassFlank {
+        private final String direction;
+        private final WorldPoint location;
+
+        private CompassFlank(String direction, WorldPoint location) {
+            this.direction = direction;
+            this.location = location;
+        }
     }
 
     private static List<WorldPoint> perimeterTiles(WorldArea area, int distance) {
