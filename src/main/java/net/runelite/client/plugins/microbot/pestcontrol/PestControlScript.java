@@ -32,10 +32,12 @@ import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 
 import net.runelite.client.plugins.microbot.util.misc.SpecialAttackWeaponEnum;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
+import net.runelite.client.plugins.microbot.util.reachable.Rs2Reachable;
 import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
+import net.runelite.client.plugins.microbot.shortestpath.WorldPointUtil;
 import net.runelite.client.plugins.pestcontrol.Portal;
 import net.runelite.client.util.Text;
 
@@ -129,9 +131,12 @@ public class PestControlScript extends Script {
     private static final long BOARDING_RETRY_MILLIS = 600L;
     private static final long BOARDING_CONFIRM_TIMEOUT_MILLIS = 3_000L;
     private static final long ROUND_TRANSITION_LOGIN_GRACE_MILLIS = 5_000L;
-    private static final long ROUND_OUTCOME_GRACE_MILLIS = 3_000L;
+    private static final long ROUND_OUTCOME_GRACE_MILLIS = 6_000L;
     private static final long GATE_OPEN_ANIMATION_MILLIS = 1_200L;
     private static final long GATE_CROSSING_TIMEOUT_MILLIS = 6_000L;
+    private static final long GATE_REUSE_COOLDOWN_MILLIS = 8_000L;
+    private static final long BRAWLER_FLANK_TIMEOUT_MILLIS = 4_500L;
+    private static final long BRAWLER_CLEAR_COMMIT_MILLIS = 8_000L;
     private static final long PORTAL_CAMERA_TURN_COOLDOWN_MILLIS = 8_000L;
     private static final long SPINNER_TARGET_GRACE_MILLIS = 2_500L;
     private static final long PERIMETER_DETOUR_MILLIS = 10_000L;
@@ -152,6 +157,11 @@ public class PestControlScript extends Script {
     private long selectedPortalSince = 0L;
     private long lastGateInteractionAt = 0L;
     private WorldPoint lastGateLocation = null;
+    private final Map<WorldPoint, Long> gateReuseCooldowns = new HashMap<>();
+    private Portal brawlerCommitPortal = null;
+    private WorldPoint brawlerFlankTarget = null;
+    private long brawlerFlankStartedAt = 0L;
+    private long brawlerClearUntil = 0L;
     private long perimeterDetourUntil = 0L;
     private Portal spinnerCommitPortal = null;
     private long spinnerCommitUntil = 0L;
@@ -179,6 +189,8 @@ public class PestControlScript extends Script {
     private volatile int roundsWon = 0;
     private volatile int roundsLost = 0;
     private volatile RoundOutcome pendingRoundOutcome = RoundOutcome.UNKNOWN;
+    private int pendingRoundFinalActivity = -1;
+    private int pendingRoundDestroyedPortals = 0;
     private volatile OverlaySnapshot overlaySnapshot = OverlaySnapshot.initial();
 
     private enum RoundOutcome {
@@ -490,7 +502,13 @@ public class PestControlScript extends Script {
             outcome = pendingRoundAllPortalsDestroyed
                     ? RoundOutcome.WON
                     : RoundOutcome.LOST;
-            Microbot.log("Pest Control round outcome inferred after grace: " + outcome);
+            Microbot.log("Pest Control round outcome inferred after grace: " + outcome
+                    + " (destroyed " + pendingRoundDestroyedPortals + "/" + portals.size()
+                    + ", activity " + formatActivity(pendingRoundFinalActivity) + ")");
+        } else {
+            Microbot.log("Pest Control round outcome confirmed: " + outcome
+                    + " (destroyed " + pendingRoundDestroyedPortals + "/" + portals.size()
+                    + ", activity " + formatActivity(pendingRoundFinalActivity) + ")");
         }
 
         roundsPlayed++;
@@ -505,6 +523,12 @@ public class PestControlScript extends Script {
         pendingRoundOutcome = RoundOutcome.UNKNOWN;
         roundCompletionPending = false;
         pendingRoundAllPortalsDestroyed = false;
+        pendingRoundFinalActivity = -1;
+        pendingRoundDestroyedPortals = 0;
+    }
+
+    private static String formatActivity(int activityPercent) {
+        return activityPercent < 0 ? "unknown" : activityPercent + "%";
     }
 
     private void finalisePendingRoundIfReady() {
@@ -680,8 +704,10 @@ public class PestControlScript extends Script {
         lastPortalCameraTurnAt = 0L;
         lastGateInteractionAt = 0L;
         lastGateLocation = null;
+        gateReuseCooldowns.clear();
         perimeterDetourUntil = 0L;
         clearSpinnerCommitment();
+        clearBrawlerCommitment();
         lastProgressLocation = null;
         quickPrayerHandled = false;
         activityRecoveryActive = false;
@@ -705,6 +731,8 @@ public class PestControlScript extends Script {
         roundsWon = 0;
         roundsLost = 0;
         pendingRoundOutcome = RoundOutcome.UNKNOWN;
+        pendingRoundFinalActivity = -1;
+        pendingRoundDestroyedPortals = 0;
         transitionTo(RuntimeState.INITIALISING, "starting script");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
@@ -761,6 +789,12 @@ public class PestControlScript extends Script {
     private void handleRoundTick() {
         initialise = false;
         if (!wasInPestControl) {
+            // A fast boat can launch before the normal lobby grace expires. At
+            // this point no further boat-overlay evidence can arrive, so finish
+            // the previous result before initialising the new round.
+            if (roundCompletionPending) {
+                recordCompletedRound();
+            }
             lastRoundExitAt = 0L;
             autoRetaliateConfirmedOff = false;
             autoRetaliateDisableLogged = false;
@@ -776,8 +810,10 @@ public class PestControlScript extends Script {
             lastPortalCameraTurnAt = 0L;
             lastGateInteractionAt = 0L;
             lastGateLocation = null;
+            gateReuseCooldowns.clear();
             perimeterDetourUntil = 0L;
             clearSpinnerCommitment();
+            clearBrawlerCommitment();
             pendingRoundOutcome = RoundOutcome.UNKNOWN;
             Microbot.log("Pest Control opening side: " + openingPortal + " portal");
         }
@@ -895,6 +931,8 @@ public class PestControlScript extends Script {
         if (wasInPestControl) {
             lastRoundExitAt = System.currentTimeMillis();
             roundCompletionPending = true;
+            pendingRoundFinalActivity = overlayActivityPercent;
+            pendingRoundDestroyedPortals = destroyedPortals.size();
             pendingRoundAllPortalsDestroyed = destroyedPortals.size() == portals.size();
             Rs2Walker.clearWalkingRoute("pest-control:round-ended");
             wasInPestControl = false;
@@ -909,9 +947,13 @@ public class PestControlScript extends Script {
             lastPortalCameraTurnAt = 0L;
             perimeterDetourUntil = 0L;
             clearSpinnerCommitment();
+            clearBrawlerCommitment();
             boardingAttemptPending = false;
             resetPortals();
-            Microbot.log("Pest Control round ended; reboarding immediately");
+            Microbot.log("Pest Control round ended; destroyed "
+                    + pendingRoundDestroyedPortals + "/" + portals.size()
+                    + ", activity " + formatActivity(pendingRoundFinalActivity)
+                    + "; reboarding immediately");
         }
 
         if (initialise && !isInBoat) {
@@ -1134,10 +1176,16 @@ public class PestControlScript extends Script {
 
     private boolean openBlockingGate(WorldPoint playerLocation, WorldPoint target) {
         long now = System.currentTimeMillis();
+        gateReuseCooldowns.entrySet().removeIf(entry -> entry.getValue() <= now);
         if (lastGateLocation != null) {
             long elapsed = now - lastGateInteractionAt;
-            if (hasPassedGate(playerLocation, lastGateLocation, target)
-                    || elapsed >= GATE_CROSSING_TIMEOUT_MILLIS) {
+            if (hasPassedGate(playerLocation, lastGateLocation, target)) {
+                gateReuseCooldowns.put(lastGateLocation, now + GATE_REUSE_COOLDOWN_MILLIS);
+                lastGateLocation = null;
+            } else if (elapsed >= GATE_CROSSING_TIMEOUT_MILLIS) {
+                Microbot.log("Pest Control gate crossing timed out at " + lastGateLocation
+                        + "; suppressing immediate reopen");
+                gateReuseCooldowns.put(lastGateLocation, now + GATE_REUSE_COOLDOWN_MILLIS);
                 lastGateLocation = null;
             } else if (elapsed < GATE_OPEN_ANIMATION_MILLIS) {
                 transitionTo(RuntimeState.OPEN_GATE, "waiting for gate to open");
@@ -1158,6 +1206,7 @@ public class PestControlScript extends Script {
                 .where(this::hasOpenAction)
                 .toListOnClientThread();
         Rs2TileObjectModel gate = gates.stream()
+                .filter(candidate -> !gateReuseCooldowns.containsKey(templateLocation(candidate)))
                 .filter(candidate -> isOnMovementRoute(
                         playerLocation,
                         target,
@@ -1453,6 +1502,7 @@ public class PestControlScript extends Script {
         if (selectedPortal != target.portal) {
             disableSpecialAttackIfEnabled();
             clearSpinnerCommitment();
+            clearBrawlerCommitment();
             selectedPortal = target.portal;
             selectedPortalSince = System.currentTimeMillis();
             Microbot.log("Pest Control target: " + target.portal
@@ -1538,14 +1588,35 @@ public class PestControlScript extends Script {
             WorldPoint playerLocation,
             int engagementDistance) {
         disableSpecialAttackIfEnabled();
-        WorldPoint flank = findBrawlerFlankTile(target, engagementDistance);
-        if (flank != null) {
+        long now = System.currentTimeMillis();
+        if (brawlerCommitPortal != target.portal) {
+            clearBrawlerCommitment();
+            brawlerCommitPortal = target.portal;
+        }
+
+        if (now < brawlerClearUntil) {
+            return clearBlockingBrawler(target);
+        }
+
+        if (brawlerFlankTarget == null) {
+            brawlerFlankTarget = findBrawlerFlankTile(target, engagementDistance);
+            brawlerFlankStartedAt = now;
+        }
+        if (brawlerFlankTarget != null
+                && playerLocation.distanceTo(brawlerFlankTarget) > 1
+                && now - brawlerFlankStartedAt < BRAWLER_FLANK_TIMEOUT_MILLIS) {
             transitionTo(RuntimeState.AVOID_BRAWLER,
                     "flanking " + target.portal + " portal");
-            moveToward(playerLocation, flank, 1);
+            moveToward(playerLocation, brawlerFlankTarget, 1);
             return true;
         }
 
+        brawlerFlankTarget = null;
+        brawlerClearUntil = now + BRAWLER_CLEAR_COMMIT_MILLIS;
+        return clearBlockingBrawler(target);
+    }
+
+    private boolean clearBlockingBrawler(PortalTarget target) {
         transitionTo(RuntimeState.AVOID_BRAWLER,
                 "clearing Brawler at " + target.portal + " portal");
         if (!isInteractingWith(target.blockingBrawler.getNpc())) {
@@ -1578,10 +1649,15 @@ public class PestControlScript extends Script {
             int flankDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
                     ? Math.max(2, engagementDistance - 1)
                     : 1;
+            Set<Integer> reachableTiles = new HashSet<>();
+            Rs2Reachable.getReachableTiles(playerLocation).forEach((int packed) ->
+                    reachableTiles.add(packed));
 
             WorldPoint flank = perimeterTiles(portalArea, flankDistance).stream()
                     .filter(candidate -> !isSouthwestNoGoTile(candidate))
                     .filter(Rs2Tile::isWalkable)
+                    .filter(candidate -> reachableTiles.contains(WorldPointUtil.packWorldPoint(
+                            candidate.getX(), candidate.getY(), candidate.getPlane())))
                     .filter(candidate -> candidate.toWorldArea().hasLineOfSightTo(
                             Microbot.getClient().getTopLevelWorldView(), portalArea))
                     .filter(candidate -> !isRouteBlockedByBrawler(
@@ -1601,6 +1677,13 @@ public class PestControlScript extends Script {
                     : WorldPoint.fromLocalInstance(
                             Microbot.getClient(), localPoint, flank.getPlane());
         }).orElse(null);
+    }
+
+    private void clearBrawlerCommitment() {
+        brawlerCommitPortal = null;
+        brawlerFlankTarget = null;
+        brawlerFlankStartedAt = 0L;
+        brawlerClearUntil = 0L;
     }
 
     private static List<WorldPoint> perimeterTiles(WorldArea area, int distance) {
@@ -2543,8 +2626,10 @@ public class PestControlScript extends Script {
         lastPortalCameraTurnAt = 0L;
         lastGateInteractionAt = 0L;
         lastGateLocation = null;
+        gateReuseCooldowns.clear();
         perimeterDetourUntil = 0L;
         clearSpinnerCommitment();
+        clearBrawlerCommitment();
         overlayLocation = "Stopped";
         overlayActivityPercent = -1;
         overlayTargetPortal = null;
