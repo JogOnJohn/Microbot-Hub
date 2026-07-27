@@ -10,6 +10,7 @@ import net.runelite.api.ObjectComposition;
 import net.runelite.api.Player;
 import net.runelite.api.Skill;
 import net.runelite.api.coords.LocalPoint;
+import net.runelite.api.coords.WorldArea;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.VarPlayerID;
@@ -32,6 +33,7 @@ import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.misc.SpecialAttackWeaponEnum;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
+import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 import net.runelite.client.plugins.pestcontrol.Portal;
@@ -83,6 +85,13 @@ public class PestControlScript extends Script {
             NpcID.SPINNER_1712,
             NpcID.SPINNER_1713
     );
+    private static final Set<Integer> BRAWLER_IDS = ImmutableSet.of(
+            NpcID.BRAWLER,
+            NpcID.BRAWLER_1735,
+            NpcID.BRAWLER_1736,
+            NpcID.BRAWLER_1737,
+            NpcID.BRAWLER_1738
+    );
 
     private static final int PORTAL_CROWD_RADIUS = 12;
     private static final int PORTAL_MATCH_RADIUS = 5;
@@ -95,18 +104,26 @@ public class PestControlScript extends Script {
     private static final int MELEE_ENGAGEMENT_DISTANCE = 1;
     private static final int MINIMAP_STEP_DISTANCE = 14;
     private static final int PORTAL_CAMERA_MIN_DISTANCE = 14;
-    private static final int SOUTH_PERIMETER_REGION_Y = 20;
-    private static final int SOUTH_PERIMETER_DETOUR_REGION_Y = 16;
+    private static final int SOUTH_PERIMETER_REGION_Y = 23;
+    private static final int SOUTH_PERIMETER_DETOUR_REGION_Y = 26;
     private static final int WEST_PERIMETER_REGION_X = 15;
     private static final int EAST_PERIMETER_REGION_X = 48;
     private static final int PERIMETER_WAYPOINT_ARRIVAL_DISTANCE = 2;
     private static final int ACTIVITY_TARGET_RADIUS = 12;
     private static final int BLOCKING_GATE_RADIUS = 10;
+    private static final int GATE_CROSSING_DISTANCE = 2;
     private static final double BLOCKING_GATE_ROUTE_WIDTH = 3.0;
+    private static final double BRAWLER_ROUTE_PADDING = 0.75;
+    private static final int SOUTHWEST_NO_GO_MIN_X = 2627;
+    private static final int SOUTHWEST_NO_GO_MAX_X = 2640;
+    private static final int SOUTHWEST_NO_GO_MIN_Y = 2567;
+    private static final int SOUTHWEST_NO_GO_MAX_Y = 2580;
+    private static final int SOUTHWEST_NO_GO_PLANE = 0;
     private static final long MOVEMENT_RETRY_IDLE_MILLIS = 750L;
     private static final long MOVEMENT_RETRY_MOVING_MILLIS = 1_500L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
     private static final long PORTAL_REAFFIRM_MILLIS = 3_000L;
+    private static final long PORTAL_TARGET_MIN_HOLD_MILLIS = 15_000L;
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
     private static final long WATCHDOG_LOG_INTERVAL_MILLIS = 6_000L;
     private static final long BOARDING_RETRY_MILLIS = 600L;
@@ -131,6 +148,8 @@ public class PestControlScript extends Script {
     private long lastMovementCommandAt = 0L;
     private long lastAttackCommandAt = 0L;
     private long lastPortalCameraTurnAt = 0L;
+    private long lastSouthwestDetourLogAt = 0L;
+    private long selectedPortalSince = 0L;
     private long lastGateInteractionAt = 0L;
     private WorldPoint lastGateLocation = null;
     private long perimeterDetourUntil = 0L;
@@ -177,6 +196,7 @@ public class PestControlScript extends Script {
         PREPOSITION_PORTAL,
         WAITING_FOR_PORTAL,
         CHASE_PORTAL,
+        AVOID_BRAWLER,
         OPEN_GATE,
         KILL_SPINNER,
         ATTACK_PORTAL,
@@ -280,6 +300,7 @@ public class PestControlScript extends Script {
         if (runtimeState != RuntimeState.OPENING_SIDE
                 && runtimeState != RuntimeState.PREPOSITION_PORTAL
                 && runtimeState != RuntimeState.CHASE_PORTAL
+                && runtimeState != RuntimeState.AVOID_BRAWLER
                 && runtimeState != RuntimeState.OPEN_GATE
                 && runtimeState != RuntimeState.KILL_SPINNER
                 && runtimeState != RuntimeState.ATTACK_PORTAL
@@ -308,7 +329,7 @@ public class PestControlScript extends Script {
                 || runtimeState == RuntimeState.KILL_SPINNER)
                 && selectedPortal != null) {
             perimeterDetourUntil = now + PERIMETER_DETOUR_MILLIS;
-            Microbot.log("Pest Control movement recovery: using south-lane detour for "
+            Microbot.log("Pest Control movement recovery: using north-lane detour for "
                     + selectedPortal + " portal");
         }
         Rs2Walker.clearWalkingRoute("pest-control:watchdog-" + runtimeState.name().toLowerCase(Locale.ROOT));
@@ -344,14 +365,19 @@ public class PestControlScript extends Script {
         }
 
         observeProgress(playerLocation);
-        if (openBlockingGate(playerLocation, target)) {
+        WorldPoint routeTarget = avoidSouthwestNoGoArea(playerLocation, target);
+        long now = System.currentTimeMillis();
+        if (!routeTarget.equals(target) && now - lastSouthwestDetourLogAt >= WATCHDOG_LOG_INTERVAL_MILLIS) {
+            Microbot.log("Pest Control avoiding southwest no-go grid via " + routeTarget);
+            lastSouthwestDetourLogAt = now;
+        }
+        if (openBlockingGate(playerLocation, routeTarget)) {
             return true;
         }
-        long now = System.currentTimeMillis();
         boolean isMoving = Rs2Player.isMoving();
         long retryMillis = isMoving ? MOVEMENT_RETRY_MOVING_MILLIS : MOVEMENT_RETRY_IDLE_MILLIS;
         if (now - lastMovementCommandAt >= retryMillis) {
-            WorldPoint clickTarget = stepTowards(playerLocation, target, MINIMAP_STEP_DISTANCE);
+            WorldPoint clickTarget = stepTowards(playerLocation, routeTarget, MINIMAP_STEP_DISTANCE);
             // walkFastCanvas prefers a direct scene click when the tile is visible,
             // and only falls back to the minimap when it is not.
             Rs2Walker.walkFastCanvas(clickTarget);
@@ -1054,6 +1080,58 @@ public class PestControlScript extends Script {
         return true;
     }
 
+    private static WorldPoint avoidSouthwestNoGoArea(WorldPoint from, WorldPoint target) {
+        if (!routeCrossesSouthwestNoGoArea(from, target)) {
+            return target;
+        }
+
+        List<WorldPoint> corners = Arrays.asList(
+                new WorldPoint(SOUTHWEST_NO_GO_MIN_X - 1, SOUTHWEST_NO_GO_MIN_Y - 1, target.getPlane()),
+                new WorldPoint(SOUTHWEST_NO_GO_MIN_X - 1, SOUTHWEST_NO_GO_MAX_Y + 1, target.getPlane()),
+                new WorldPoint(SOUTHWEST_NO_GO_MAX_X + 1, SOUTHWEST_NO_GO_MIN_Y - 1, target.getPlane()),
+                new WorldPoint(SOUTHWEST_NO_GO_MAX_X + 1, SOUTHWEST_NO_GO_MAX_Y + 1, target.getPlane()));
+
+        return corners.stream()
+                .filter(corner -> isSouthwestNoGoTile(from)
+                        || !routeCrossesSouthwestNoGoArea(from, corner))
+                .filter(corner -> !routeCrossesSouthwestNoGoArea(corner, target))
+                .min(Comparator.comparingInt(corner ->
+                        from.distanceTo(corner) + corner.distanceTo(target)))
+                .orElse(target);
+    }
+
+    private static boolean routeCrossesSouthwestNoGoArea(WorldPoint from, WorldPoint target) {
+        if (from == null || target == null
+                || from.getPlane() != SOUTHWEST_NO_GO_PLANE
+                || target.getPlane() != SOUTHWEST_NO_GO_PLANE) {
+            return false;
+        }
+        if (isSouthwestNoGoTile(from) || isSouthwestNoGoTile(target)) {
+            return true;
+        }
+
+        int steps = Math.max(Math.abs(target.getX() - from.getX()),
+                Math.abs(target.getY() - from.getY()));
+        for (int i = 1; i < steps; i++) {
+            double progress = (double) i / steps;
+            int x = (int) Math.round(from.getX() + (target.getX() - from.getX()) * progress);
+            int y = (int) Math.round(from.getY() + (target.getY() - from.getY()) * progress);
+            if (isSouthwestNoGoTile(new WorldPoint(x, y, from.getPlane()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isSouthwestNoGoTile(WorldPoint point) {
+        return point != null
+                && point.getPlane() == SOUTHWEST_NO_GO_PLANE
+                && point.getX() >= SOUTHWEST_NO_GO_MIN_X
+                && point.getX() <= SOUTHWEST_NO_GO_MAX_X
+                && point.getY() >= SOUTHWEST_NO_GO_MIN_Y
+                && point.getY() <= SOUTHWEST_NO_GO_MAX_Y;
+    }
+
     private boolean openBlockingGate(WorldPoint playerLocation, WorldPoint target) {
         long now = System.currentTimeMillis();
         if (lastGateLocation != null) {
@@ -1065,9 +1143,12 @@ public class PestControlScript extends Script {
                 transitionTo(RuntimeState.OPEN_GATE, "waiting for gate to open");
                 return true;
             } else {
-                // The gate click has been dispatched. Allow the normal movement
-                // command to carry the player through without clicking Open again.
-                return false;
+                transitionTo(RuntimeState.OPEN_GATE, "crossing opened gate");
+                if (now - lastMovementCommandAt >= MOVEMENT_RETRY_IDLE_MILLIS) {
+                    Rs2Walker.walkFastCanvas(gateCrossingPoint(lastGateLocation, target));
+                    lastMovementCommandAt = now;
+                }
+                return true;
             }
         }
 
@@ -1099,6 +1180,15 @@ public class PestControlScript extends Script {
             Microbot.log("Pest Control opened blocking gate at " + gateLocation);
         }
         return true;
+    }
+
+    private static WorldPoint gateCrossingPoint(WorldPoint gate, WorldPoint target) {
+        int dx = Integer.compare(target.getX(), gate.getX());
+        int dy = Integer.compare(target.getY(), gate.getY());
+        return new WorldPoint(
+                gate.getX() + dx * GATE_CROSSING_DISTANCE,
+                gate.getY() + dy * GATE_CROSSING_DISTANCE,
+                gate.getPlane());
     }
 
     private WorldPoint templateLocation(Rs2TileObjectModel object) {
@@ -1193,6 +1283,7 @@ public class PestControlScript extends Script {
         return npc != null
                 && npc.getNpc() != null
                 && !npc.getNpc().isDead()
+                && !isSouthwestNoGoTile(npc.getWorldLocation())
                 && npc.getNpc().getCombatLevel() > 0
                 && (npc.getNpc().getHealthScale() <= 0 || npc.getNpc().getHealthRatio() > 0)
                 && distanceFromPlayerInTiles(npc) <= ACTIVITY_TARGET_RADIUS
@@ -1252,7 +1343,8 @@ public class PestControlScript extends Script {
             return;
         }
 
-        if (isNpcOnCanvas(target)) {
+        if (isNpcOnCanvas(target)
+                && !routeCrossesSouthwestNoGoArea(playerLocation, targetLocation)) {
             transitionTo(RuntimeState.ACTIVITY_FALLBACK, "attacking visible activity target");
             dispatchAttack(target);
             return;
@@ -1260,7 +1352,8 @@ public class PestControlScript extends Script {
 
         int engagementDistance = engagementDistance(config.primaryCombatStyle());
         if (playerLocation == null
-                || playerLocation.distanceTo(targetLocation) > engagementDistance) {
+                || playerLocation.distanceTo(targetLocation) > engagementDistance
+                || routeCrossesSouthwestNoGoArea(playerLocation, targetLocation)) {
             transitionTo(RuntimeState.ACTIVITY_FALLBACK, "approaching activity target");
             moveToward(playerLocation, targetLocation, engagementDistance);
             return;
@@ -1358,8 +1451,10 @@ public class PestControlScript extends Script {
 
     private void handlePortalTarget(PortalTarget target, WorldPoint playerLocation) {
         if (selectedPortal != target.portal) {
+            disableSpecialAttackIfEnabled();
             clearSpinnerCommitment();
             selectedPortal = target.portal;
+            selectedPortalSince = System.currentTimeMillis();
             Microbot.log("Pest Control target: " + target.portal
                     + " portal (" + target.nearbyPlayers + " other players nearby)");
         }
@@ -1389,12 +1484,14 @@ public class PestControlScript extends Script {
 
             WorldPoint spinnerLocation = Microbot.getClientThread().runOnClientThreadOptional(
                     spinner::getWorldLocation).orElse(null);
-            if (isNpcOnCanvas(spinner)) {
+            if (isNpcOnCanvas(spinner)
+                    && !routeCrossesSouthwestNoGoArea(playerLocation, spinnerLocation)) {
                 dispatchAttack(spinner);
                 return;
             }
             if (spinnerLocation != null
-                    && playerLocation.distanceTo(spinnerLocation) > engagementDistance) {
+                    && (playerLocation.distanceTo(spinnerLocation) > engagementDistance
+                    || routeCrossesSouthwestNoGoArea(playerLocation, spinnerLocation))) {
                 moveTowardPortal(playerLocation, spinnerLocation, engagementDistance, target.portal);
                 return;
             }
@@ -1408,12 +1505,19 @@ public class PestControlScript extends Script {
         }
         clearSpinnerCommitment();
 
-        if (target.attackActionAvailable && isNpcOnCanvas(target.npc)) {
-            engagePortal(target);
+        if (target.blockingBrawler != null
+                && handleBlockingBrawler(target, playerLocation, engagementDistance)) {
             return;
         }
 
         WorldPoint portalLocation = logicalPortalLocation(target.portal, playerLocation);
+        if (target.attackActionAvailable
+                && isNpcOnCanvas(target.npc)
+                && !routeCrossesSouthwestNoGoArea(playerLocation, portalLocation)) {
+            engagePortal(target);
+            return;
+        }
+
         WorldPoint approachLocation = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
                 ? rangedPortalStagingLocation(target.portal, playerLocation)
                 : logicalPortalLocation(target.portal, playerLocation);
@@ -1427,6 +1531,93 @@ public class PestControlScript extends Script {
         }
 
         engagePortal(target);
+    }
+
+    private boolean handleBlockingBrawler(
+            PortalTarget target,
+            WorldPoint playerLocation,
+            int engagementDistance) {
+        disableSpecialAttackIfEnabled();
+        WorldPoint flank = findBrawlerFlankTile(target, engagementDistance);
+        if (flank != null) {
+            transitionTo(RuntimeState.AVOID_BRAWLER,
+                    "flanking " + target.portal + " portal");
+            moveToward(playerLocation, flank, 1);
+            return true;
+        }
+
+        transitionTo(RuntimeState.AVOID_BRAWLER,
+                "clearing Brawler at " + target.portal + " portal");
+        if (!isInteractingWith(target.blockingBrawler.getNpc())) {
+            dispatchAttack(target.blockingBrawler);
+        }
+        return true;
+    }
+
+    private WorldPoint findBrawlerFlankTile(PortalTarget target, int engagementDistance) {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Player player = Microbot.getClient().getLocalPlayer();
+            if (player == null || target.npc == null || target.npc.getNpc() == null) {
+                return null;
+            }
+
+            WorldArea portalArea = target.npc.getNpc().getWorldArea();
+            WorldPoint playerLocation = player.getWorldLocation();
+            if (portalArea == null || playerLocation == null) {
+                return null;
+            }
+
+            List<WorldArea> brawlers = Microbot.getRs2NpcCache().query()
+                    .withIds(BRAWLER_IDS.stream().mapToInt(Integer::intValue).toArray())
+                    .where(npc -> npc.getNpc() != null && !npc.getNpc().isDead())
+                    .toList()
+                    .stream()
+                    .map(npc -> npc.getNpc().getWorldArea())
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
+            int flankDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                    ? Math.max(2, engagementDistance - 1)
+                    : 1;
+
+            WorldPoint flank = perimeterTiles(portalArea, flankDistance).stream()
+                    .filter(candidate -> !isSouthwestNoGoTile(candidate))
+                    .filter(Rs2Tile::isWalkable)
+                    .filter(candidate -> candidate.toWorldArea().hasLineOfSightTo(
+                            Microbot.getClient().getTopLevelWorldView(), portalArea))
+                    .filter(candidate -> !isRouteBlockedByBrawler(
+                            playerLocation, candidate.toWorldArea(), brawlers))
+                    .filter(candidate -> !isRouteBlockedByBrawler(
+                            candidate, portalArea, brawlers))
+                    .min(Comparator.comparingInt(playerLocation::distanceTo))
+                    .orElse(null);
+            if (flank == null) {
+                return null;
+            }
+
+            LocalPoint localPoint = LocalPoint.fromWorld(
+                    Microbot.getClient().getTopLevelWorldView(), flank);
+            return localPoint == null
+                    ? null
+                    : WorldPoint.fromLocalInstance(
+                            Microbot.getClient(), localPoint, flank.getPlane());
+        }).orElse(null);
+    }
+
+    private static List<WorldPoint> perimeterTiles(WorldArea area, int distance) {
+        List<WorldPoint> candidates = new ArrayList<>();
+        int minX = area.getX() - distance;
+        int maxX = area.getX() + area.getWidth() - 1 + distance;
+        int minY = area.getY() - distance;
+        int maxY = area.getY() + area.getHeight() - 1 + distance;
+        for (int x = minX; x <= maxX; x++) {
+            candidates.add(new WorldPoint(x, minY, area.getPlane()));
+            candidates.add(new WorldPoint(x, maxY, area.getPlane()));
+        }
+        for (int y = minY + 1; y < maxY; y++) {
+            candidates.add(new WorldPoint(minX, y, area.getPlane()));
+            candidates.add(new WorldPoint(maxX, y, area.getPlane()));
+        }
+        return candidates;
     }
 
     private void engagePortal(PortalTarget target) {
@@ -1819,6 +2010,7 @@ public class PestControlScript extends Script {
                                     .filter(npc -> matchesPortal(npc, portal))
                                     .findFirst()
                                     .orElse(null),
+                            localPlayer,
                             otherPlayers,
                             playerLocation))
                     .filter(this::isPortalReady)
@@ -1837,7 +2029,9 @@ public class PestControlScript extends Script {
 
             PortalTarget crowdLeader = targets.stream()
                     .max(Comparator
-                            .comparingInt((PortalTarget target) -> target.nearbyPlayers)
+                            .comparingInt((PortalTarget target) ->
+                                    target.blockingBrawler == null ? 1 : 0)
+                            .thenComparingInt(target -> target.nearbyPlayers)
                             .thenComparingInt(target -> target.portal == PURPLE ? 1 : 0)
                             .thenComparingInt(target -> -target.distance))
                     .orElse(null);
@@ -1850,6 +2044,13 @@ public class PestControlScript extends Script {
                     .findFirst()
                     .orElse(null);
             if (currentTarget != null
+                    && System.currentTimeMillis() - selectedPortalSince
+                    < PORTAL_TARGET_MIN_HOLD_MILLIS) {
+                return currentTarget;
+            }
+            if (currentTarget != null
+                    && (currentTarget.blockingBrawler == null
+                    || crowdLeader.blockingBrawler != null)
                     && currentTarget.nearbyPlayers + PORTAL_SWITCH_CROWD_MARGIN
                     >= crowdLeader.nearbyPlayers) {
                 return currentTarget;
@@ -1916,6 +2117,7 @@ public class PestControlScript extends Script {
     private PortalTarget toPortalTarget(
             Portal portal,
             Rs2NpcModel npc,
+            Player localPlayer,
             List<WorldPoint> otherPlayers,
             WorldPoint playerLocation) {
         boolean attackActionAvailable = hasAttackAction(npc);
@@ -1933,7 +2135,72 @@ public class PestControlScript extends Script {
         int distance = playerLocation == null
                 ? Integer.MAX_VALUE
                 : regionDistance(playerLocation, portal.getRegionX(), portal.getRegionY());
-        return new PortalTarget(portal, npc, nearbyPlayers, distance, attackActionAvailable);
+        return new PortalTarget(
+                portal,
+                npc,
+                nearbyPlayers,
+                distance,
+                attackActionAvailable,
+                findBlockingBrawler(localPlayer, npc));
+    }
+
+    private Rs2NpcModel findBlockingBrawler(Player player, Rs2NpcModel portal) {
+        if (player == null || portal == null || portal.getNpc() == null) {
+            return null;
+        }
+        WorldPoint playerLocation = player.getWorldLocation();
+        WorldArea portalArea = portal.getNpc().getWorldArea();
+        if (playerLocation == null || portalArea == null) {
+            return null;
+        }
+
+        return Microbot.getRs2NpcCache().query()
+                .withIds(BRAWLER_IDS.stream().mapToInt(Integer::intValue).toArray())
+                .where(npc -> npc.getNpc() != null
+                        && !npc.getNpc().isDead()
+                        && isRouteBlockedByBrawler(
+                                playerLocation,
+                                portalArea,
+                                Collections.singletonList(npc.getNpc().getWorldArea())))
+                .toList()
+                .stream()
+                .min(Comparator.comparingInt(PestControlScript::distanceFromPlayerInTiles))
+                .orElse(null);
+    }
+
+    private static boolean isRouteBlockedByBrawler(
+            WorldPoint from,
+            WorldArea destination,
+            List<WorldArea> brawlers) {
+        if (from == null || destination == null || brawlers == null || brawlers.isEmpty()) {
+            return false;
+        }
+
+        double targetX = destination.getX() + (destination.getWidth() - 1) / 2.0;
+        double targetY = destination.getY() + (destination.getHeight() - 1) / 2.0;
+        double deltaX = targetX - from.getX();
+        double deltaY = targetY - from.getY();
+        int samples = Math.max(1,
+                (int) Math.ceil(Math.max(Math.abs(deltaX), Math.abs(deltaY)) * 4.0));
+        for (int i = 1; i < samples; i++) {
+            double progress = (double) i / samples;
+            double x = from.getX() + deltaX * progress;
+            double y = from.getY() + deltaY * progress;
+            for (WorldArea brawler : brawlers) {
+                if (brawler == null || brawler.getPlane() != from.getPlane()) {
+                    continue;
+                }
+                double maxX = brawler.getX() + brawler.getWidth() - 1;
+                double maxY = brawler.getY() + brawler.getHeight() - 1;
+                if (x >= brawler.getX() - BRAWLER_ROUTE_PADDING
+                        && x <= maxX + BRAWLER_ROUTE_PADDING
+                        && y >= brawler.getY() - BRAWLER_ROUTE_PADDING
+                        && y <= maxY + BRAWLER_ROUTE_PADDING) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private Rs2NpcModel findSpinnerNear(Portal portal) {
@@ -2051,18 +2318,21 @@ public class PestControlScript extends Script {
         private final int nearbyPlayers;
         private final int distance;
         private final boolean attackActionAvailable;
+        private final Rs2NpcModel blockingBrawler;
 
         private PortalTarget(
                 Portal portal,
                 Rs2NpcModel npc,
                 int nearbyPlayers,
                 int distance,
-                boolean attackActionAvailable) {
+                boolean attackActionAvailable,
+                Rs2NpcModel blockingBrawler) {
             this.portal = portal;
             this.npc = npc;
             this.nearbyPlayers = nearbyPlayers;
             this.distance = distance;
             this.attackActionAvailable = attackActionAvailable;
+            this.blockingBrawler = blockingBrawler;
         }
     }
 
@@ -2212,6 +2482,7 @@ public class PestControlScript extends Script {
 
         Optional<SpecialAttackWeaponEnum> specialAttackWeapon = getEquippedSpecialAttackWeapon();
         if (specialAttackWeapon.isEmpty()) {
+            disableSpecialAttackIfEnabled();
             return;
         }
 
