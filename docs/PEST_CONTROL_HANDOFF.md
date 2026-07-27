@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.15`
+- Plugin version: `2.4.29`
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -25,6 +25,38 @@ git worktree add ..\Microbot-Hub-pest-control -b fix/pest-control-strategy origi
 
 Read `CLAUDE.md`, `docs/PLUGIN_DEBUGGING_NOTES.md`, and
 `docs/AGENT_SERVER.md` before changing or live-testing the plugin.
+
+## Current Bizza runtime state
+
+- Strategy commit: `ed5074f2523ce99f0171fd816271601ccefd2749`
+- Strategy commit subject: `Stabilize Pest Control obstacle recovery`
+- Target VMX: `C:\Users\bizz4\Documents\Virtual Machines\Bizza 12345\Bizza 12345.vmx`
+- Guest identity: `clanker\vmadmin2`
+- Guest Microbot repo: `C:\Users\VMAdmin2\IdeaProjects\Microbot`
+- Guest Hub base repo: `C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub`
+- Build worktree: `C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-pest-control-strategy`
+- Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\PestControlPlugin.jar`
+- Installed JAR SHA-256: `B9B3571495420E5AFB664CA7F490D0E13DE834F381D4713B02E177684E9F0A95`
+- Bizza SSH helper: `F:\vmware boxs\Bizza 12345 MBOT\host-ssh-vm.ps1`
+- Client log: `C:\Users\VMAdmin2\.runelite\logs\client.log`
+
+Do not use `F:\vmware boxs\MBOT\host-ssh-vm.ps1` for Bizza. That helper
+targets the older `Windows 11 x64.vmx` VM. Do not launch a visible RuneLite
+client through SSH; use IntelliJ, an interactive VM path, or a verified
+`vmrun -interactive` helper.
+
+The Bizza build worktree was detached at `78be5add` and dirty at handover:
+
+```text
+## HEAD (no branch)
+ M PestControlOverlay.java
+ M PestControlPlugin.java
+ M PestControlScript.java
+```
+
+Inspect and preserve those files before changing the guest checkout. The pushed
+origin branch is the authoritative commit history; do not reset the guest
+worktree merely to synchronize it.
 
 ## Strategy contract
 
@@ -118,7 +150,94 @@ desired portal without enabling specials elsewhere.
 - The watchdog requires observed movement or interaction; click dispatch alone
   is not progress.
 
-## Build and install
+Version 2.4.29 adds these local obstacle-recovery rules:
+
+- Brawler flank candidates must be collision-reachable from the player.
+- A Brawler flank is held for at most 4.5 seconds before the blocker is attacked.
+- Brawler clearing is committed for 8 seconds to avoid immediately restarting
+  the same flank.
+- A crossed or timed-out gate receives an 8-second reuse cooldown.
+- Round-result grace is six seconds, and a fast next launch finalizes the prior
+  result before new-round state is initialized.
+
+## Version 2.4.29 Bizza live validation on 2026-07-27
+
+The focused compile and full build passed against Microbot client `2.6.15`. The
+JAR above was installed and loaded by a visible interactive Bizza client. Agent
+Server confirmed `Bizza 12345` logged in, scripts unpaused, and Pest Control
+active and enabled.
+
+The initial clean-launch acceptance window completed:
+
+```text
+4 played, 4 paid wins, 0 unpaid rounds, 16 points gained
+```
+
+The final longer-run snapshot at 18:35 AEST was:
+
+```text
+Plugin counter: 10 played, 9 won, 1 lost
+Points gained: 32
+Reward-backed result: 8 paid rounds, 2 unpaid rounds
+```
+
+Awarded points are the authoritative result. The plugin's 9-1 label overstates
+the effective record:
+
+- At 18:27 all four portals were destroyed and the outcome was inferred as a
+  win, but points stayed at 28. Activity had fallen to 7 percent, so this was an
+  unpaid round despite the winning team result.
+- At 18:35 a second unpaid round was inferred as lost with only one portal
+  destroyed. Points remained at 32.
+
+No new Java or Pest Control exception occurred after the clean 2.4.29 launch.
+The Brawler patch was exercised repeatedly: long flanks switched to
+`clearing Brawler`, short flanks resumed portal attacks, and paid rounds
+completed afterward. The old indefinite same-tile flank loop was not observed.
+
+Current extant bugs and follow-up work:
+
+1. Make result accounting reward-backed. Do not infer a paid win solely because
+   all portals were destroyed; zero activity reward is still possible.
+2. Preserve the last in-round activity value. Current round-end diagnostics
+   report `activity unknown` after transition to the boat.
+3. Treat adjacent tiles/objects as one logical gate. The 18:27 unpaid round
+   recorded crossing timeouts at adjacent west gate tiles and the central gate.
+   The cooldown suppressed immediate same-object reopen spam but did not remove
+   all time lost around gate pairs.
+4. Protect activity during long portal engagements. In the 18:27 round activity
+   recovered to 81 percent, then decayed to 7 percent during portal chasing and
+   attacks before the game ended.
+
+Keep these fixes local to Pest Control unless a separate reproduction proves a
+shared WebWalker defect.
+
+## Current Bizza build and install
+
+The focused validation commands were:
+
+```powershell
+gradlew.bat compileJava -PpluginList=PestControlPlugin --console=plain
+gradlew.bat clean build -PpluginList=PestControlPlugin --console=plain
+```
+
+The full focused build completed successfully, including Pest Control
+compilation, JAR generation, test compilation, and tests. The packaged and
+installed 2.4.29 JAR was 55,733 bytes with SHA-256:
+
+```text
+B9B3571495420E5AFB664CA7F490D0E13DE834F381D4713B02E177684E9F0A95
+```
+
+Runtime activity settings were restored from stale `35/65` persisted values to
+the source defaults:
+
+```text
+pestcontrol.activityRecoveryStart = 60
+pestcontrol.activityRecoveryTarget = 75
+```
+
+## Historical Billy 2.4.15 build and install
 
 The focused build used the current shortest-path spike client jar:
 
@@ -257,12 +376,10 @@ next round.
 ## Live-debug workflow
 
 - Agent Server: `http://127.0.0.1:8081`
-- Token source: `C:\Users\Billy\.runelite\.agent-token`
+- Current Bizza token source: `C:\Users\VMAdmin2\.runelite\.agent-token`
 - Required header: `X-Agent-Token`
 - Never print, log, commit, or copy the token into another file.
-- Client log: `C:\Users\Billy\.runelite\logs\client.log`
-- Agent screenshots default under
-  `C:\Users\Billy\.runelite\test-results\screenshots`.
+- Current Bizza client log: `C:\Users\VMAdmin2\.runelite\logs\client.log`
 
 Compilation and packaging do not prove runtime correctness. For future strategy
 changes, smoke at least two complete rounds, include a winning-team requeue, and
@@ -272,11 +389,11 @@ check the exact route/style/activity behavior affected by the change.
 
 - The outer-perimeter route is validated for the current ranged setup. A
   melee-primary profile may need different staging and route tuning.
-- Brawlers are deliberately excluded from fallback targeting, but their body
-  blocking can still trap movement; rely on watchdog recovery evidence before
-  adding special-case Brawler combat.
+- Brawlers remain excluded from ordinary activity fallback targeting. When a
+  Brawler blocks portal line of sight, 2.4.29 attempts one reachable flank and
+  then attacks the blocker for a bounded commitment.
 - If gate-aware routing is added later, distinguish open IDs from closed IDs
   (`14233` through `14248`) and do not replace the validated outer route with
   unconditional gate clicking.
-- Reassess the live `40/60` activity thresholds only with several-round data;
-  the source defaults are intentionally more defensive.
+- Current Bizza activity thresholds are the defensive source defaults `60/75`.
+  Reassess them only with several-round reward-backed data.
