@@ -6,8 +6,10 @@ import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
 import net.runelite.api.NpcID;
 import net.runelite.api.ObjectID;
+import net.runelite.api.ObjectComposition;
 import net.runelite.api.Player;
 import net.runelite.api.Skill;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.VarPlayerID;
@@ -16,6 +18,7 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetInfo;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
+import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
@@ -37,6 +40,8 @@ import net.runelite.client.util.Text;
 import javax.inject.Inject;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static net.runelite.client.plugins.microbot.util.prayer.Rs2Prayer.isQuickPrayerEnabled;
@@ -89,11 +94,15 @@ public class PestControlScript extends Script {
     private static final int RANGED_STAGING_DISTANCE = 6;
     private static final int MELEE_ENGAGEMENT_DISTANCE = 1;
     private static final int MINIMAP_STEP_DISTANCE = 14;
+    private static final int PORTAL_CAMERA_MIN_DISTANCE = 14;
     private static final int SOUTH_PERIMETER_REGION_Y = 20;
+    private static final int SOUTH_PERIMETER_DETOUR_REGION_Y = 16;
     private static final int WEST_PERIMETER_REGION_X = 15;
     private static final int EAST_PERIMETER_REGION_X = 48;
     private static final int PERIMETER_WAYPOINT_ARRIVAL_DISTANCE = 2;
     private static final int ACTIVITY_TARGET_RADIUS = 12;
+    private static final int BLOCKING_GATE_RADIUS = 10;
+    private static final double BLOCKING_GATE_ROUTE_WIDTH = 3.0;
     private static final long MOVEMENT_RETRY_IDLE_MILLIS = 750L;
     private static final long MOVEMENT_RETRY_MOVING_MILLIS = 1_500L;
     private static final long ATTACK_RETRY_MILLIS = 600L;
@@ -103,6 +112,13 @@ public class PestControlScript extends Script {
     private static final long BOARDING_RETRY_MILLIS = 600L;
     private static final long BOARDING_CONFIRM_TIMEOUT_MILLIS = 3_000L;
     private static final long ROUND_TRANSITION_LOGIN_GRACE_MILLIS = 5_000L;
+    private static final long ROUND_OUTCOME_GRACE_MILLIS = 3_000L;
+    private static final long GATE_OPEN_ANIMATION_MILLIS = 1_200L;
+    private static final long GATE_CROSSING_TIMEOUT_MILLIS = 6_000L;
+    private static final long PORTAL_CAMERA_TURN_COOLDOWN_MILLIS = 8_000L;
+    private static final long SPINNER_TARGET_GRACE_MILLIS = 2_500L;
+    private static final long PERIMETER_DETOUR_MILLIS = 10_000L;
+    private static final Pattern POINT_COUNT = Pattern.compile("([\\d,]+)");
     public static final boolean DEBUG = false;
 
     public static List<Portal> portals = List.of(PURPLE, BLUE, RED, YELLOW);
@@ -114,11 +130,22 @@ public class PestControlScript extends Script {
     private long lastWatchdogLogAt = 0L;
     private long lastMovementCommandAt = 0L;
     private long lastAttackCommandAt = 0L;
+    private long lastPortalCameraTurnAt = 0L;
+    private long lastGateInteractionAt = 0L;
+    private WorldPoint lastGateLocation = null;
+    private long perimeterDetourUntil = 0L;
+    private Portal spinnerCommitPortal = null;
+    private long spinnerCommitUntil = 0L;
+    private volatile Portal firstDroppedPortal = null;
+    private volatile int shieldDropCount = 0;
+    private boolean firstDropHoldLogged = false;
     private WorldPoint lastProgressLocation = null;
     private boolean quickPrayerHandled = false;
     private boolean activityRecoveryActive = false;
     private long loginUnavailableSince = 0L;
     private long lastRoundExitAt = 0L;
+    private boolean roundCompletionPending = false;
+    private boolean pendingRoundAllPortalsDestroyed = false;
     private String overlayLocation = "Stopped";
     private int overlayActivityPercent = -1;
     private Portal overlayTargetPortal = null;
@@ -126,7 +153,20 @@ public class PestControlScript extends Script {
     private boolean overlayTargetHasAttackAction = false;
     private String overlayCombatWeapon = "Unknown";
     private String overlayCombatStyle = "Unknown";
+    private volatile int sessionPointsEarned = 0;
+    private volatile int sessionStartingPoints = -1;
+    private volatile int totalPoints = -1;
+    private volatile int roundsPlayed = 0;
+    private volatile int roundsWon = 0;
+    private volatile int roundsLost = 0;
+    private volatile RoundOutcome pendingRoundOutcome = RoundOutcome.UNKNOWN;
     private volatile OverlaySnapshot overlaySnapshot = OverlaySnapshot.initial();
+
+    private enum RoundOutcome {
+        UNKNOWN,
+        WON,
+        LOST
+    }
 
     private enum RuntimeState {
         INITIALISING,
@@ -137,6 +177,7 @@ public class PestControlScript extends Script {
         PREPOSITION_PORTAL,
         WAITING_FOR_PORTAL,
         CHASE_PORTAL,
+        OPEN_GATE,
         KILL_SPINNER,
         ATTACK_PORTAL,
         ACTIVITY_FALLBACK,
@@ -147,6 +188,9 @@ public class PestControlScript extends Script {
 
     private void resetPortals() {
         destroyedPortals.clear();
+        firstDroppedPortal = null;
+        shieldDropCount = 0;
+        firstDropHoldLogged = false;
         for (Portal portal : portals) {
             portal.setHasShield(true);
         }
@@ -208,6 +252,11 @@ public class PestControlScript extends Script {
                 readyPortals,
                 overlayCombatWeapon,
                 overlayCombatStyle,
+                sessionPointsEarned,
+                totalPoints,
+                roundsPlayed,
+                roundsWon,
+                roundsLost,
                 autoRetaliateConfirmedOff,
                 boardingAttemptPending,
                 stateEnteredAt,
@@ -231,6 +280,7 @@ public class PestControlScript extends Script {
         if (runtimeState != RuntimeState.OPENING_SIDE
                 && runtimeState != RuntimeState.PREPOSITION_PORTAL
                 && runtimeState != RuntimeState.CHASE_PORTAL
+                && runtimeState != RuntimeState.OPEN_GATE
                 && runtimeState != RuntimeState.KILL_SPINNER
                 && runtimeState != RuntimeState.ATTACK_PORTAL
                 && runtimeState != RuntimeState.ACTIVITY_FALLBACK) {
@@ -254,6 +304,13 @@ public class PestControlScript extends Script {
                 + (runtimeDetail.isEmpty() ? "" : " detail=" + runtimeDetail)
                 + " idleMs=" + (now - lastProgressAt)
                 + " stateMs=" + (now - stateEnteredAt));
+        if ((runtimeState == RuntimeState.CHASE_PORTAL
+                || runtimeState == RuntimeState.KILL_SPINNER)
+                && selectedPortal != null) {
+            perimeterDetourUntil = now + PERIMETER_DETOUR_MILLIS;
+            Microbot.log("Pest Control movement recovery: using south-lane detour for "
+                    + selectedPortal + " portal");
+        }
         Rs2Walker.clearWalkingRoute("pest-control:watchdog-" + runtimeState.name().toLowerCase(Locale.ROOT));
         lastMovementCommandAt = 0L;
         lastAttackCommandAt = 0L;
@@ -287,6 +344,9 @@ public class PestControlScript extends Script {
         }
 
         observeProgress(playerLocation);
+        if (openBlockingGate(playerLocation, target)) {
+            return true;
+        }
         long now = System.currentTimeMillis();
         boolean isMoving = Rs2Player.isMoving();
         long retryMillis = isMoving ? MOVEMENT_RETRY_MOVING_MILLIS : MOVEMENT_RETRY_IDLE_MILLIS;
@@ -307,14 +367,129 @@ public class PestControlScript extends Script {
             WorldPoint target,
             int arrivalDistance,
             Portal portal) {
+        maybeTurnCameraTowardPortal(playerLocation, portal);
         WorldPoint perimeterWaypoint = southPerimeterWaypoint(playerLocation, portal);
         if (perimeterWaypoint != null) {
+            if (System.currentTimeMillis() < perimeterDetourUntil) {
+                perimeterWaypoint = regionPoint(
+                        playerLocation,
+                        perimeterWaypoint.getRegionX(),
+                        SOUTH_PERIMETER_DETOUR_REGION_Y);
+            }
             return moveToward(
                     playerLocation,
                     perimeterWaypoint,
                     PERIMETER_WAYPOINT_ARRIVAL_DISTANCE);
         }
         return moveToward(playerLocation, target, arrivalDistance);
+    }
+
+    private void maybeTurnCameraTowardPortal(WorldPoint playerLocation, Portal portal) {
+        if (playerLocation == null || portal == null) {
+            return;
+        }
+
+        WorldPoint portalLocation = logicalPortalLocation(portal, playerLocation);
+        if (playerLocation.distanceTo(portalLocation) < PORTAL_CAMERA_MIN_DISTANCE) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now - lastPortalCameraTurnAt < PORTAL_CAMERA_TURN_COOLDOWN_MILLIS) {
+            return;
+        }
+
+        LocalPoint portalLocal = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            LocalPoint localPoint = LocalPoint.fromWorld(
+                    Microbot.getClient().getTopLevelWorldView(), portalLocation);
+            return localPoint != null && !Rs2Camera.isTileOnScreen(localPoint)
+                    ? localPoint
+                    : null;
+        }
+        ).orElse(null);
+        if (portalLocal == null) {
+            return;
+        }
+
+        Rs2Camera.turnTo(portalLocal);
+        lastPortalCameraTurnAt = now;
+    }
+
+    void noteRoundOutcome(boolean won) {
+        pendingRoundOutcome = won ? RoundOutcome.WON : RoundOutcome.LOST;
+    }
+
+    void noteShieldDrop(Portal portal) {
+        if (portal == null) {
+            return;
+        }
+        if (portal.hasShield) {
+            shieldDropCount++;
+            if (firstDroppedPortal == null) {
+                firstDroppedPortal = portal;
+            }
+        }
+        portal.setHasShield(false);
+    }
+
+    void recordAwardedPoints(int points) {
+        if (points <= 0) {
+            return;
+        }
+        pendingRoundOutcome = RoundOutcome.WON;
+        sessionPointsEarned += points;
+        if (totalPoints >= 0) {
+            totalPoints += points;
+        }
+    }
+
+    void recordTotalPoints(int points) {
+        if (points >= 0) {
+            if (roundCompletionPending && totalPoints >= 0 && points > totalPoints) {
+                pendingRoundOutcome = RoundOutcome.WON;
+            }
+            if (sessionStartingPoints < 0) {
+                sessionStartingPoints = points;
+            }
+            totalPoints = points;
+            sessionPointsEarned = Math.max(
+                    sessionPointsEarned,
+                    Math.max(0, points - sessionStartingPoints));
+        }
+    }
+
+    private void recordCompletedRound() {
+        RoundOutcome outcome = pendingRoundOutcome;
+        if (outcome == RoundOutcome.UNKNOWN) {
+            outcome = pendingRoundAllPortalsDestroyed
+                    ? RoundOutcome.WON
+                    : RoundOutcome.LOST;
+            Microbot.log("Pest Control round outcome inferred after grace: " + outcome);
+        }
+
+        roundsPlayed++;
+        if (outcome == RoundOutcome.WON) {
+            roundsWon++;
+        } else {
+            roundsLost++;
+        }
+        Microbot.log("Pest Control session: " + roundsPlayed + " played, "
+                + roundsWon + " won, " + roundsLost + " lost, "
+                + sessionPointsEarned + " points gained");
+        pendingRoundOutcome = RoundOutcome.UNKNOWN;
+        roundCompletionPending = false;
+        pendingRoundAllPortalsDestroyed = false;
+    }
+
+    private void finalisePendingRoundIfReady() {
+        if (!roundCompletionPending) {
+            return;
+        }
+        if (pendingRoundOutcome == RoundOutcome.UNKNOWN
+                && System.currentTimeMillis() - lastRoundExitAt < ROUND_OUTCOME_GRACE_MILLIS) {
+            return;
+        }
+        recordCompletedRound();
     }
 
     /**
@@ -476,11 +651,18 @@ public class PestControlScript extends Script {
         lastWatchdogLogAt = 0L;
         lastMovementCommandAt = 0L;
         lastAttackCommandAt = 0L;
+        lastPortalCameraTurnAt = 0L;
+        lastGateInteractionAt = 0L;
+        lastGateLocation = null;
+        perimeterDetourUntil = 0L;
+        clearSpinnerCommitment();
         lastProgressLocation = null;
         quickPrayerHandled = false;
         activityRecoveryActive = false;
         loginUnavailableSince = 0L;
         lastRoundExitAt = 0L;
+        roundCompletionPending = false;
+        pendingRoundAllPortalsDestroyed = false;
         overlayLocation = "Starting";
         overlayActivityPercent = -1;
         overlayTargetPortal = null;
@@ -490,6 +672,13 @@ public class PestControlScript extends Script {
         overlayCombatStyle = config.primaryCombatStyle() == PestControlCombatStyle.RANGED
                 ? "Rapid (pending)"
                 : config.primaryCombatStyle() + " (preserve)";
+        sessionPointsEarned = 0;
+        sessionStartingPoints = -1;
+        totalPoints = -1;
+        roundsPlayed = 0;
+        roundsWon = 0;
+        roundsLost = 0;
+        pendingRoundOutcome = RoundOutcome.UNKNOWN;
         transitionTo(RuntimeState.INITIALISING, "starting script");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
@@ -558,6 +747,12 @@ public class PestControlScript extends Script {
             lastProgressAt = System.currentTimeMillis();
             lastMovementCommandAt = 0L;
             lastAttackCommandAt = 0L;
+            lastPortalCameraTurnAt = 0L;
+            lastGateInteractionAt = 0L;
+            lastGateLocation = null;
+            perimeterDetourUntil = 0L;
+            clearSpinnerCommitment();
+            pendingRoundOutcome = RoundOutcome.UNKNOWN;
             Microbot.log("Pest Control opening side: " + openingPortal + " portal");
         }
 
@@ -575,6 +770,14 @@ public class PestControlScript extends Script {
         int activityPercent = getActivityPercent();
         overlayActivityPercent = activityPercent;
         updateActivityRecovery(activityPercent);
+        if (activityRecoveryActive && recoverActivity(playerLocation, activityPercent)) {
+            overlayTargetPortal = null;
+            overlayTargetCrowd = 0;
+            overlayTargetHasAttackAction = false;
+            runWatchdog(playerLocation);
+            return;
+        }
+
         PortalTarget portalTarget = selectAdaptivePortalTarget();
         if (portalTarget != null) {
             overlayTargetPortal = portalTarget.portal;
@@ -589,11 +792,6 @@ public class PestControlScript extends Script {
         overlayTargetCrowd = 0;
         overlayTargetHasAttackAction = false;
 
-        if (activityRecoveryActive && recoverActivity(playerLocation, activityPercent)) {
-            runWatchdog(playerLocation);
-            return;
-        }
-
         // Portal switches are temporary. As soon as no portal is attackable,
         // return to the configured primary weapon/style before doing anything else.
         disableSpecialAttackIfEnabled();
@@ -601,6 +799,11 @@ public class PestControlScript extends Script {
         applyPrimaryAttackMode();
 
         if (!openingSideReached && moveToOpeningSide()) {
+            runWatchdog(playerLocation);
+            return;
+        }
+
+        if (shouldHoldOpeningSide() && attackOpeningSideTarget(playerLocation)) {
             runWatchdog(playerLocation);
             return;
         }
@@ -659,8 +862,14 @@ public class PestControlScript extends Script {
         overlayTargetPortal = null;
         overlayTargetCrowd = 0;
         overlayTargetHasAttackAction = false;
+        if (isInBoat) {
+            refreshTotalPointsFromBoatOverlay();
+        }
+        finalisePendingRoundIfReady();
         if (wasInPestControl) {
             lastRoundExitAt = System.currentTimeMillis();
+            roundCompletionPending = true;
+            pendingRoundAllPortalsDestroyed = destroyedPortals.size() == portals.size();
             Rs2Walker.clearWalkingRoute("pest-control:round-ended");
             wasInPestControl = false;
             pendingPostRoundRestore = true;
@@ -671,6 +880,9 @@ public class PestControlScript extends Script {
             activityRecoveryActive = false;
             lastMovementCommandAt = 0L;
             lastAttackCommandAt = 0L;
+            lastPortalCameraTurnAt = 0L;
+            perimeterDetourUntil = 0L;
+            clearSpinnerCommitment();
             boardingAttemptPending = false;
             resetPortals();
             Microbot.log("Pest Control round ended; reboarding immediately");
@@ -717,6 +929,30 @@ public class PestControlScript extends Script {
                 Rs2Magic.alch(config.alchItem());
                 sleep(Rs2Random.between(1600, 1800));
             }
+        }
+    }
+
+    private void refreshTotalPointsFromBoatOverlay() {
+        Integer points = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Widget widget = Microbot.getClient().getWidget(
+                    InterfaceID.PestLanderOverlay.PEST_LANDER_OVER_POINTS);
+            if (widget == null) {
+                return null;
+            }
+
+            Matcher matcher = POINT_COUNT.matcher(Text.removeTags(widget.getText()));
+            if (!matcher.find()) {
+                return null;
+            }
+
+            try {
+                return Integer.parseInt(matcher.group(1).replace(",", ""));
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }).orElse(null);
+        if (points != null) {
+            recordTotalPoints(points);
         }
     }
 
@@ -784,22 +1020,151 @@ public class PestControlScript extends Script {
             return true;
         }
 
-        // A portal already being attacked is excellent activity. Do not abandon it
-        // for an ordinary pest, but do preempt it for a nearby Spinner above.
+        Rs2NpcModel attackableNpc = preferredActivityPest();
+        if (attackableNpc != null) {
+            maintainActivityWith(attackableNpc, playerLocation);
+            return true;
+        }
+
         if (isMaintainingActivityCombat()) {
             transitionTo(RuntimeState.ACTIVITY_FALLBACK,
                     "maintaining activity combat");
             return true;
         }
 
-        Rs2NpcModel attackableNpc = preferredActivityPest();
-        if (attackableNpc == null) {
-            // With no nearby fallback, keep pursuing a portal instead of wandering.
+        // With no nearby fallback, keep pursuing a portal instead of wandering.
+        return false;
+    }
+
+    private boolean attackOpeningSideTarget(WorldPoint playerLocation) {
+        if (isMaintainingActivityCombat()) {
+            transitionTo(RuntimeState.ACTIVITY_FALLBACK, "holding opening-side combat");
+            return true;
+        }
+
+        Rs2NpcModel target = nearestActivitySpinner();
+        if (target == null) {
+            target = preferredActivityPest();
+        }
+        if (target == null) {
             return false;
         }
 
-        maintainActivityWith(attackableNpc, playerLocation);
+        maintainActivityWith(target, playerLocation);
         return true;
+    }
+
+    private boolean openBlockingGate(WorldPoint playerLocation, WorldPoint target) {
+        long now = System.currentTimeMillis();
+        if (lastGateLocation != null) {
+            long elapsed = now - lastGateInteractionAt;
+            if (hasPassedGate(playerLocation, lastGateLocation, target)
+                    || elapsed >= GATE_CROSSING_TIMEOUT_MILLIS) {
+                lastGateLocation = null;
+            } else if (elapsed < GATE_OPEN_ANIMATION_MILLIS) {
+                transitionTo(RuntimeState.OPEN_GATE, "waiting for gate to open");
+                return true;
+            } else {
+                // The gate click has been dispatched. Allow the normal movement
+                // command to carry the player through without clicking Open again.
+                return false;
+            }
+        }
+
+        List<Rs2TileObjectModel> gates = Microbot.getRs2TileObjectCache().query()
+                .withName("Gate")
+                .within(BLOCKING_GATE_RADIUS)
+                .where(this::hasOpenAction)
+                .toListOnClientThread();
+        Rs2TileObjectModel gate = gates.stream()
+                .filter(candidate -> isOnMovementRoute(
+                        playerLocation,
+                        target,
+                        templateLocation(candidate)))
+                .min(Comparator.comparingInt(candidate ->
+                        playerLocation.distanceTo(templateLocation(candidate))))
+                .orElse(null);
+        if (gate == null) {
+            lastGateLocation = null;
+            return false;
+        }
+
+        WorldPoint gateLocation = templateLocation(gate);
+        transitionTo(RuntimeState.OPEN_GATE, "opening gate at " + gateLocation);
+        boolean dispatched = gate.click("Open");
+        lastMovementCommandAt = now;
+        if (dispatched) {
+            lastGateLocation = gateLocation;
+            lastGateInteractionAt = now;
+            Microbot.log("Pest Control opened blocking gate at " + gateLocation);
+        }
+        return true;
+    }
+
+    private WorldPoint templateLocation(Rs2TileObjectModel object) {
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                object == null || object.getLocalLocation() == null
+                        ? null
+                        : WorldPoint.fromLocalInstance(
+                                Microbot.getClient(),
+                                object.getLocalLocation(),
+                                object.getPlane())
+        ).orElse(null);
+    }
+
+    private boolean hasOpenAction(Rs2TileObjectModel object) {
+        if (object == null) {
+            return false;
+        }
+        ObjectComposition composition = object.getObjectComposition();
+        String[] actions = composition == null ? null : composition.getActions();
+        return actions != null && Arrays.stream(actions)
+                .anyMatch(action -> action != null && action.equalsIgnoreCase("Open"));
+    }
+
+    private static boolean isOnMovementRoute(
+            WorldPoint from,
+            WorldPoint to,
+            WorldPoint candidate) {
+        if (from == null || to == null || candidate == null) {
+            return false;
+        }
+
+        double routeX = to.getX() - from.getX();
+        double routeY = to.getY() - from.getY();
+        double routeLengthSquared = routeX * routeX + routeY * routeY;
+        if (routeLengthSquared == 0) {
+            return false;
+        }
+
+        double gateX = candidate.getX() - from.getX();
+        double gateY = candidate.getY() - from.getY();
+        double projection = (gateX * routeX + gateY * routeY) / routeLengthSquared;
+        if (projection <= 0.0 || projection >= 1.0) {
+            return false;
+        }
+
+        double closestX = from.getX() + projection * routeX;
+        double closestY = from.getY() + projection * routeY;
+        double offsetX = candidate.getX() - closestX;
+        double offsetY = candidate.getY() - closestY;
+        return offsetX * offsetX + offsetY * offsetY
+                <= BLOCKING_GATE_ROUTE_WIDTH * BLOCKING_GATE_ROUTE_WIDTH;
+    }
+
+    private static boolean hasPassedGate(
+            WorldPoint playerLocation,
+            WorldPoint gateLocation,
+            WorldPoint target) {
+        if (playerLocation == null || gateLocation == null || target == null) {
+            return false;
+        }
+
+        int targetX = target.getX() - gateLocation.getX();
+        int targetY = target.getY() - gateLocation.getY();
+        int playerX = playerLocation.getX() - gateLocation.getX();
+        int playerY = playerLocation.getY() - gateLocation.getY();
+        return playerX * targetX + playerY * targetY > 0;
     }
 
     private Rs2NpcModel nearestActivitySpinner() {
@@ -993,6 +1358,7 @@ public class PestControlScript extends Script {
 
     private void handlePortalTarget(PortalTarget target, WorldPoint playerLocation) {
         if (selectedPortal != target.portal) {
+            clearSpinnerCommitment();
             selectedPortal = target.portal;
             Microbot.log("Pest Control target: " + target.portal
                     + " portal (" + target.nearbyPlayers + " other players nearby)");
@@ -1013,6 +1379,8 @@ public class PestControlScript extends Script {
 
         Rs2NpcModel spinner = findSpinnerNear(target.portal);
         if (spinner != null) {
+            spinnerCommitPortal = target.portal;
+            spinnerCommitUntil = System.currentTimeMillis() + SPINNER_TARGET_GRACE_MILLIS;
             disableSpecialAttackIfEnabled();
             transitionTo(RuntimeState.KILL_SPINNER, target.portal + " portal");
             if (isInteractingWith(spinner.getNpc())) {
@@ -1033,6 +1401,12 @@ public class PestControlScript extends Script {
             dispatchAttack(spinner);
             return;
         }
+        if (spinnerCommitPortal == target.portal
+                && System.currentTimeMillis() < spinnerCommitUntil) {
+            transitionTo(RuntimeState.KILL_SPINNER, target.portal + " portal");
+            return;
+        }
+        clearSpinnerCommitment();
 
         if (target.attackActionAvailable && isNpcOnCanvas(target.npc)) {
             engagePortal(target);
@@ -1450,6 +1824,17 @@ public class PestControlScript extends Script {
                     .filter(this::isPortalReady)
                     .collect(Collectors.toList());
 
+            if (shouldHoldOppositeFirstDrop()) {
+                if (!firstDropHoldLogged) {
+                    firstDropHoldLogged = true;
+                    Microbot.log("Pest Control holding " + openingSideName()
+                            + " opening side; ignoring first opposite drop at "
+                            + firstDroppedPortal + " portal");
+                }
+                return null;
+            }
+            firstDropHoldLogged = false;
+
             PortalTarget crowdLeader = targets.stream()
                     .max(Comparator
                             .comparingInt((PortalTarget target) -> target.nearbyPlayers)
@@ -1471,6 +1856,25 @@ public class PestControlScript extends Script {
             }
             return crowdLeader;
         }).orElse(null);
+    }
+
+    private boolean shouldHoldOpeningSide() {
+        return shieldDropCount == 0 || shouldHoldOppositeFirstDrop();
+    }
+
+    private boolean shouldHoldOppositeFirstDrop() {
+        return shieldDropCount == 1
+                && openingPortal != null
+                && firstDroppedPortal != null
+                && isEastSide(openingPortal) != isEastSide(firstDroppedPortal);
+    }
+
+    private String openingSideName() {
+        return isEastSide(openingPortal) ? "east" : "west";
+    }
+
+    private static boolean isEastSide(Portal portal) {
+        return portal == BLUE || portal == YELLOW;
     }
 
     private boolean hasAttackAction(Rs2NpcModel npc) {
@@ -1538,11 +1942,18 @@ public class PestControlScript extends Script {
                 .where(spinner -> spinner.getNpc() != null
                         && !spinner.getNpc().isDead()
                         && spinner.getWorldLocation() != null
+                        && distanceFromPlayerInTiles(spinner) <= ACTIVITY_TARGET_RADIUS
+                        && hasAttackAction(spinner)
                         && regionDistance(
                         spinner.getWorldLocation(),
                         portal.getRegionX(),
                         portal.getRegionY()) <= SPINNER_PORTAL_RADIUS)
                 .nearestOnClientThread();
+    }
+
+    private void clearSpinnerCommitment() {
+        spinnerCommitPortal = null;
+        spinnerCommitUntil = 0L;
     }
 
     private static WorldPoint logicalPortalLocation(Portal portal, WorldPoint playerLocation) {
@@ -1671,6 +2082,11 @@ public class PestControlScript extends Script {
         final int readyPortals;
         final String combatWeapon;
         final String combatStyle;
+        final int pointsEarned;
+        final int totalPoints;
+        final int roundsPlayed;
+        final int roundsWon;
+        final int roundsLost;
         final boolean autoRetaliateOff;
         final boolean boardingAttemptPending;
         final long stateEnteredAt;
@@ -1694,6 +2110,11 @@ public class PestControlScript extends Script {
                 int readyPortals,
                 String combatWeapon,
                 String combatStyle,
+                int pointsEarned,
+                int totalPoints,
+                int roundsPlayed,
+                int roundsWon,
+                int roundsLost,
                 boolean autoRetaliateOff,
                 boolean boardingAttemptPending,
                 long stateEnteredAt,
@@ -1715,6 +2136,11 @@ public class PestControlScript extends Script {
             this.readyPortals = readyPortals;
             this.combatWeapon = combatWeapon;
             this.combatStyle = combatStyle;
+            this.pointsEarned = pointsEarned;
+            this.totalPoints = totalPoints;
+            this.roundsPlayed = roundsPlayed;
+            this.roundsWon = roundsWon;
+            this.roundsLost = roundsLost;
             this.autoRetaliateOff = autoRetaliateOff;
             this.boardingAttemptPending = boardingAttemptPending;
             this.stateEnteredAt = stateEnteredAt;
@@ -1740,6 +2166,11 @@ public class PestControlScript extends Script {
                     0,
                     "Unknown",
                     "Unknown",
+                    0,
+                    -1,
+                    0,
+                    0,
+                    0,
                     false,
                     false,
                     0L,
@@ -1836,6 +2267,13 @@ public class PestControlScript extends Script {
         boardingAttemptPending = false;
         loginUnavailableSince = 0L;
         lastRoundExitAt = 0L;
+        roundCompletionPending = false;
+        pendingRoundAllPortalsDestroyed = false;
+        lastPortalCameraTurnAt = 0L;
+        lastGateInteractionAt = 0L;
+        lastGateLocation = null;
+        perimeterDetourUntil = 0L;
+        clearSpinnerCommitment();
         overlayLocation = "Stopped";
         overlayActivityPercent = -1;
         overlayTargetPortal = null;

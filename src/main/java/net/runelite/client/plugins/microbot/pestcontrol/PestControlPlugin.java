@@ -35,7 +35,7 @@ import java.util.regex.Pattern;
 @Slf4j
 public class PestControlPlugin extends Plugin {
 
-	static final String version = "2.4.15";
+	static final String version = "2.4.23";
 
     @Inject
     PestControlScript pestControlScript;
@@ -64,6 +64,13 @@ public class PestControlPlugin extends Plugin {
     private static final Pattern SHIELD_DROP = Pattern.compile(
             "The\\s+(purple|blue|yellow|red)\\s*,.*?portal shield has dropped!",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern POINTS_AWARDED = Pattern.compile(
+            "(?:awarded|received|gained)\\s+([\\d,]+)\\s+(?:Void Knight\\s+)?commendation points?",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern TOTAL_POINTS = Pattern.compile(
+            "(?:you (?:now )?have|commendation (?:point )?count is now)\\s+([\\d,]+)"
+                    + "\\s+(?:Void Knight\\s+)?commendation points?",
+            Pattern.CASE_INSENSITIVE);
 
 
     @Override
@@ -88,12 +95,35 @@ public class PestControlPlugin extends Plugin {
 
         String message = Text.removeTags(chatMessage.getMessage());
         Matcher matcher = SHIELD_DROP.matcher(message);
-        if (!matcher.find()) {
-            return;
+        if (matcher.find()) {
+            Portal portal = Portal.valueOf(matcher.group(1).toUpperCase(Locale.ROOT));
+            pestControlScript.noteShieldDrop(portal);
+            Microbot.log("Pest Control shield dropped: " + portal + " portal");
         }
 
-        Portal portal = Portal.valueOf(matcher.group(1).toUpperCase(Locale.ROOT));
-        portal.setHasShield(false);
-        Microbot.log("Pest Control shield dropped: " + portal + " portal");
+        String normalizedMessage = message.toLowerCase(Locale.ROOT);
+        if (normalizedMessage.contains("successfully defended the island")) {
+            pestControlScript.noteRoundOutcome(true);
+        } else if (normalizedMessage.contains("alas, the void knight has died")) {
+            pestControlScript.noteRoundOutcome(false);
+        }
+
+        Matcher awardedMatcher = POINTS_AWARDED.matcher(message);
+        if (awardedMatcher.find()) {
+            pestControlScript.recordAwardedPoints(parseCount(awardedMatcher.group(1)));
+        }
+
+        Matcher totalMatcher = TOTAL_POINTS.matcher(message);
+        if (totalMatcher.find()) {
+            pestControlScript.recordTotalPoints(parseCount(totalMatcher.group(1)));
+        }
+    }
+
+    private static int parseCount(String value) {
+        try {
+            return Integer.parseInt(value.replace(",", ""));
+        } catch (NumberFormatException ignored) {
+            return -1;
+        }
     }
 }

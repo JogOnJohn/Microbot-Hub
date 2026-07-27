@@ -38,6 +38,10 @@ public class PestControlOverlay  extends OverlayPanel {
                 addLine("Detail", abbreviate(snapshot.detail, 30), Color.WHITE);
             }
             addLine("Location", snapshot.location, Color.WHITE);
+            addLine("PC points", pointsText(snapshot), Color.CYAN);
+            addLine("Rounds played", Integer.toString(snapshot.roundsPlayed), Color.WHITE);
+            addLine("Rounds won", Integer.toString(snapshot.roundsWon), Color.GREEN);
+            addLine("Rounds lost", Integer.toString(snapshot.roundsLost), Color.RED);
             addLine("Activity", activityText(snapshot), activityColor(snapshot));
             addLine("Target", targetText(snapshot), portalColor(snapshot.targetPortal));
             addLine("Target via", targetSource(snapshot), Color.LIGHT_GRAY);
@@ -72,6 +76,13 @@ public class PestControlOverlay  extends OverlayPanel {
                 .right(value)
                 .rightColor(valueColor)
                 .build());
+    }
+
+    private static String pointsText(PestControlScript.OverlaySnapshot snapshot) {
+        if (snapshot.totalPoints >= 0) {
+            return snapshot.totalPoints + " total / " + snapshot.pointsEarned + " gained";
+        }
+        return snapshot.pointsEarned + " gained this session";
     }
 
     private static String activityText(PestControlScript.OverlaySnapshot snapshot) {
