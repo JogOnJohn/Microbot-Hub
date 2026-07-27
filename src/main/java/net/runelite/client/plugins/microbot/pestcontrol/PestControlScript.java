@@ -455,6 +455,20 @@ public class PestControlScript extends Script {
 
         WorldPoint portalLocation = logicalPortalLocation(portal, playerLocation);
         LocalPoint portalLocal = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            LocalPoint npcLocal = Microbot.getRs2NpcCache().query()
+                    .withName("portal")
+                    .where(npc -> npc.getNpc() != null
+                            && !npc.getNpc().isDead()
+                            && matchesPortal(npc, portal))
+                    .toList()
+                    .stream()
+                    .map(Rs2NpcModel::getLocalLocation)
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+            if (npcLocal != null) {
+                return npcLocal;
+            }
             return LocalPoint.fromWorld(
                     Microbot.getClient().getTopLevelWorldView(), portalLocation);
         }
@@ -630,16 +644,19 @@ public class PestControlScript extends Script {
                 east ? EAST_LANE_OUTER_REGION_X : WEST_LANE_OUTER_REGION_X,
                 LANE_GATE_REGION_Y);
 
+        // Once a gate click has been accepted, crossing owns movement. Do not
+        // steer back to the inner approach point while the player is moving
+        // through the open doorway.
+        if (lastGateLocation != null
+                && lastGateLocation.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE) {
+            openBlockingGate(playerLocation, outerCrossing);
+            return true;
+        }
+
         if (playerLocation.distanceTo(innerApproach) > LANE_GATE_APPROACH_DISTANCE) {
             transitionTo(RuntimeState.OPEN_GATE,
                     "approaching " + side + " lane gate for " + portal);
             moveToward(playerLocation, innerApproach, LANE_GATE_APPROACH_DISTANCE);
-            return true;
-        }
-
-        if (lastGateLocation != null
-                && lastGateLocation.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE) {
-            openBlockingGate(playerLocation, outerCrossing);
             return true;
         }
 
@@ -676,17 +693,18 @@ public class PestControlScript extends Script {
             return true;
         }
 
-        boolean gateObservedOpen = nearbyGateLeaves.stream().anyMatch(this::hasCloseAction);
-        if (gateObservedOpen) {
-            transitionTo(RuntimeState.OPEN_GATE,
-                    "crossing open " + side + " lane gate for " + portal);
+        Rs2TileObjectModel openGate = nearbyGateLeaves.stream()
+                .filter(this::hasCloseAction)
+                .min(Comparator.comparingInt(candidate ->
+                        playerLocation.distanceTo(templateLocation(candidate))))
+                .orElse(null);
+        if (openGate != null) {
             long now = System.currentTimeMillis();
-            boolean moving = Rs2Player.isMoving();
-            long retryMillis = moving ? MOVEMENT_RETRY_MOVING_MILLIS : MOVEMENT_RETRY_IDLE_MILLIS;
-            if (now - lastMovementCommandAt >= retryMillis) {
-                Rs2Walker.walkFastCanvas(outerCrossing);
-                lastMovementCommandAt = now;
-            }
+            lastGateLocation = templateLocation(openGate);
+            lastGateInteractionAt = now - GATE_OPEN_ANIMATION_MILLIS;
+            transitionTo(RuntimeState.OPEN_GATE,
+                    "committing through open " + side + " lane gate for " + portal);
+            openBlockingGate(playerLocation, outerCrossing);
             return true;
         }
 

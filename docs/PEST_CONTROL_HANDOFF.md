@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.30` (work in progress)
+- Plugin version: `2.4.31` (work in progress)
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -269,6 +269,32 @@ Microbot 2.6.15. The packaged 2.4.30 JAR is 58,872 bytes with SHA-256:
 
 Installation and live validation remain pending at this point in the
 handover.
+
+The first 2.4.30 live launch confirmed the new version overlay, Moderate mouse
+speed, 40/70 config, Auto Retaliate OFF, safe west-gate approach, one gate-open
+interaction, ordinary-pest activity combat, immediate Purple pursuit, and a
+portal Spinner preemption. It also exposed two issues fixed in 2.4.31:
+
+- During an accepted gate crossing, the safe inner-approach check could regain
+  control and briefly steer back toward the gate. Active crossing now owns
+  movement until passage is observed. The same commitment is created when the
+  gate was already open, so another player's gate action follows the identical
+  crossing path.
+- Camera conversion from a logical instanced `WorldPoint` returned no scene
+  point, so no pivot occurred. Camera targeting now prefers the matched portal
+  NPC's scene-local position and uses logical conversion only as a fallback.
+
+That 2.4.30 round requeued normally but earned no points and was classified as
+a loss. It also exercised the duplicate-attack diagnostics, Purple portal
+combat, Spinner preemption, an in-round respawn/gate re-entry, and an
+east-to-west outer-perimeter transfer. Focused compilation and packaging then
+passed for 2.4.31. Its JAR is 59,109 bytes with SHA-256:
+
+```text
+6052BF9D992BE505AF5FFA0F40BA53BE4C0C4CF535CA9835CDA6EE3A29193FAF
+```
+
+Version 2.4.31 still requires installation and live validation.
 
 Keep these fixes local to Pest Control unless a separate reproduction proves a
 shared WebWalker defect.
