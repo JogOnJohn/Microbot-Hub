@@ -21,7 +21,11 @@ public final class PestControlCombatPlanTest {
         voidHelmetMappingFollowsCombatStyle();
         voidHelmetSwitchingRequiresCompleteSet();
         duplicateStylesAreIgnored();
-        roundOutcomeRequiresEvidenceForLoss();
+        roundOutcomeIsRewardBacked();
+        roundCountersAlwaysReconcile();
+        roundFinalizationWaitsForEvidenceOrGrace();
+        awardedPointMessagesAreDeduplicated();
+        sessionPointsIgnoreEvidenceOrder();
         System.out.println("PestControlCombatPlanTest passed");
     }
 
@@ -144,19 +148,60 @@ public final class PestControlCombatPlanTest {
         check("Crush".equals(red.attackOption), "Red should request the crush option");
     }
 
-    private static void roundOutcomeRequiresEvidenceForLoss() {
-        check(PestControlScript.resolveRoundOutcome(PestControlScript.RoundOutcome.WON, false)
+    private static void roundOutcomeIsRewardBacked() {
+        check(PestControlScript.resolveRoundOutcome(true)
                         == PestControlScript.RoundOutcome.WON,
-                "explicit win should be retained");
-        check(PestControlScript.resolveRoundOutcome(PestControlScript.RoundOutcome.LOST, true)
+                "confirmed reward should count as a win");
+        check(PestControlScript.resolveRoundOutcome(false)
                         == PestControlScript.RoundOutcome.LOST,
-                "explicit loss should be retained");
-        check(PestControlScript.resolveRoundOutcome(PestControlScript.RoundOutcome.UNKNOWN, true)
-                        == PestControlScript.RoundOutcome.WON,
-                "four destroyed portals should infer a win");
-        check(PestControlScript.resolveRoundOutcome(PestControlScript.RoundOutcome.UNKNOWN, false)
-                        == PestControlScript.RoundOutcome.UNKNOWN,
-                "missing portal observations must not infer a loss");
+                "a finalized round without a reward should count as a non-win");
+    }
+
+    private static void roundCountersAlwaysReconcile() {
+        check(PestControlScript.reconcileLostRounds(7, 5) == 2,
+                "two unrewarded rounds must not disappear from a 7/5 session");
+        check(PestControlScript.reconcileLostRounds(8, 6) == 2,
+                "a later paid win must retain earlier non-wins");
+        check(PestControlScript.reconcileLostRounds(2, 2) == 0,
+                "paid wins should not add losses");
+        check(PestControlScript.reconcileLostRounds(0, 0) == 0,
+                "an empty session should remain balanced");
+    }
+
+    private static void roundFinalizationWaitsForEvidenceOrGrace() {
+        check(PestControlScript.shouldFinalizeRound(
+                        true, PestControlScript.TeamOutcome.UNKNOWN, 0L, 12_000L),
+                "reward evidence should finalize immediately");
+        check(PestControlScript.shouldFinalizeRound(
+                        false, PestControlScript.TeamOutcome.LOST, 0L, 12_000L),
+                "explicit Void Knight death should finalize immediately");
+        check(!PestControlScript.shouldFinalizeRound(
+                        false, PestControlScript.TeamOutcome.WON, 4_000L, 12_000L),
+                "team-win chat should still allow delayed reward evidence");
+        check(!PestControlScript.shouldFinalizeRound(
+                        false, PestControlScript.TeamOutcome.UNKNOWN, 11_999L, 12_000L),
+                "unknown result should remain pending within the grace period");
+        check(PestControlScript.shouldFinalizeRound(
+                        false, PestControlScript.TeamOutcome.UNKNOWN, 12_000L, 12_000L),
+                "unrewarded result should finalize when grace expires");
+    }
+
+    private static void awardedPointMessagesAreDeduplicated() {
+        check(PestControlScript.newlyAwardedPoints(0, 4) == 4,
+                "first award message should add all awarded points");
+        check(PestControlScript.newlyAwardedPoints(4, 4) == 0,
+                "duplicate award message should add no points");
+        check(PestControlScript.newlyAwardedPoints(4, 5) == 1,
+                "only newly observed awarded points should be added");
+    }
+
+    private static void sessionPointsIgnoreEvidenceOrder() {
+        check(PestControlScript.reconcileSessionPoints(4, 100, 104) == 4,
+                "award chat and total delta must not count the same points twice");
+        check(PestControlScript.reconcileSessionPoints(0, 100, 104) == 4,
+                "total delta should recover a missing award message");
+        check(PestControlScript.reconcileSessionPoints(4, -1, 104) == 4,
+                "award chat should work without an initial total-points baseline");
     }
 
     private static void voidHelmetMappingFollowsCombatStyle() {

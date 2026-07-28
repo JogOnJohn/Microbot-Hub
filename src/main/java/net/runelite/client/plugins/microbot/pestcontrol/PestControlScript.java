@@ -58,7 +58,7 @@ public class PestControlScript extends Script {
 
     boolean initialise = true;
     boolean openingSideReached = false;
-    private boolean wasInPestControl = false;
+    private volatile boolean wasInPestControl = false;
     private boolean pendingPostRoundRestore = false;
     private boolean autoRetaliateConfirmedOff = false;
     private boolean autoRetaliateDisableLogged = false;
@@ -202,8 +202,7 @@ public class PestControlScript extends Script {
     private int suppressedDuplicateAttackCommands = 0;
     private long loginUnavailableSince = 0L;
     private long lastRoundExitAt = 0L;
-    private boolean roundCompletionPending = false;
-    private boolean pendingRoundAllPortalsDestroyed = false;
+    private volatile boolean roundCompletionPending = false;
     private String overlayLocation = "Stopped";
     private int overlayActivityPercent = -1;
     private Portal overlayTargetPortal = null;
@@ -213,17 +212,30 @@ public class PestControlScript extends Script {
     private String overlayCombatStyle = "Unknown";
     private Boolean voidHelmetSwitchingEnabled = null;
     private volatile int sessionPointsEarned = 0;
+    private volatile int sessionAwardedPoints = 0;
     private volatile int sessionStartingPoints = -1;
     private volatile int totalPoints = -1;
     private volatile int roundsPlayed = 0;
     private volatile int roundsWon = 0;
     private volatile int roundsLost = 0;
-    private volatile RoundOutcome pendingRoundOutcome = RoundOutcome.UNKNOWN;
+    private volatile String lastRoundResultSummary = "None";
+    private volatile TeamOutcome pendingRoundTeamOutcome = TeamOutcome.UNKNOWN;
+    private volatile boolean pendingRoundRewardConfirmed = false;
+    private volatile String pendingRoundRewardSource = "NONE";
+    private volatile int pendingRoundAwardedPoints = 0;
+    private volatile int currentRoundStartingPoints = -1;
+    private volatile int pendingRoundStartingPoints = -1;
+    private volatile int pendingRoundObservedPoints = -1;
     private int pendingRoundFinalActivity = -1;
     private int pendingRoundDestroyedPortals = 0;
     private volatile OverlaySnapshot overlaySnapshot = OverlaySnapshot.initial();
 
     enum RoundOutcome {
+        WON,
+        LOST
+    }
+
+    enum TeamOutcome {
         UNKNOWN,
         WON,
         LOST
@@ -316,6 +328,7 @@ public class PestControlScript extends Script {
                 roundsPlayed,
                 roundsWon,
                 roundsLost,
+                roundResultSummary(),
                 autoRetaliateConfirmedOff,
                 boardingAttemptPending,
                 stateEnteredAt,
@@ -494,8 +507,11 @@ public class PestControlScript extends Script {
                 + " portal at distance " + playerLocation.distanceTo(portalLocation));
     }
 
-    void noteRoundOutcome(boolean won) {
-        pendingRoundOutcome = won ? RoundOutcome.WON : RoundOutcome.LOST;
+    synchronized void noteRoundOutcome(boolean won) {
+        if (!hasActiveRoundResultWindow()) {
+            return;
+        }
+        pendingRoundTeamOutcome = won ? TeamOutcome.WON : TeamOutcome.LOST;
     }
 
     void noteShieldDrop(Portal portal) {
@@ -508,70 +524,163 @@ public class PestControlScript extends Script {
         portal.setHasShield(false);
     }
 
-    void recordAwardedPoints(int points) {
+    synchronized void recordAwardedPoints(int points) {
         if (points <= 0) {
             return;
         }
-        pendingRoundOutcome = RoundOutcome.WON;
-        sessionPointsEarned += points;
-        if (totalPoints >= 0) {
-            totalPoints += points;
+
+        if (hasActiveRoundResultWindow()) {
+            confirmPendingRoundReward("AWARD_CHAT");
+            int newlyObservedPoints = newlyAwardedPoints(pendingRoundAwardedPoints, points);
+            pendingRoundAwardedPoints = Math.max(pendingRoundAwardedPoints, points);
+            sessionAwardedPoints += newlyObservedPoints;
+            refreshSessionPointsEarned();
         }
     }
 
-    void recordTotalPoints(int points) {
+    synchronized void recordTotalPoints(int points) {
         if (points >= 0) {
-            if (roundCompletionPending && totalPoints >= 0 && points > totalPoints) {
-                pendingRoundOutcome = RoundOutcome.WON;
+            if (hasActiveRoundResultWindow()) {
+                pendingRoundObservedPoints = points;
+                int startingPoints = roundCompletionPending
+                        ? pendingRoundStartingPoints
+                        : currentRoundStartingPoints;
+                if (startingPoints >= 0 && points > startingPoints) {
+                    confirmPendingRoundReward("POINT_DELTA");
+                }
             }
             if (sessionStartingPoints < 0) {
                 sessionStartingPoints = points;
             }
             totalPoints = points;
-            sessionPointsEarned = Math.max(
-                    sessionPointsEarned,
-                    Math.max(0, points - sessionStartingPoints));
+            refreshSessionPointsEarned();
         }
     }
 
-    private void recordCompletedRound() {
-        RoundOutcome evidence = pendingRoundOutcome;
-        RoundOutcome outcome = resolveRoundOutcome(evidence, pendingRoundAllPortalsDestroyed);
-        if (evidence == RoundOutcome.UNKNOWN && outcome == RoundOutcome.WON) {
-            Microbot.log("Pest Control round outcome inferred after grace: WON"
-                    + " (destroyed " + pendingRoundDestroyedPortals + "/" + portals.size()
-                    + ", activity " + formatActivity(pendingRoundFinalActivity) + ")");
-        } else if (outcome == RoundOutcome.UNKNOWN) {
-            Microbot.log("Pest Control round outcome unconfirmed after grace"
-                    + " (destroyed " + pendingRoundDestroyedPortals + "/" + portals.size()
-                    + ", activity " + formatActivity(pendingRoundFinalActivity) + ")");
-        } else {
-            Microbot.log("Pest Control round outcome confirmed: " + outcome
-                    + " (destroyed " + pendingRoundDestroyedPortals + "/" + portals.size()
-                    + ", activity " + formatActivity(pendingRoundFinalActivity) + ")");
-        }
+    private void refreshSessionPointsEarned() {
+        sessionPointsEarned = reconcileSessionPoints(
+                sessionAwardedPoints,
+                sessionStartingPoints,
+                totalPoints);
+    }
 
-        roundsPlayed++;
-        if (outcome == RoundOutcome.WON) {
-            roundsWon++;
-        } else if (outcome == RoundOutcome.LOST) {
-            roundsLost++;
+    private boolean hasActiveRoundResultWindow() {
+        return wasInPestControl || roundCompletionPending;
+    }
+
+    private void confirmPendingRoundReward(String source) {
+        pendingRoundRewardConfirmed = true;
+        if ("AWARD_CHAT".equals(source) || "NONE".equals(pendingRoundRewardSource)) {
+            pendingRoundRewardSource = source;
         }
-        Microbot.log("Pest Control session: " + roundsPlayed + " played, "
-                + roundsWon + " won, " + roundsLost + " lost, "
-                + sessionPointsEarned + " points gained");
-        pendingRoundOutcome = RoundOutcome.UNKNOWN;
-        roundCompletionPending = false;
-        pendingRoundAllPortalsDestroyed = false;
+    }
+
+    private synchronized void startRoundAccounting() {
+        pendingRoundTeamOutcome = TeamOutcome.UNKNOWN;
+        pendingRoundRewardConfirmed = false;
+        pendingRoundRewardSource = "NONE";
+        pendingRoundAwardedPoints = 0;
+        currentRoundStartingPoints = totalPoints;
+        pendingRoundStartingPoints = -1;
+        pendingRoundObservedPoints = -1;
         pendingRoundFinalActivity = -1;
         pendingRoundDestroyedPortals = 0;
     }
 
-    static RoundOutcome resolveRoundOutcome(RoundOutcome evidence, boolean allPortalsDestroyed) {
-        if (evidence != null && evidence != RoundOutcome.UNKNOWN) {
-            return evidence;
+    private synchronized void recordCompletedRound() {
+        RoundOutcome outcome = resolveRoundOutcome(pendingRoundRewardConfirmed);
+        String resultSource = pendingRoundRewardConfirmed
+                ? pendingRoundRewardSource
+                : pendingRoundTeamOutcome == TeamOutcome.LOST
+                        ? "LOSS_CHAT"
+                        : hasReliableZeroPointDelta()
+                                ? "NO_POINT_DELTA"
+                                : "NO_REWARD_EVIDENCE";
+        int pointDelta = observedRoundPointDelta();
+        lastRoundResultSummary = (outcome == RoundOutcome.WON ? "WIN" : "NON-WIN")
+                + " / " + resultSource;
+
+        Microbot.log("Pest Control round accounted: " + outcome
+                + " (team " + pendingRoundTeamOutcome
+                + ", source " + resultSource
+                + ", points " + formatPointDelta(pointDelta)
+                + ", destroyed " + pendingRoundDestroyedPortals + "/" + portals.size()
+                + ", activity " + formatActivity(pendingRoundFinalActivity) + ")");
+
+        roundsPlayed++;
+        if (outcome == RoundOutcome.WON) {
+            roundsWon++;
         }
-        return allPortalsDestroyed ? RoundOutcome.WON : RoundOutcome.UNKNOWN;
+        roundsLost = reconcileLostRounds(roundsPlayed, roundsWon);
+        Microbot.log("Pest Control session: " + roundsPlayed + " played, "
+                + roundsWon + " won, " + roundsLost + " lost, "
+                + sessionPointsEarned + " points gained");
+        roundCompletionPending = false;
+        pendingRoundTeamOutcome = TeamOutcome.UNKNOWN;
+        pendingRoundRewardConfirmed = false;
+        pendingRoundRewardSource = "NONE";
+        pendingRoundAwardedPoints = 0;
+        currentRoundStartingPoints = -1;
+        pendingRoundStartingPoints = -1;
+        pendingRoundObservedPoints = -1;
+        pendingRoundFinalActivity = -1;
+        pendingRoundDestroyedPortals = 0;
+    }
+
+    static RoundOutcome resolveRoundOutcome(boolean rewardConfirmed) {
+        return rewardConfirmed ? RoundOutcome.WON : RoundOutcome.LOST;
+    }
+
+    static int reconcileLostRounds(int played, int won) {
+        return Math.max(0, played - won);
+    }
+
+    static int newlyAwardedPoints(int previouslyObserved, int awardedPoints) {
+        return Math.max(0, awardedPoints - Math.max(0, previouslyObserved));
+    }
+
+    static int reconcileSessionPoints(int awardedPoints, int startingPoints, int observedTotalPoints) {
+        int observedDelta = startingPoints >= 0 && observedTotalPoints >= 0
+                ? Math.max(0, observedTotalPoints - startingPoints)
+                : 0;
+        return Math.max(Math.max(0, awardedPoints), observedDelta);
+    }
+
+    static boolean shouldFinalizeRound(
+            boolean rewardConfirmed,
+            TeamOutcome teamOutcome,
+            long elapsedMillis,
+            long graceMillis) {
+        return rewardConfirmed
+                || teamOutcome == TeamOutcome.LOST
+                || elapsedMillis >= graceMillis;
+    }
+
+    private boolean hasReliableZeroPointDelta() {
+        return pendingRoundStartingPoints >= 0
+                && pendingRoundObservedPoints >= 0
+                && pendingRoundObservedPoints <= pendingRoundStartingPoints;
+    }
+
+    private int observedRoundPointDelta() {
+        if (pendingRoundStartingPoints < 0 || pendingRoundObservedPoints < 0) {
+            return -1;
+        }
+        return Math.max(0, pendingRoundObservedPoints - pendingRoundStartingPoints);
+    }
+
+    private static String formatPointDelta(int pointDelta) {
+        return pointDelta < 0 ? "unknown" : "+" + pointDelta;
+    }
+
+    private String roundResultSummary() {
+        if (!roundCompletionPending) {
+            return lastRoundResultSummary;
+        }
+        if (pendingRoundRewardConfirmed) {
+            return "Pending WIN / " + pendingRoundRewardSource;
+        }
+        return "Pending / team " + pendingRoundTeamOutcome;
     }
 
     private static String formatActivity(int activityPercent) {
@@ -582,8 +691,11 @@ public class PestControlScript extends Script {
         if (!roundCompletionPending) {
             return;
         }
-        if (pendingRoundOutcome == RoundOutcome.UNKNOWN
-                && System.currentTimeMillis() - lastRoundExitAt < ROUND_OUTCOME_GRACE_MILLIS) {
+        if (!shouldFinalizeRound(
+                pendingRoundRewardConfirmed,
+                pendingRoundTeamOutcome,
+                System.currentTimeMillis() - lastRoundExitAt,
+                ROUND_OUTCOME_GRACE_MILLIS)) {
             return;
         }
         recordCompletedRound();
@@ -917,7 +1029,6 @@ public class PestControlScript extends Script {
         loginUnavailableSince = 0L;
         lastRoundExitAt = 0L;
         roundCompletionPending = false;
-        pendingRoundAllPortalsDestroyed = false;
         overlayLocation = "Starting";
         overlayActivityPercent = -1;
         overlayTargetPortal = null;
@@ -931,12 +1042,20 @@ public class PestControlScript extends Script {
                 ? config.magicCastingMode() + " (pending)"
                 : primaryLoadout.attackOption + " (pending)";
         sessionPointsEarned = 0;
+        sessionAwardedPoints = 0;
         sessionStartingPoints = -1;
         totalPoints = -1;
         roundsPlayed = 0;
         roundsWon = 0;
         roundsLost = 0;
-        pendingRoundOutcome = RoundOutcome.UNKNOWN;
+        lastRoundResultSummary = "None";
+        pendingRoundTeamOutcome = TeamOutcome.UNKNOWN;
+        pendingRoundRewardConfirmed = false;
+        pendingRoundRewardSource = "NONE";
+        pendingRoundAwardedPoints = 0;
+        currentRoundStartingPoints = -1;
+        pendingRoundStartingPoints = -1;
+        pendingRoundObservedPoints = -1;
         pendingRoundFinalActivity = -1;
         pendingRoundDestroyedPortals = 0;
         transitionTo(RuntimeState.INITIALISING, "starting script");
@@ -1030,7 +1149,7 @@ public class PestControlScript extends Script {
             perimeterDetourUntil = 0L;
             clearSpinnerCommitment();
             clearBrawlerCommitment();
-            pendingRoundOutcome = RoundOutcome.UNKNOWN;
+            startRoundAccounting();
             Microbot.log("Pest Control opening side: " + openingPortal + " portal");
         }
 
@@ -1186,20 +1305,12 @@ public class PestControlScript extends Script {
     }
 
     private void handleLobbyTick(boolean isInBoat) {
-        overlayActivityPercent = -1;
-        overlayTargetPortal = null;
-        overlayTargetCrowd = 0;
-        overlayTargetHasAttackAction = false;
-        if (isInBoat) {
-            refreshTotalPointsFromBoatOverlay();
-        }
-        finalisePendingRoundIfReady();
         if (wasInPestControl) {
             lastRoundExitAt = System.currentTimeMillis();
             roundCompletionPending = true;
             pendingRoundFinalActivity = overlayActivityPercent;
             pendingRoundDestroyedPortals = destroyedPortals.size();
-            pendingRoundAllPortalsDestroyed = destroyedPortals.size() == portals.size();
+            pendingRoundStartingPoints = currentRoundStartingPoints;
             Rs2Walker.clearWalkingRoute("pest-control:round-ended");
             wasInPestControl = false;
             pendingPostRoundRestore = true;
@@ -1221,6 +1332,15 @@ public class PestControlScript extends Script {
                     + ", activity " + formatActivity(pendingRoundFinalActivity)
                     + "; reboarding immediately");
         }
+
+        overlayActivityPercent = -1;
+        overlayTargetPortal = null;
+        overlayTargetCrowd = 0;
+        overlayTargetHasAttackAction = false;
+        if (isInBoat) {
+            refreshTotalPointsFromBoatOverlay();
+        }
+        finalisePendingRoundIfReady();
 
         if (initialise && !isInBoat) {
             transitionTo(RuntimeState.INITIALISING, "checking Pest Control island");
@@ -3073,6 +3193,7 @@ public class PestControlScript extends Script {
         final int roundsPlayed;
         final int roundsWon;
         final int roundsLost;
+        final String roundResult;
         final boolean autoRetaliateOff;
         final boolean boardingAttemptPending;
         final long stateEnteredAt;
@@ -3101,6 +3222,7 @@ public class PestControlScript extends Script {
                 int roundsPlayed,
                 int roundsWon,
                 int roundsLost,
+                String roundResult,
                 boolean autoRetaliateOff,
                 boolean boardingAttemptPending,
                 long stateEnteredAt,
@@ -3127,6 +3249,7 @@ public class PestControlScript extends Script {
             this.roundsPlayed = roundsPlayed;
             this.roundsWon = roundsWon;
             this.roundsLost = roundsLost;
+            this.roundResult = roundResult;
             this.autoRetaliateOff = autoRetaliateOff;
             this.boardingAttemptPending = boardingAttemptPending;
             this.stateEnteredAt = stateEnteredAt;
@@ -3157,6 +3280,7 @@ public class PestControlScript extends Script {
                     0,
                     0,
                     0,
+                    "None",
                     false,
                     false,
                     0L,
@@ -3260,7 +3384,15 @@ public class PestControlScript extends Script {
         loginUnavailableSince = 0L;
         lastRoundExitAt = 0L;
         roundCompletionPending = false;
-        pendingRoundAllPortalsDestroyed = false;
+        pendingRoundTeamOutcome = TeamOutcome.UNKNOWN;
+        pendingRoundRewardConfirmed = false;
+        pendingRoundRewardSource = "NONE";
+        pendingRoundAwardedPoints = 0;
+        currentRoundStartingPoints = -1;
+        pendingRoundStartingPoints = -1;
+        pendingRoundObservedPoints = -1;
+        pendingRoundFinalActivity = -1;
+        pendingRoundDestroyedPortals = 0;
         lastPortalCameraTurnAt = 0L;
         lastGateInteractionAt = 0L;
         lastGateLocation = null;

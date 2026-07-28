@@ -5,6 +5,7 @@
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
 - Installed plugin: `2.5.4` (current known-good tribrid checkpoint on Bizza)
+- Source candidate: `2.5.5` (W/L accounting fix; not packaged or installed)
 - Preserved ranged rollback: `2.4.34`
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
@@ -265,12 +266,13 @@ exercised.
       clicks, no attack before full verification, two paid rounds, and the
       immediate requeue boundary.
 
-### Deferred round-result accounting correction
+### Implemented round-result accounting correction (2.5.5 candidate)
 
-Do not fold this into the stable 2.5.4 runtime unless more Pest Control work is
-actually needed. The script is otherwise working well and this correction is a
-substantive result-state change, so preserve it as a follow-up plan rather than
-risk the current checkpoint.
+Version 2.5.5 implements the requested accounting correction in source. It has
+passed focused compilation and the standalone Pest Control assertions against
+Microbot 2.6.15, but it has not been packaged, installed, or live-smoked. The
+visible client remains open on the known-good 2.5.4 JAR; preserve that runtime
+until the operator explicitly requests replacement or relaunch.
 
 The 2026-07-28 live session proves the current counter invariant is broken. Two
 Void Knight losses completed with only one portal destroyed. At 18:34:17 the
@@ -287,50 +289,44 @@ two portal-death observations were delayed or missed. Portal destruction,
 activity, and Void Knight health are useful diagnostics, but they are not
 authoritative reward evidence.
 
-Recommended implementation:
+Implemented behavior:
 
-1. Create one pending result record at the round boundary with a unique round
-   sequence, points-at-start, points-at-exit/boat, final activity if available,
-   destroyed-portal count, team-result evidence, reward evidence, and the
-   evidence source. Keep it pending through the existing post-round grace and
-   fast requeue boundary so delayed chat or the boat points overlay can update
-   the same record without double-counting it.
-2. Treat an awarded-points chat message or a reliable positive total-points
-   delta as an authoritative rewarded win. Explicit successful-defense chat is
-   supporting team-win evidence, but a team win with insufficient activity can
-   still award zero points.
-3. Treat the explicit Void Knight death message/dialog as an authoritative team
-   loss. If no explicit result arrives, a reliable unchanged points total after
-   the grace period still finalizes the round as an unrewarded/non-win result;
-   it must not remain permanently `UNKNOWN` after `roundsPlayed` advances.
-4. Keep team outcome separate from reward outcome internally. Suggested values
-   are `TEAM_WIN`, `TEAM_LOSS`, or `TEAM_UNKNOWN`, plus `REWARDED` or
-   `UNREWARDED`, with sources such as `SUCCESS_CHAT`, `LOSS_CHAT`,
-   `AWARD_CHAT`, `POINT_DELTA`, and `NO_POINT_DELTA`. This preserves the
-   distinction between a dead Void Knight and a winning team that did not pay
-   the player because activity was too low.
-5. For the existing simple W/L overlay, make the displayed loss/non-win count
-   equal to finalized played rounds minus rewarded wins. This guarantees
-   `played == wins + losses` and matches the operator's practical definition:
-   wins are rounds that paid; every other completed round is a non-win. If the
-   label remains `Lost`, document that it includes unrewarded team wins;
-   `Unrewarded` would be the more precise label.
-6. Do not use an unavailable initial points baseline as proof of zero reward.
-   Establish the first valid boat total, accept awarded-points chat immediately,
-   and retain an unresolved first result until a reliable total or explicit
-   outcome arrives. A later reliable snapshot should reconcile it once, rather
-   than silently dropping it or counting it twice.
-7. Log and expose the pending/final result, reward delta, team outcome, evidence
-   source, and reconciliation age in the overlay diagnostics. Preserve the last
-   in-round activity before clearing lobby overlay state so activity failures
-   are visible even though they do not decide the paid-win counter.
+1. Each round starts with a points baseline and one synchronized evidence
+   window. The window stays active through the post-round grace or until the
+   next fast launch forces finalization, and then closes exactly once.
+2. An awarded-points chat message or a reliable positive total-points delta is
+   authoritative rewarded-win evidence. Repeated copies of the same awarded
+   amount do not add the points twice.
+3. Successful-defense and Void Knight death messages are retained as separate
+   team evidence. They improve diagnostics but do not override whether the
+   player actually received a reward.
+4. Every finalized round without reward evidence is accounted as a loss/non-win.
+   This covers explicit Void Knight deaths, activity-failed team wins, missing
+   chat, and unavailable point deltas instead of leaving a permanent `UNKNOWN`.
+5. After every finalization, losses are reconciled as
+   `roundsPlayed - roundsWon`. The overlay therefore always satisfies
+   `played == wins + losses`; `lost` should be read as an unrewarded/non-win
+   round when the team won but the player failed the activity requirement.
+6. Portal-destruction count is diagnostic only and no longer infers either
+   result. This avoids the former false loss/win behavior around delayed one- or
+   two-portal observations.
+7. The last in-round activity value is captured before lobby overlay reset.
+   Final logs include accounting result, team evidence, evidence source, point
+   delta, portal count, and activity. The overlay adds a concise `Last result`
+   line.
 
-Acceptance must cover a rewarded win, a team win with no activity reward, a
-Void Knight loss with one or two portals destroyed, missing or delayed result
-chat, the first round before a points baseline exists, and a sub-five-second
-winning-team requeue. Reproduce the current two consecutive non-wins and verify
-that each finalized round changes exactly one side of the W/L total, point gains
-are never double-counted, and `played == wins + losses` after reconciliation.
+Focused verification completed:
+
+- `compilePestcontrolJava testClasses -PpluginList=PestControlPlugin` passed.
+- `PestControlCombatPlanTest` passed, including the reproduced `7 played / 5
+  won = 2 lost` case and retention of those two losses after the next paid win.
+- No JAR was packaged or installed, and the running client was not changed.
+
+Live acceptance remains required for a rewarded win, a team win with no
+activity reward, a Void Knight loss with one or two portals destroyed, missing
+or delayed result chat, and a sub-five-second requeue. Confirm that point gains
+are not duplicated and that every completed round changes exactly one side of
+the W/L total.
 
 ## Historical staged 2.5.0 combat-profile candidate
 
