@@ -9,7 +9,19 @@ import net.runelite.client.config.Range;
 import net.runelite.client.plugins.microbot.util.magic.Rs2CombatSpells;
 
 @ConfigGroup("pestcontrol")
-@ConfigInformation("Start near a boat of your combat level")
+@ConfigInformation(
+        "<html><b>Pest Control setup</b><br />"
+                + "Start on the Void Knights' Outpost near the boat for your combat level.<br /><br />"
+                + "Configure exact weapon and off-hand names for Style 1 and any optional styles. "
+                + "Use <b>None</b> for a two-handed weapon or empty off-hand, and keep one inventory slot free when an equipped off-hand must be removed.<br /><br />"
+                + "Portal styles: Purple = Ranged, Blue = Magic, Yellow = Stab/Slash, Red = Crush. "
+                + "Yellow uses one weapon and off-hand pair with an attack-style selector. "
+                + "Red requires a separate crush-capable weapon; not every Stab/Slash weapon offers a Crush option. "
+                + "Magic autocast is checked once at startup and then remembered by the weapon.<br /><br />"
+                + "Void helmet switching is automatic when every enabled style's helmet is equipped or in your inventory. "
+                + "Carry the Void ranger, mage, and/or melee helms required by your enabled styles. "
+                + "If that complete helmet set is not available, the head slot is left untouched so non-Void setups continue to work. "
+                + "No armour slots other than the Void helmet are switched.</html>")
 public interface PestControlConfig extends Config {
     @ConfigSection(
             name = "General",
@@ -229,10 +241,11 @@ public interface PestControlConfig extends Config {
 
     @ConfigItem(
             keyName = "primaryMeleeStyle",
-            name = "Default melee variant",
-            description = "Melee variant used for Style 1 and ordinary activity combat",
+            name = "Legacy default melee variant",
+            description = "Retained only for compatibility with older saved configurations",
             position = 0,
-            section = meleeSection
+            section = meleeSection,
+            hidden = true
     )
     default PestControlMeleeStyle primaryMeleeStyle() {
         return PestControlMeleeStyle.SLASH;
@@ -241,9 +254,10 @@ public interface PestControlConfig extends Config {
     @ConfigItem(
             keyName = "stabWeapon",
             name = "Stab weapon",
-            description = "Exact stab weapon name, or None to fall back to the default melee variant",
+            description = "Legacy duplicate input retained for compatibility",
             position = 1,
-            section = meleeSection
+            section = meleeSection,
+            hidden = true
     )
     default String stabWeapon() {
         return "None";
@@ -252,9 +266,10 @@ public interface PestControlConfig extends Config {
     @ConfigItem(
             keyName = "stabOffhand",
             name = "Stab off-hand",
-            description = "Exact stab off-hand name, or None",
+            description = "Legacy duplicate input retained for compatibility",
             position = 2,
-            section = meleeSection
+            section = meleeSection,
+            hidden = true
     )
     default String stabOffhand() {
         return "None";
@@ -262,9 +277,9 @@ public interface PestControlConfig extends Config {
 
     @ConfigItem(
             keyName = "slashStabWeapon",
-            name = "Slash weapon",
-            description = "Exact slash weapon name; preserves the previous slash/stab configuration key",
-            position = 3,
+            name = "Yellow weapon",
+            description = "Exact weapon name for the yellow portal's selected Stab or Slash style",
+            position = 1,
             section = meleeSection
     )
     default String slashStabWeapon() {
@@ -273,9 +288,9 @@ public interface PestControlConfig extends Config {
 
     @ConfigItem(
             keyName = "slashOffhand",
-            name = "Slash off-hand",
-            description = "Exact slash off-hand name, or None",
-            position = 4,
+            name = "Yellow off-hand",
+            description = "Exact off-hand name for the yellow portal, or None",
+            position = 2,
             section = meleeSection
     )
     default String slashOffhand() {
@@ -284,9 +299,9 @@ public interface PestControlConfig extends Config {
 
     @ConfigItem(
             keyName = "crushWeapon",
-            name = "Crush weapon",
-            description = "Exact crush weapon name, or None to fall back to the default melee variant",
-            position = 5,
+            name = "Red crush weapon",
+            description = "Exact crush-capable weapon name required for the red portal",
+            position = 3,
             section = meleeSection
     )
     default String crushWeapon() {
@@ -295,9 +310,9 @@ public interface PestControlConfig extends Config {
 
     @ConfigItem(
             keyName = "crushOffhand",
-            name = "Crush off-hand",
-            description = "Exact crush off-hand name, or None",
-            position = 6,
+            name = "Red crush off-hand",
+            description = "Exact off-hand name for the red crush weapon, or None",
+            position = 4,
             section = meleeSection
     )
     default String crushOffhand() {
@@ -306,21 +321,22 @@ public interface PestControlConfig extends Config {
 
     @ConfigItem(
             keyName = "yellowMeleeStyle",
-            name = "Yellow portal variant",
-            description = "Melee variant selected for the yellow portal",
-            position = 7,
+            name = "Yellow attack style",
+            description = "Attack style used with the Yellow weapon",
+            position = 0,
             section = meleeSection
     )
-    default PestControlMeleeStyle yellowMeleeStyle() {
-        return PestControlMeleeStyle.SLASH;
+    default PestControlYellowAttackStyle yellowMeleeStyle() {
+        return PestControlYellowAttackStyle.SLASH;
     }
 
     @ConfigItem(
             keyName = "redMeleeStyle",
             name = "Red portal variant",
-            description = "Melee variant selected for the red portal",
+            description = "Legacy value retained for compatibility; Red now always uses Crush",
             position = 8,
-            section = meleeSection
+            section = meleeSection,
+            hidden = true
     )
     default PestControlMeleeStyle redMeleeStyle() {
         return PestControlMeleeStyle.CRUSH;

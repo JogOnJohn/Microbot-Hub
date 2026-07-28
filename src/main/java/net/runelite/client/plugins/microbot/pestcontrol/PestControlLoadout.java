@@ -1,6 +1,8 @@
 package net.runelite.client.plugins.microbot.pestcontrol;
 
+import java.util.Collection;
 import java.util.Locale;
+import java.util.function.Predicate;
 
 final class PestControlLoadout {
     private static final String VOID_MELEE_HELM = "Void melee helm";
@@ -91,7 +93,7 @@ final class PestControlLoadout {
         return itemName.trim();
     }
 
-    private static String helmetFor(PestControlCombatStyle style) {
+    static String helmetFor(PestControlCombatStyle style) {
         switch (style) {
             case MELEE:
                 return VOID_MELEE_HELM;
@@ -101,5 +103,15 @@ final class PestControlLoadout {
             default:
                 return VOID_RANGER_HELM;
         }
+    }
+
+    static boolean hasCompleteVoidHelmetSet(
+            Collection<PestControlCombatStyle> enabledStyles,
+            Predicate<String> isAvailable) {
+        return enabledStyles != null
+                && !enabledStyles.isEmpty()
+                && enabledStyles.stream()
+                .map(PestControlLoadout::helmetFor)
+                .allMatch(isAvailable);
     }
 }

@@ -70,7 +70,6 @@ public class PestControlScript extends Script {
     private boolean startupCombatPrepared = false;
     private boolean startupAutocastPrepared = false;
     private final Set<String> loadoutFailuresLogged = new HashSet<>();
-    private final Set<String> loadoutFallbacksLogged = new HashSet<>();
     private final Set<String> missingAttackOptionsLogged = new HashSet<>();
     private final Map<String, Integer> attackOptionIndexByWeaponStyle = new HashMap<>();
     private String activeAttackOptionKey = null;
@@ -105,7 +104,6 @@ public class PestControlScript extends Script {
     private static final int PORTAL_CROWD_RADIUS = 12;
     private static final int PORTAL_MATCH_RADIUS = 5;
     private static final int SPINNER_PORTAL_RADIUS = 8;
-    private static final int PORTAL_SWITCH_CROWD_MARGIN = 1;
     private static final int PEST_CONTROL_CENTER_REGION_COORD = 32;
     private static final int STAGING_ARRIVAL_DISTANCE = 2;
     private static final int RANGED_ENGAGEMENT_DISTANCE = 6;
@@ -142,13 +140,12 @@ public class PestControlScript extends Script {
     private static final long SAME_TARGET_ATTACK_RETRY_MILLIS = 3_000L;
     private static final long DUPLICATE_COMMAND_LOG_MILLIS = 10_000L;
     private static final long PORTAL_REAFFIRM_MILLIS = 3_000L;
-    private static final long PORTAL_TARGET_MIN_HOLD_MILLIS = 15_000L;
     private static final long WATCHDOG_IDLE_MILLIS = 6_000L;
     private static final long WATCHDOG_LOG_INTERVAL_MILLIS = 6_000L;
     private static final long BOARDING_RETRY_MILLIS = 600L;
     private static final long BOARDING_CONFIRM_TIMEOUT_MILLIS = 3_000L;
     private static final long ROUND_TRANSITION_LOGIN_GRACE_MILLIS = 5_000L;
-    private static final long ROUND_OUTCOME_GRACE_MILLIS = 6_000L;
+    private static final long ROUND_OUTCOME_GRACE_MILLIS = 12_000L;
     private static final long GATE_OPEN_ANIMATION_MILLIS = 1_200L;
     private static final long GATE_OPEN_CONFIRM_TIMEOUT_MILLIS = 3_000L;
     private static final long GATE_CROSSING_TIMEOUT_MILLIS = 6_000L;
@@ -176,7 +173,6 @@ public class PestControlScript extends Script {
     private long lastPortalCameraTurnAt = 0L;
     private Portal lastCameraPivotPortal = null;
     private long lastSouthwestDetourLogAt = 0L;
-    private long selectedPortalSince = 0L;
     private long lastGateInteractionAt = 0L;
     private WorldPoint lastGateLocation = null;
     private WorldPoint activeGateCrossingTarget = null;
@@ -215,6 +211,7 @@ public class PestControlScript extends Script {
     private boolean overlayTargetHasAttackAction = false;
     private String overlayCombatWeapon = "Unknown";
     private String overlayCombatStyle = "Unknown";
+    private Boolean voidHelmetSwitchingEnabled = null;
     private volatile int sessionPointsEarned = 0;
     private volatile int sessionStartingPoints = -1;
     private volatile int totalPoints = -1;
@@ -226,7 +223,7 @@ public class PestControlScript extends Script {
     private int pendingRoundDestroyedPortals = 0;
     private volatile OverlaySnapshot overlaySnapshot = OverlaySnapshot.initial();
 
-    private enum RoundOutcome {
+    enum RoundOutcome {
         UNKNOWN,
         WON,
         LOST
@@ -538,12 +535,14 @@ public class PestControlScript extends Script {
     }
 
     private void recordCompletedRound() {
-        RoundOutcome outcome = pendingRoundOutcome;
-        if (outcome == RoundOutcome.UNKNOWN) {
-            outcome = pendingRoundAllPortalsDestroyed
-                    ? RoundOutcome.WON
-                    : RoundOutcome.LOST;
-            Microbot.log("Pest Control round outcome inferred after grace: " + outcome
+        RoundOutcome evidence = pendingRoundOutcome;
+        RoundOutcome outcome = resolveRoundOutcome(evidence, pendingRoundAllPortalsDestroyed);
+        if (evidence == RoundOutcome.UNKNOWN && outcome == RoundOutcome.WON) {
+            Microbot.log("Pest Control round outcome inferred after grace: WON"
+                    + " (destroyed " + pendingRoundDestroyedPortals + "/" + portals.size()
+                    + ", activity " + formatActivity(pendingRoundFinalActivity) + ")");
+        } else if (outcome == RoundOutcome.UNKNOWN) {
+            Microbot.log("Pest Control round outcome unconfirmed after grace"
                     + " (destroyed " + pendingRoundDestroyedPortals + "/" + portals.size()
                     + ", activity " + formatActivity(pendingRoundFinalActivity) + ")");
         } else {
@@ -555,7 +554,7 @@ public class PestControlScript extends Script {
         roundsPlayed++;
         if (outcome == RoundOutcome.WON) {
             roundsWon++;
-        } else {
+        } else if (outcome == RoundOutcome.LOST) {
             roundsLost++;
         }
         Microbot.log("Pest Control session: " + roundsPlayed + " played, "
@@ -566,6 +565,13 @@ public class PestControlScript extends Script {
         pendingRoundAllPortalsDestroyed = false;
         pendingRoundFinalActivity = -1;
         pendingRoundDestroyedPortals = 0;
+    }
+
+    static RoundOutcome resolveRoundOutcome(RoundOutcome evidence, boolean allPortalsDestroyed) {
+        if (evidence != null && evidence != RoundOutcome.UNKNOWN) {
+            return evidence;
+        }
+        return allPortalsDestroyed ? RoundOutcome.WON : RoundOutcome.UNKNOWN;
     }
 
     private static String formatActivity(int activityPercent) {
@@ -873,12 +879,12 @@ public class PestControlScript extends Script {
         autoRetaliateConfirmedOff = false;
         autoRetaliateDisableLogged = false;
         activeLoadoutKey = null;
+        voidHelmetSwitchingEnabled = null;
         loadoutRetryAfterByKey.clear();
         startupCombatPrepared = false;
         startupAutocastPrepared = !combatPlan.supports(PestControlCombatStyle.MAGIC)
                 || config.magicCastingMode() != PestControlMagicMode.AUTOCAST;
         loadoutFailuresLogged.clear();
-        loadoutFallbacksLogged.clear();
         missingAttackOptionsLogged.clear();
         attackOptionIndexByWeaponStyle.clear();
         activeAttackOptionKey = null;
@@ -1064,15 +1070,6 @@ public class PestControlScript extends Script {
         overlayTargetCrowd = 0;
         overlayTargetHasAttackAction = false;
 
-        // Portal switches are temporary. As soon as no portal is attackable,
-        // return to the configured primary weapon/style before doing anything else.
-        disableSpecialAttackIfEnabled();
-        if (!preparePrimaryLoadout()) {
-            transitionTo(RuntimeState.INITIALISING, "restoring Style 1 loadout");
-            runWatchdog(playerLocation);
-            return;
-        }
-
         if (!openingSideReached && moveToOpeningSide()) {
             runWatchdog(playerLocation);
             return;
@@ -1084,8 +1081,27 @@ public class PestControlScript extends Script {
         }
 
         Portal desiredStagingPortal = selectStagingPortal(playerLocation);
-        if (desiredStagingPortal != null
-                && moveToShieldedPortal(desiredStagingPortal, playerLocation)) {
+        if (desiredStagingPortal != null) {
+            if (moveToShieldedPortal(desiredStagingPortal, playerLocation)) {
+                runWatchdog(playerLocation);
+                return;
+            }
+            if (attackSpinner()) {
+                runWatchdog(playerLocation);
+                return;
+            }
+            if (isPlayerInteracting()) {
+                transitionTo(RuntimeState.HOLDING_COMBAT, "finishing current fallback target");
+                return;
+            }
+            transitionTo(RuntimeState.WAITING_FOR_PORTAL,
+                    "staged for " + desiredStagingPortal + " shield drop");
+            return;
+        }
+
+        disableSpecialAttackIfEnabled();
+        if (!preparePrimaryLoadout()) {
+            transitionTo(RuntimeState.INITIALISING, "restoring Style 1 loadout");
             runWatchdog(playerLocation);
             return;
         }
@@ -1097,12 +1113,6 @@ public class PestControlScript extends Script {
 
         if (isPlayerInteracting()) {
             transitionTo(RuntimeState.HOLDING_COMBAT, "finishing current fallback target");
-            return;
-        }
-
-        if (desiredStagingPortal != null) {
-            transitionTo(RuntimeState.WAITING_FOR_PORTAL,
-                    "staged for " + desiredStagingPortal + " shield drop");
             return;
         }
 
@@ -1152,6 +1162,11 @@ public class PestControlScript extends Script {
                 ? STAGING_ARRIVAL_DISTANCE
                 : MELEE_ENGAGEMENT_DISTANCE;
         if (playerLocation.distanceTo(target) <= STAGING_ARRIVAL_DISTANCE) {
+            if (prepareLoadoutForPortal(portal) == null) {
+                transitionTo(RuntimeState.INITIALISING,
+                        "preparing " + portal + " staging loadout");
+                return true;
+            }
             return false;
         }
 
@@ -1162,7 +1177,12 @@ public class PestControlScript extends Script {
                 portal + (shieldedRemaining == 1
                         ? " sole shield pending"
                         : " surviving shield staging"));
-        return moveTowardPortal(playerLocation, target, arrivalDistance, portal);
+        moveTowardPortal(playerLocation, target, arrivalDistance, portal);
+        if (prepareLoadoutForPortal(portal) == null) {
+            transitionTo(RuntimeState.INITIALISING,
+                    "preparing " + portal + " staging loadout");
+        }
+        return true;
     }
 
     private void handleLobbyTick(boolean isInBoat) {
@@ -1323,7 +1343,8 @@ public class PestControlScript extends Script {
 
     private boolean recoverActivity(WorldPoint playerLocation, int activityPercent) {
         disableSpecialAttackIfEnabled();
-        if (!preparePrimaryLoadout()) {
+        PestControlLoadout activityLoadout = committedActivityLoadout();
+        if (!prepareLoadout(activityLoadout)) {
             transitionTo(RuntimeState.INITIALISING, "preparing activity loadout");
             return true;
         }
@@ -1348,6 +1369,16 @@ public class PestControlScript extends Script {
 
         // With no nearby fallback, keep pursuing a portal instead of wandering.
         return false;
+    }
+
+    private PestControlLoadout committedActivityLoadout() {
+        if (selectedPortal != null && !destroyedPortals.contains(selectedPortal)) {
+            return combatPlan.loadoutForPortal(selectedPortal);
+        }
+        if (stagingPortal != null && !destroyedPortals.contains(stagingPortal)) {
+            return combatPlan.loadoutForPortal(stagingPortal);
+        }
+        return combatPlan.primaryLoadout();
     }
 
     private boolean attackOpeningSideTarget(WorldPoint playerLocation) {
@@ -1751,7 +1782,7 @@ public class PestControlScript extends Script {
             return;
         }
 
-        int engagementDistance = engagementDistance(combatPlan.primaryLoadout().combatStyle);
+        int engagementDistance = engagementDistance(committedActivityLoadout().combatStyle);
         if (playerLocation == null
                 || playerLocation.distanceTo(targetLocation) > engagementDistance
                 || routeCrossesSouthwestNoGoArea(playerLocation, targetLocation)) {
@@ -1856,7 +1887,6 @@ public class PestControlScript extends Script {
             clearSpinnerCommitment();
             clearBrawlerCommitment();
             selectedPortal = target.portal;
-            selectedPortalSince = System.currentTimeMillis();
             Microbot.log("Pest Control target: " + target.portal
                     + " portal (" + target.nearbyPlayers + " other players nearby)");
         }
@@ -1884,6 +1914,10 @@ public class PestControlScript extends Script {
                     approachLocation,
                     arrivalDistance,
                     target.portal);
+            if (prepareLoadoutForPortal(target.portal) == null) {
+                transitionTo(RuntimeState.INITIALISING,
+                        "preparing " + target.portal + " combat loadout while moving");
+            }
             return;
         }
         PestControlLoadout activeLoadout = prepareLoadoutForPortal(target.portal);
@@ -2374,6 +2408,10 @@ public class PestControlScript extends Script {
         if (!preparePrimaryLoadout()) {
             return false;
         }
+        resolveVoidHelmetSwitching();
+        if (!preparePrimaryLoadout()) {
+            return false;
+        }
         startupCombatPrepared = true;
         Microbot.log("Pest Control combat startup preparation complete");
         return true;
@@ -2381,20 +2419,7 @@ public class PestControlScript extends Script {
 
     private PestControlLoadout prepareLoadoutForPortal(Portal portal) {
         PestControlLoadout desired = combatPlan.loadoutForPortal(portal);
-        String fallbackKey = portal + ":" + desired.key();
-        if (prepareLoadout(desired)) {
-            loadoutFallbacksLogged.remove(fallbackKey);
-            return desired;
-        }
-
-        PestControlLoadout primary = combatPlan.primaryLoadout();
-        if (!primary.key().equals(desired.key()) && prepareLoadout(primary)) {
-            if (loadoutFallbacksLogged.add(fallbackKey)) {
-                Microbot.log("Pest Control falling back to Style 1 for " + portal + " portal");
-            }
-            return primary;
-        }
-        return null;
+        return prepareLoadout(desired) ? desired : null;
     }
 
     private boolean preparePrimaryLoadout() {
@@ -2422,7 +2447,8 @@ public class PestControlScript extends Script {
             logLoadoutFailure(loadout, "missing weapon " + loadout.weapon, true);
             return false;
         }
-        if (!isItemAvailable(loadout.helmet, EquipmentInventorySlot.HEAD)) {
+        if (usesVoidHelmet(loadout)
+                && !isItemAvailable(loadout.helmet, EquipmentInventorySlot.HEAD)) {
             logLoadoutFailure(loadout, "missing helmet " + loadout.helmet, true);
             return false;
         }
@@ -2441,7 +2467,8 @@ public class PestControlScript extends Script {
             return false;
         }
 
-        if (!equipItem(loadout.helmet, "Wear", EquipmentInventorySlot.HEAD)
+        if ((usesVoidHelmet(loadout)
+                && !equipItem(loadout.helmet, "Wear", EquipmentInventorySlot.HEAD))
                 || !equipItem(loadout.weapon, "Wield", EquipmentInventorySlot.WEAPON)) {
             logLoadoutFailure(loadout, "equipment interaction did not complete", false);
             return false;
@@ -2505,18 +2532,44 @@ public class PestControlScript extends Script {
             Microbot.log("Pest Control loadout ready: " + loadout.label
                     + " - " + loadout.weapon
                     + (loadout.offhand.isEmpty() ? " (empty off-hand)" : " + " + loadout.offhand)
-                    + " + " + loadout.helmet);
+                    + (usesVoidHelmet(loadout) ? " + " + loadout.helmet : ""));
         }
         return true;
     }
 
-    private static boolean isLoadoutEquipped(PestControlLoadout loadout) {
+    private boolean isLoadoutEquipped(PestControlLoadout loadout) {
         boolean offhandMatches = loadout.requiresEmptyOffhand()
                 ? Rs2Equipment.get(EquipmentInventorySlot.SHIELD) == null
                 : isItemEquipped(loadout.offhand, EquipmentInventorySlot.SHIELD);
         return isItemEquipped(loadout.weapon, EquipmentInventorySlot.WEAPON)
-                && isItemEquipped(loadout.helmet, EquipmentInventorySlot.HEAD)
+                && (!usesVoidHelmet(loadout)
+                || isItemEquipped(loadout.helmet, EquipmentInventorySlot.HEAD))
                 && offhandMatches;
+    }
+
+    private void resolveVoidHelmetSwitching() {
+        if (voidHelmetSwitchingEnabled != null) {
+            return;
+        }
+        boolean allAvailable = PestControlLoadout.hasCompleteVoidHelmetSet(
+                combatPlan.enabledStyles(),
+                helmet -> isItemAvailable(helmet, EquipmentInventorySlot.HEAD));
+        boolean anyAvailable = combatPlan.enabledStyles().stream()
+                .map(PestControlLoadout::helmetFor)
+                .anyMatch(helmet -> isItemAvailable(helmet, EquipmentInventorySlot.HEAD));
+        voidHelmetSwitchingEnabled = allAvailable;
+        if (allAvailable) {
+            Microbot.log("Pest Control Void helmet switching enabled for "
+                    + combatPlan.enabledStyles());
+        } else if (anyAvailable) {
+            Microbot.log("Pest Control Void helmet switching disabled: incomplete enabled-style helmet set; head slot unchanged");
+        } else {
+            Microbot.log("Pest Control non-Void setup detected; head slot unchanged");
+        }
+    }
+
+    private boolean usesVoidHelmet(PestControlLoadout loadout) {
+        return loadout != null && Boolean.TRUE.equals(voidHelmetSwitchingEnabled);
     }
 
     private static boolean isItemAvailable(String itemName, EquipmentInventorySlot slot) {
@@ -2717,16 +2770,7 @@ public class PestControlScript extends Script {
                     .filter(target -> target.portal == selectedPortal)
                     .findFirst()
                     .orElse(null);
-            if (currentTarget != null
-                    && System.currentTimeMillis() - selectedPortalSince
-                    < PORTAL_TARGET_MIN_HOLD_MILLIS) {
-                return currentTarget;
-            }
-            if (currentTarget != null
-                    && (currentTarget.blockingBrawler == null
-                    || crowdLeader.blockingBrawler != null)
-                    && currentTarget.nearbyPlayers + PORTAL_SWITCH_CROWD_MARGIN
-                    >= crowdLeader.nearbyPlayers) {
+            if (currentTarget != null) {
                 return currentTarget;
             }
             return crowdLeader;
@@ -3209,7 +3253,6 @@ public class PestControlScript extends Script {
         activeLoadoutKey = null;
         loadoutRetryAfterByKey.clear();
         loadoutFailuresLogged.clear();
-        loadoutFallbacksLogged.clear();
         startupCombatPrepared = false;
         startupAutocastPrepared = false;
         lastBoardingAttemptAt = 0L;

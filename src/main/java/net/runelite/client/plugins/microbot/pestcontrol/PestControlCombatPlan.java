@@ -34,6 +34,9 @@ final class PestControlCombatPlan {
                 messages.add("Style " + (index + 1) + " " + style + " weapon is not configured");
             }
         }
+        if (styles.contains(PestControlCombatStyle.MELEE) && !redMeleeLoadout().isConfigured()) {
+            messages.add("Red portal crush weapon is not configured");
+        }
         this.validationMessages = Collections.unmodifiableList(messages);
     }
 
@@ -65,10 +68,7 @@ final class PestControlCombatPlan {
 
         PestControlLoadout desired;
         if (desiredStyle == PestControlCombatStyle.MELEE) {
-            PestControlMeleeStyle meleeStyle = portal == RED
-                    ? config.redMeleeStyle()
-                    : config.yellowMeleeStyle();
-            desired = meleeLoadout(meleeStyle);
+            desired = portal == RED ? redMeleeLoadout() : yellowMeleeLoadout();
         } else {
             desired = loadoutForStyle(desiredStyle);
         }
@@ -99,49 +99,28 @@ final class PestControlCombatPlan {
             case MAGIC:
                 return PestControlLoadout.magic(config.magicWeapon(), config.magicOffhand());
             case MELEE:
-                return meleeLoadout(config.primaryMeleeStyle());
+                return yellowMeleeLoadout();
             case RANGED:
             default:
                 return PestControlLoadout.ranged(config.rangedWeapon(), config.rangedOffhand());
         }
     }
 
-    private PestControlLoadout meleeLoadout(PestControlMeleeStyle requestedStyle) {
-        PestControlMeleeStyle requested = requestedStyle == null
-                ? PestControlMeleeStyle.SLASH
-                : requestedStyle;
-        PestControlLoadout requestedLoadout = configuredMeleeLoadout(requested);
-        if (requestedLoadout.isConfigured()) {
-            return requestedLoadout;
-        }
-
-        PestControlMeleeStyle primary = config.primaryMeleeStyle() == null
-                ? PestControlMeleeStyle.SLASH
-                : config.primaryMeleeStyle();
-        PestControlLoadout primaryLoadout = configuredMeleeLoadout(primary);
-        if (primaryLoadout.isConfigured()) {
-            return primaryLoadout;
-        }
-
-        for (PestControlMeleeStyle candidate : PestControlMeleeStyle.values()) {
-            PestControlLoadout candidateLoadout = configuredMeleeLoadout(candidate);
-            if (candidateLoadout.isConfigured()) {
-                return candidateLoadout;
-            }
-        }
-        return requestedLoadout;
+    private PestControlLoadout yellowMeleeLoadout() {
+        PestControlYellowAttackStyle style = config.yellowMeleeStyle() == null
+                ? PestControlYellowAttackStyle.SLASH
+                : config.yellowMeleeStyle();
+        return PestControlLoadout.melee(
+                style.meleeStyle(),
+                config.slashStabWeapon(),
+                config.slashOffhand());
     }
 
-    private PestControlLoadout configuredMeleeLoadout(PestControlMeleeStyle style) {
-        switch (style) {
-            case STAB:
-                return PestControlLoadout.melee(style, config.stabWeapon(), config.stabOffhand());
-            case CRUSH:
-                return PestControlLoadout.melee(style, config.crushWeapon(), config.crushOffhand());
-            case SLASH:
-            default:
-                return PestControlLoadout.melee(style, config.slashStabWeapon(), config.slashOffhand());
-        }
+    private PestControlLoadout redMeleeLoadout() {
+        return PestControlLoadout.melee(
+                PestControlMeleeStyle.CRUSH,
+                config.crushWeapon(),
+                config.crushOffhand());
     }
 
     private static void addOptionalStyle(
