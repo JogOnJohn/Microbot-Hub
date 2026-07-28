@@ -96,17 +96,25 @@ behaviour narrow and unchanged. Refactor only combat loadout selection,
 equipment switching, engagement distance, opening selection, and the minimum
 staging logic that currently assumes ranged distance.
 
-Configuration should expose three ordered loadout profiles:
+Configuration should expose three ordered combat-style selections:
 
 1. Style 1 is mandatory and is the fallback/main style.
 2. Style 2 is optional.
 3. Style 3 is optional.
 
-Each enabled profile owns one unique combat style (`MELEE`, `RANGED`, or
-`MAGIC`), a required main-hand weapon, an optional off-hand item, the style's
-Void helmet, and style-specific combat settings. Equipment switching is limited
-to the weapon, shield/off-hand, and head slots. Do not switch torso, legs,
-gloves, cape, neck, boots, or ring equipment.
+Each enabled selection owns one unique combat style (`MELEE`, `RANGED`, or
+`MAGIC`) and one or more purpose-specific loadouts. A loadout contains a
+required main-hand weapon, an optional off-hand item, and its attack/casting
+settings. The style owns the applicable Void helmet. Equipment switching is
+limited to the weapon, shield/off-hand, and head slots. Do not switch torso,
+legs, gloves, cape, neck, boots, or ring equipment.
+
+Combat-style selection and weapon-variant selection are separate. Melee may
+configure independent stab, slash, and crush loadouts even when Melee is the
+only enabled combat style. The loadouts may reuse the same weapon/off-hand when
+one weapon provides several attack types, or use different one-handed,
+off-hand, and two-handed combinations. Portal weakness or another explicit
+combat objective chooses the melee variant; the Style 1/2/3 order does not.
 
 Map the Void helmet from the selected combat style:
 
@@ -125,8 +133,12 @@ bounded recovery or clear error rather than click spam.
 Magic needs an explicit casting mode in addition to weapon and off-hand:
 
 - Powered staff: verify the staff can attack and has charges.
-- Autocast spell: configure the spell, verify rune availability, and reapply or
-  verify autocast after a weapon switch.
+- Autocast spell: verify rune availability and check the weapon's remembered
+  autocast assignment during plugin startup preparation. Set it once only when
+  missing, then rely on the per-weapon remembered assignment during ordinary
+  switches. Do not reopen the Combat tab or reapply autocast on every switch.
+  Revalidate only after an explicit failed-cast/reset signal or a fresh plugin
+  start.
 
 Opening-side selection should support:
 
@@ -136,17 +148,18 @@ Opening-side selection should support:
 
 Red remains excluded from the first opening target. Portal combat maps Purple
 to Ranged, Blue to Magic, and Yellow/Red to Melee when that style is configured;
-otherwise it falls back to Style 1. Yellow should request slash/stab and Red
-should request crush where the configured melee weapon supports those modes.
-Warn clearly when one melee loadout cannot provide both rather than silently
-switching unrelated gear.
+otherwise it falls back to Style 1. The melee resolver may choose the configured
+stab, slash, or crush loadout independently for each objective. Missing melee
+variants must produce a clear configured fallback or warning rather than
+silently switching unrelated gear.
 
 The acceptance sequence is ranged regression against the preserved baseline,
 then melee-only, magic-only, and tribrid rounds. Tribrid testing must include
-one-handed plus off-hand and two-handed transitions, a deliberately full
-inventory case, Void helmet changes, portal-style fallback, death/re-entry,
-gate/Brawler recovery, and reward-backed round results. Do not build or install
-this refactor until the operator says the live client is ready.
+stab/slash/crush weapon selection, one-handed plus off-hand and two-handed
+transitions, a deliberately full inventory case, Void helmet changes, startup
+autocast preparation, portal-style fallback, death/re-entry, gate/Brawler
+recovery, and reward-backed round results. Do not build or install this refactor
+until the operator says the live client is ready.
 
 ## Historical Bizza guest runtime state
 
