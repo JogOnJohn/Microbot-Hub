@@ -4,7 +4,8 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.34` (installed and known-good for ranged combat on Bizza)
+- Installed plugin: `2.4.34` (known-good for ranged combat on Bizza)
+- Staged candidate: `2.5.0` (combat profiles, built but not installed)
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -89,7 +90,52 @@ Treat this JAR as the pre-combat-profile ranged rollback baseline. Do not
 rebuild, replace, or overwrite the installed or preserved JAR until the operator
 explicitly authorizes combat-profile testing.
 
-## Planned combat-profile refactor
+## Staged 2.5.0 combat-profile candidate
+
+The combat-profile refactor is implemented in source and has been compiled in
+an isolated Bizza clone against Microbot 2.6.15. It has not been installed or
+live-smoked.
+
+- Candidate JAR: `C:\Users\VMAdmin2\operator-work\output\pest-control-builds\PestControlPlugin-2.5.0-combat-profiles-UNINSTALLED.jar`
+- Candidate size: `76,915` bytes
+- Candidate SHA-256: `2D0AAF6A81123383708D5B1C748F3F0A0759ECFD0C3500EFC853359321F7802E`
+- Installed 2.4.34 SHA-256 remains: `213B84CEB2B496D733C062CFF6B287C3A8138561749588003A9E2607B35054AC`
+- Preserved ranged rollback SHA-256 remains identical to the installed JAR
+
+Validation completed:
+
+```powershell
+gradlew.bat clean build -PpluginList=PestControlPlugin `
+  -PmicrobotClientPath=C:\Users\VMAdmin2\.gradle\caches\modules-2\files-2.1\com.microbot\microbot\2.6.15\936e63d4ebe4de33d0635ae21a8387248f348831\microbot-2.6.15.jar `
+  --console=plain
+
+java -ea -cp build\classes\java\test;build\classes\java\pestcontrol;<microbot-2.6.15.jar> `
+  net.runelite.client.plugins.microbot.pestcontrol.PestControlCombatPlanTest
+```
+
+The focused clean build, test compilation, Gradle test task, JAR packaging, and
+resolver assertion suite passed. The candidate was copied only to the staged
+output path; `.runelite\microbot-plugins\PestControlPlugin.jar` was not changed.
+
+Migration notes before first install:
+
+- Style 2 and Style 3 default to `DISABLED`; explicitly enable Melee and/or
+  Magic before expecting those portal switches.
+- Existing `rangedWeapon`, `magicWeapon`, `slashStabWeapon`, `crushWeapon`, and
+  portal-special keys are preserved.
+- The historical `slashStabWeapon` key is now the explicit Slash loadout. A
+  dagger previously stored there must be moved to `stabWeapon`, and the Yellow
+  variant set to `STAB`, before testing.
+- Every enabled style requires its matching Void helmet. A blank/`None`
+  off-hand means the shield slot must be empty and may require one free
+  inventory slot when leaving a one-handed plus off-hand loadout.
+- Powered-staff charge state has no generic preflight API in the current client;
+  the candidate verifies the configured item and slot state, while live smoke
+  must confirm charged-weapon attacks.
+- No live evidence exists yet for equipment transitions, autocast preparation,
+  melee engagement distance, or tribrid portal switching.
+
+## Combat-profile contract and implementation
 
 Keep the movement, gate, Brawler, activity, requeue, and reward-accounting
 behaviour narrow and unchanged. Refactor only combat loadout selection,
@@ -158,8 +204,8 @@ then melee-only, magic-only, and tribrid rounds. Tribrid testing must include
 stab/slash/crush weapon selection, one-handed plus off-hand and two-handed
 transitions, a deliberately full inventory case, Void helmet changes, startup
 autocast preparation, portal-style fallback, death/re-entry, gate/Brawler
-recovery, and reward-backed round results. Do not build or install this refactor
-until the operator says the live client is ready.
+recovery, and reward-backed round results. Do not install this refactor until
+the operator says the live client is ready.
 
 ## Historical Bizza guest runtime state
 

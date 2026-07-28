@@ -29,6 +29,7 @@ import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
+import net.runelite.client.plugins.microbot.util.magic.Rs2CombatSpells;
 import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 
@@ -63,12 +64,16 @@ public class PestControlScript extends Script {
     private boolean autoRetaliateDisableLogged = false;
     private Portal selectedPortal = null;
     private Portal openingPortal = null;
-    private String primaryWeaponName = null;
-    private final Set<String> missingWeaponsLogged = new HashSet<>();
+    private PestControlCombatPlan combatPlan;
+    private String activeLoadoutKey = null;
+    private final Map<String, Long> loadoutRetryAfterByKey = new HashMap<>();
+    private boolean startupCombatPrepared = false;
+    private boolean startupAutocastPrepared = false;
+    private final Set<String> loadoutFailuresLogged = new HashSet<>();
+    private final Set<String> loadoutFallbacksLogged = new HashSet<>();
     private final Set<String> missingAttackOptionsLogged = new HashSet<>();
     private final Map<String, Integer> attackOptionIndexByWeaponStyle = new HashMap<>();
     private String activeAttackOptionKey = null;
-    private boolean missingPrimaryWeaponLogged = false;
     private long lastBoardingAttemptAt = 0L;
     private boolean boardingAttemptPending = false;
     private final Set<Portal> destroyedPortals = EnumSet.noneOf(Portal.class);
@@ -151,6 +156,8 @@ public class PestControlScript extends Script {
     private static final long BRAWLER_FLANK_TIMEOUT_MILLIS = 4_500L;
     private static final long BRAWLER_CLEAR_COMMIT_MILLIS = 8_000L;
     private static final long BRAWLER_COMPASS_STEP_TIMEOUT_MILLIS = 2_500L;
+    private static final long LOADOUT_RETRY_MILLIS = 1_500L;
+    private static final long MISSING_LOADOUT_RETRY_MILLIS = 5_000L;
     private static final int BRAWLER_COMPASS_CLEARANCE = 2;
     private static final long SPINNER_TARGET_GRACE_MILLIS = 2_500L;
     private static final long PERIMETER_DETOUR_MILLIS = 10_000L;
@@ -798,14 +805,7 @@ public class PestControlScript extends Script {
     }
 
     private Portal chooseOpeningPortal() {
-        int rangedWeight = Math.max(0, Math.min(100, config.rangedOpeningWeight()));
-        if (Rs2Random.between(0, 100) < rangedWeight) {
-            return PURPLE;
-        }
-
-        // Red can never be the first portal to become vulnerable.
-        Portal[] otherPortals = {BLUE, YELLOW};
-        return otherPortals[Rs2Random.between(0, otherPortals.length)];
+        return combatPlan.openingPortal(Rs2Random.between(0, 10_000));
     }
 
     private boolean moveToOpeningSide() {
@@ -818,16 +818,21 @@ public class PestControlScript extends Script {
             return true;
         }
 
-        WorldPoint target = rangedPortalStagingLocation(openingPortal, playerLocation);
+        PestControlLoadout openingLoadout = combatPlan.loadoutForPortal(openingPortal);
+        int engagementDistance = engagementDistance(openingLoadout.combatStyle);
+        WorldPoint target = portalApproachLocation(openingPortal, playerLocation, engagementDistance);
+        int arrivalDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                ? STAGING_ARRIVAL_DISTANCE
+                : MELEE_ENGAGEMENT_DISTANCE;
         transitionTo(RuntimeState.OPENING_SIDE, openingPortal + " portal");
-        if (playerLocation.distanceTo(target) <= STAGING_ARRIVAL_DISTANCE) {
+        if (playerLocation.distanceTo(target) <= arrivalDistance) {
             openingSideReached = true;
-            Microbot.log("Pest Control staged at ranged distance in front of "
-                    + openingPortal + " portal");
+            Microbot.log("Pest Control staged for " + openingLoadout.label
+                    + " in front of " + openingPortal + " portal");
             return false;
         }
 
-        return moveTowardPortal(playerLocation, target, STAGING_ARRIVAL_DISTANCE, openingPortal);
+        return moveTowardPortal(playerLocation, target, arrivalDistance, openingPortal);
     }
 
     private boolean confirmAutoRetaliateOff() {
@@ -854,6 +859,10 @@ public class PestControlScript extends Script {
 
     public boolean run(PestControlConfig config) {
         this.config = config;
+        combatPlan = new PestControlCombatPlan(config);
+        combatPlan.validationMessages().forEach(message ->
+                Microbot.log("Pest Control combat config: " + message));
+        Microbot.log("Pest Control combat styles: " + combatPlan.enabledStyles());
         Rs2Antiban.setActivityIntensity(ActivityIntensity.MODERATE);
         Microbot.log("Pest Control mouse speed: Moderate");
         resetPortals();
@@ -863,12 +872,16 @@ public class PestControlScript extends Script {
         pendingPostRoundRestore = false;
         autoRetaliateConfirmedOff = false;
         autoRetaliateDisableLogged = false;
-        primaryWeaponName = configuredPrimaryWeaponName();
-        missingWeaponsLogged.clear();
+        activeLoadoutKey = null;
+        loadoutRetryAfterByKey.clear();
+        startupCombatPrepared = false;
+        startupAutocastPrepared = !combatPlan.supports(PestControlCombatStyle.MAGIC)
+                || config.magicCastingMode() != PestControlMagicMode.AUTOCAST;
+        loadoutFailuresLogged.clear();
+        loadoutFallbacksLogged.clear();
         missingAttackOptionsLogged.clear();
         attackOptionIndexByWeaponStyle.clear();
         activeAttackOptionKey = null;
-        missingPrimaryWeaponLogged = false;
         lastBoardingAttemptAt = 0L;
         boardingAttemptPending = false;
         runtimeState = RuntimeState.STOPPED;
@@ -904,10 +917,13 @@ public class PestControlScript extends Script {
         overlayTargetPortal = null;
         overlayTargetCrowd = 0;
         overlayTargetHasAttackAction = false;
-        overlayCombatWeapon = primaryWeaponName == null ? "Unknown" : primaryWeaponName;
-        overlayCombatStyle = config.primaryCombatStyle() == PestControlCombatStyle.RANGED
-                ? "Rapid (pending)"
-                : config.primaryCombatStyle() + " (preserve)";
+        overlayCombatWeapon = combatPlan.primaryLoadout().weapon.isEmpty()
+                ? "Unknown"
+                : combatPlan.primaryLoadout().weapon;
+        PestControlLoadout primaryLoadout = combatPlan.primaryLoadout();
+        overlayCombatStyle = primaryLoadout.attackOption == null
+                ? config.magicCastingMode() + " (pending)"
+                : primaryLoadout.attackOption + " (pending)";
         sessionPointsEarned = 0;
         sessionStartingPoints = -1;
         totalPoints = -1;
@@ -948,6 +964,10 @@ public class PestControlScript extends Script {
                 if (!super.run()) return;
                 if (!confirmAutoRetaliateOff()) {
                     transitionTo(RuntimeState.INITIALISING, "disabling Auto Retaliate");
+                    return;
+                }
+                if (!prepareStartupCombat()) {
+                    transitionTo(RuntimeState.INITIALISING, "preparing combat loadouts");
                     return;
                 }
 
@@ -1047,8 +1067,11 @@ public class PestControlScript extends Script {
         // Portal switches are temporary. As soon as no portal is attackable,
         // return to the configured primary weapon/style before doing anything else.
         disableSpecialAttackIfEnabled();
-        restorePrimaryWeapon();
-        applyPrimaryAttackMode();
+        if (!preparePrimaryLoadout()) {
+            transitionTo(RuntimeState.INITIALISING, "restoring Style 1 loadout");
+            runWatchdog(playerLocation);
+            return;
+        }
 
         if (!openingSideReached && moveToOpeningSide()) {
             runWatchdog(playerLocation);
@@ -1122,7 +1145,12 @@ public class PestControlScript extends Script {
             return true;
         }
 
-        WorldPoint target = rangedPortalStagingLocation(portal, playerLocation);
+        PestControlLoadout stagingLoadout = combatPlan.loadoutForPortal(portal);
+        int engagementDistance = engagementDistance(stagingLoadout.combatStyle);
+        WorldPoint target = portalApproachLocation(portal, playerLocation, engagementDistance);
+        int arrivalDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                ? STAGING_ARRIVAL_DISTANCE
+                : MELEE_ENGAGEMENT_DISTANCE;
         if (playerLocation.distanceTo(target) <= STAGING_ARRIVAL_DISTANCE) {
             return false;
         }
@@ -1134,7 +1162,7 @@ public class PestControlScript extends Script {
                 portal + (shieldedRemaining == 1
                         ? " sole shield pending"
                         : " surviving shield staging"));
-        return moveTowardPortal(playerLocation, target, STAGING_ARRIVAL_DISTANCE, portal);
+        return moveTowardPortal(playerLocation, target, arrivalDistance, portal);
     }
 
     private void handleLobbyTick(boolean isInBoat) {
@@ -1207,9 +1235,7 @@ public class PestControlScript extends Script {
             lastBoardingAttemptAt = 0L;
             boardingAttemptPending = false;
             if (pendingPostRoundRestore) {
-                restorePrimaryWeapon();
-                applyPrimaryAttackMode();
-                pendingPostRoundRestore = false;
+                pendingPostRoundRestore = !preparePrimaryLoadout();
             }
             if (config.alchInBoat() && !config.alchItem().equalsIgnoreCase("")) {
                 Rs2Magic.alch(config.alchItem());
@@ -1297,8 +1323,10 @@ public class PestControlScript extends Script {
 
     private boolean recoverActivity(WorldPoint playerLocation, int activityPercent) {
         disableSpecialAttackIfEnabled();
-        restorePrimaryWeapon();
-        applyPrimaryAttackMode();
+        if (!preparePrimaryLoadout()) {
+            transitionTo(RuntimeState.INITIALISING, "preparing activity loadout");
+            return true;
+        }
 
         Rs2NpcModel spinner = nearestActivitySpinner(playerLocation);
         if (spinner != null) {
@@ -1723,7 +1751,7 @@ public class PestControlScript extends Script {
             return;
         }
 
-        int engagementDistance = engagementDistance(config.primaryCombatStyle());
+        int engagementDistance = engagementDistance(combatPlan.primaryLoadout().combatStyle);
         if (playerLocation == null
                 || playerLocation.distanceTo(targetLocation) > engagementDistance
                 || routeCrossesSouthwestNoGoArea(playerLocation, targetLocation)) {
@@ -1837,6 +1865,8 @@ public class PestControlScript extends Script {
             transitionTo(RuntimeState.ERROR, "player location unavailable");
             return;
         }
+        PestControlLoadout desiredLoadout = combatPlan.loadoutForPortal(target.portal);
+        int desiredEngagementDistance = engagementDistance(desiredLoadout.combatStyle);
         maybeTurnCameraTowardPortal(playerLocation, target.portal);
         if (ensurePortalLaneAccess(playerLocation, target.portal)) {
             return;
@@ -1844,18 +1874,26 @@ public class PestControlScript extends Script {
         if (southPerimeterWaypoint(playerLocation, target.portal) != null) {
             transitionTo(RuntimeState.CHASE_PORTAL,
                     target.portal + " portal via outer perimeter");
-            WorldPoint approachLocation = rangedPortalStagingLocation(
-                    target.portal, playerLocation);
+            WorldPoint approachLocation = portalApproachLocation(
+                    target.portal, playerLocation, desiredEngagementDistance);
+            int arrivalDistance = desiredEngagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                    ? STAGING_ARRIVAL_DISTANCE
+                    : MELEE_ENGAGEMENT_DISTANCE;
             moveTowardPortal(
                     playerLocation,
                     approachLocation,
-                    STAGING_ARRIVAL_DISTANCE,
+                    arrivalDistance,
                     target.portal);
             return;
         }
-        prepareWeaponForPortal(target.portal);
+        PestControlLoadout activeLoadout = prepareLoadoutForPortal(target.portal);
+        if (activeLoadout == null) {
+            transitionTo(RuntimeState.INITIALISING,
+                    "preparing " + target.portal + " combat loadout");
+            return;
+        }
 
-        int engagementDistance = engagementDistanceForPortal(target.portal);
+        int engagementDistance = engagementDistance(activeLoadout.combatStyle);
         if (isInteractingWithSpinnerNear(target.portal)) {
             disableSpecialAttackIfEnabled();
             transitionTo(RuntimeState.KILL_SPINNER, target.portal + " portal");
@@ -1908,9 +1946,8 @@ public class PestControlScript extends Script {
             return;
         }
 
-        WorldPoint approachLocation = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
-                ? rangedPortalStagingLocation(target.portal, playerLocation)
-                : logicalPortalLocation(target.portal, playerLocation);
+        WorldPoint approachLocation = portalApproachLocation(
+                target.portal, playerLocation, engagementDistance);
         int arrivalDistance = engagementDistance > MELEE_ENGAGEMENT_DISTANCE
                 ? STAGING_ARRIVAL_DISTANCE
                 : MELEE_ENGAGEMENT_DISTANCE;
@@ -2292,187 +2329,223 @@ public class PestControlScript extends Script {
         dispatchPortalAttack(target.npc);
     }
 
-    private void prepareWeaponForPortal(Portal portal) {
-        String configuredWeapon = configuredWeaponForPortal(portal);
-        PortalAttackMode attackMode = attackModeForPortal(portal);
-
-        if (isPrimaryFallback(configuredWeapon)) {
-            restorePrimaryWeapon();
-            applyPrimaryAttackMode();
-            return;
-        }
-
-        if (equipConfiguredWeapon(configuredWeapon.trim())) {
-            applyAttackMode(attackMode);
-        } else {
-            restorePrimaryWeapon();
-            applyPrimaryAttackMode();
-        }
-    }
-
-    private String configuredWeaponForPortal(Portal portal) {
-        switch (portal) {
-            case PURPLE:
-                return config.rangedWeapon();
-            case BLUE:
-                return config.magicWeapon();
-            case YELLOW:
-                return config.slashStabWeapon();
-            case RED:
-                return config.crushWeapon();
-            default:
-                return "None";
-        }
-    }
-
-    private int engagementDistanceForPortal(Portal portal) {
-        String configuredWeapon = configuredWeaponForPortal(portal);
-        if (isPrimaryFallback(configuredWeapon)) {
-            return engagementDistance(config.primaryCombatStyle());
-        }
-        switch (portal) {
-            case PURPLE:
-                return RANGED_ENGAGEMENT_DISTANCE;
-            case BLUE:
-                return RANGED_ENGAGEMENT_DISTANCE;
-            case YELLOW:
-            case RED:
-            default:
-                return MELEE_ENGAGEMENT_DISTANCE;
-        }
-    }
-
     private static int engagementDistance(PestControlCombatStyle style) {
         return style == PestControlCombatStyle.MELEE
                 ? MELEE_ENGAGEMENT_DISTANCE
                 : RANGED_ENGAGEMENT_DISTANCE;
     }
 
-    private static PortalAttackMode attackModeForPortal(Portal portal) {
-        switch (portal) {
-            case PURPLE:
-                return PortalAttackMode.RAPID;
-            case YELLOW:
-                return PortalAttackMode.SLASH_STAB;
-            case RED:
-                return PortalAttackMode.CRUSH;
-            default:
-                return PortalAttackMode.PRESERVE;
-        }
-    }
-
-    private boolean equipConfiguredWeapon(String weaponName) {
-        if (isWeaponEquipped(weaponName)) {
+    private boolean prepareStartupCombat() {
+        if (startupCombatPrepared) {
             return true;
         }
-
-        capturePrimaryWeapon();
-        if (Rs2Inventory.interact(weaponName, "Wield", true)
-                && sleepUntil(() -> isWeaponEquipped(weaponName), 2000)) {
-            missingWeaponsLogged.remove(normalizeWeaponName(weaponName));
-            return true;
-        }
-
-        String normalizedWeapon = normalizeWeaponName(weaponName);
-        if (missingWeaponsLogged.add(normalizedWeapon)) {
-            Microbot.log("Pest Control portal weapon not found in inventory: " + weaponName);
-        }
-        return false;
-    }
-
-    private void restorePrimaryWeapon() {
-        capturePrimaryWeapon();
-        String equippedWeapon = getEquippedWeaponName();
-        if (primaryWeaponName != null && primaryWeaponName.equalsIgnoreCase(equippedWeapon)) {
-            return;
-        }
-
-        if (primaryWeaponName == null || primaryWeaponName.isEmpty()) {
-            if (isConfiguredPortalWeapon(equippedWeapon) && !missingPrimaryWeaponLogged) {
-                Microbot.log("Pest Control could not identify the primary weapon before switching");
-                missingPrimaryWeaponLogged = true;
+        if (!startupAutocastPrepared) {
+            PestControlLoadout magicLoadout = combatPlan.magicLoadout();
+            if (!magicLoadout.isConfigured()) {
+                logLoadoutFailure(magicLoadout, "autocast weapon is not configured", true);
+                return false;
             }
-            return;
-        }
+            if (!prepareLoadout(magicLoadout)) {
+                return false;
+            }
 
-        if (!isConfiguredPortalWeapon(equippedWeapon)) {
-            return;
-        }
-
-        if (Rs2Inventory.interact(primaryWeaponName, "Wield", true)
-                && sleepUntil(() -> isWeaponEquipped(primaryWeaponName), 2000)) {
-            missingPrimaryWeaponLogged = false;
-        } else if (!missingPrimaryWeaponLogged) {
-            Microbot.log("Pest Control primary weapon not found in inventory: " + primaryWeaponName);
-            missingPrimaryWeaponLogged = true;
-        }
-    }
-
-    private void capturePrimaryWeapon() {
-        if (primaryWeaponName != null && !primaryWeaponName.isEmpty()) {
-            return;
-        }
-
-        Rs2ItemModel equippedWeapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
-        if (equippedWeapon == null || equippedWeapon.getName() == null) {
-            return;
-        }
-
-        String equippedName = equippedWeapon.getName().trim();
-        if (!equippedName.isEmpty() && !isConfiguredPortalWeapon(equippedName)) {
-            primaryWeaponName = equippedName;
-            Microbot.log("Pest Control primary weapon: " + primaryWeaponName
-                    + " (" + config.primaryCombatStyle() + ")");
-        }
-    }
-
-    private String configuredPrimaryWeaponName() {
-        String configuredWeapon;
-        switch (config.primaryCombatStyle()) {
-            case RANGED:
-                configuredWeapon = config.rangedWeapon();
-                break;
-            case MAGIC:
-                configuredWeapon = config.magicWeapon();
-                break;
-            case MELEE:
-                configuredWeapon = !isPrimaryFallback(config.slashStabWeapon())
-                        ? config.slashStabWeapon()
-                        : config.crushWeapon();
-                break;
-            default:
-                configuredWeapon = null;
-                break;
-        }
-        return isPrimaryFallback(configuredWeapon) ? null : configuredWeapon.trim();
-    }
-
-    private void applyPrimaryAttackMode() {
-        if (config.primaryCombatStyle() == PestControlCombatStyle.RANGED) {
-            applyAttackMode(PortalAttackMode.RAPID);
-        } else {
-            recordCombatMode(getEquippedWeaponName(), config.primaryCombatStyle() + " (preserve)");
-        }
-    }
-
-    private void applyAttackMode(PortalAttackMode attackMode) {
-        switch (attackMode) {
-            case RAPID:
-                selectAttackOption("Rapid");
-                break;
-            case SLASH_STAB:
-                if (!selectAttackOption("Slash")) {
-                    selectAttackOption("Stab");
+            Rs2CombatSpells desiredSpell = config.magicAutocastSpell();
+            if (desiredSpell == null || !Rs2Magic.canCast(desiredSpell)) {
+                logLoadoutFailure(magicLoadout,
+                        "cannot cast configured spell " + String.valueOf(desiredSpell), true);
+                return false;
+            }
+            if (Rs2Magic.getCurrentAutoCastSpell() != desiredSpell) {
+                Microbot.log("Pest Control setting remembered autocast: " + desiredSpell.getName()
+                        + " (" + magicLoadout.weapon + ")");
+                Rs2Combat.setAutoCastSpell(desiredSpell, false);
+                if (!sleepUntil(() -> Rs2Magic.getCurrentAutoCastSpell() == desiredSpell, 5000)) {
+                    logLoadoutFailure(magicLoadout,
+                            "failed to set autocast " + desiredSpell.getName(), false);
+                    return false;
                 }
-                break;
-            case CRUSH:
-                selectAttackOption("Crush");
-                break;
-            case PRESERVE:
-                recordCombatMode(getEquippedWeaponName(), "Preserve");
-            default:
-                break;
+            } else {
+                Microbot.log("Pest Control retained remembered autocast: " + desiredSpell.getName()
+                        + " (" + magicLoadout.weapon + ")");
+            }
+            startupAutocastPrepared = true;
         }
+
+        if (!preparePrimaryLoadout()) {
+            return false;
+        }
+        startupCombatPrepared = true;
+        Microbot.log("Pest Control combat startup preparation complete");
+        return true;
+    }
+
+    private PestControlLoadout prepareLoadoutForPortal(Portal portal) {
+        PestControlLoadout desired = combatPlan.loadoutForPortal(portal);
+        String fallbackKey = portal + ":" + desired.key();
+        if (prepareLoadout(desired)) {
+            loadoutFallbacksLogged.remove(fallbackKey);
+            return desired;
+        }
+
+        PestControlLoadout primary = combatPlan.primaryLoadout();
+        if (!primary.key().equals(desired.key()) && prepareLoadout(primary)) {
+            if (loadoutFallbacksLogged.add(fallbackKey)) {
+                Microbot.log("Pest Control falling back to Style 1 for " + portal + " portal");
+            }
+            return primary;
+        }
+        return null;
+    }
+
+    private boolean preparePrimaryLoadout() {
+        return prepareLoadout(combatPlan.primaryLoadout());
+    }
+
+    private boolean prepareLoadout(PestControlLoadout loadout) {
+        if (loadout == null || !loadout.isConfigured()) {
+            if (loadout != null) {
+                logLoadoutFailure(loadout, "weapon is not configured", true);
+            }
+            return false;
+        }
+        if (System.currentTimeMillis() < loadoutRetryAfterByKey.getOrDefault(loadout.key(), 0L)) {
+            return false;
+        }
+        if (isLoadoutEquipped(loadout)) {
+            if (applyLoadoutAttackMode(loadout)) {
+                return markLoadoutReady(loadout);
+            }
+            logLoadoutFailure(loadout, "combat mode verification failed", false);
+            return false;
+        }
+        if (!isItemAvailable(loadout.weapon, EquipmentInventorySlot.WEAPON)) {
+            logLoadoutFailure(loadout, "missing weapon " + loadout.weapon, true);
+            return false;
+        }
+        if (!isItemAvailable(loadout.helmet, EquipmentInventorySlot.HEAD)) {
+            logLoadoutFailure(loadout, "missing helmet " + loadout.helmet, true);
+            return false;
+        }
+        if (!loadout.requiresEmptyOffhand()
+                && !isItemAvailable(loadout.offhand, EquipmentInventorySlot.SHIELD)) {
+            logLoadoutFailure(loadout, "missing off-hand " + loadout.offhand, true);
+            return false;
+        }
+
+        String currentOffhand = getEquippedItemName(EquipmentInventorySlot.SHIELD);
+        if (loadout.requiresEmptyOffhand()
+                && !currentOffhand.isEmpty()
+                && Rs2Inventory.emptySlotCount() <= 0) {
+            logLoadoutFailure(loadout,
+                    "need one free inventory slot to clear off-hand " + currentOffhand, true);
+            return false;
+        }
+
+        if (!equipItem(loadout.helmet, "Wear", EquipmentInventorySlot.HEAD)
+                || !equipItem(loadout.weapon, "Wield", EquipmentInventorySlot.WEAPON)) {
+            logLoadoutFailure(loadout, "equipment interaction did not complete", false);
+            return false;
+        }
+
+        if (loadout.requiresEmptyOffhand()) {
+            if (Rs2Equipment.get(EquipmentInventorySlot.SHIELD) != null) {
+                if (Rs2Inventory.emptySlotCount() <= 0
+                        || !Rs2Equipment.unEquip(EquipmentInventorySlot.SHIELD)
+                        || !sleepUntil(() -> Rs2Equipment.get(EquipmentInventorySlot.SHIELD) == null, 2000)) {
+                    logLoadoutFailure(loadout, "could not clear equipped off-hand", false);
+                    return false;
+                }
+            }
+        } else if (!equipItem(loadout.offhand, "Wield", EquipmentInventorySlot.SHIELD)) {
+            logLoadoutFailure(loadout,
+                    "off-hand is incompatible with the configured weapon", false);
+            return false;
+        }
+
+        if (!isLoadoutEquipped(loadout)) {
+            logLoadoutFailure(loadout, "slot verification failed after switching", false);
+            return false;
+        }
+        if (!applyLoadoutAttackMode(loadout)) {
+            logLoadoutFailure(loadout, "combat mode verification failed", false);
+            return false;
+        }
+
+        return markLoadoutReady(loadout);
+    }
+
+    private boolean equipItem(
+            String itemName,
+            String action,
+            EquipmentInventorySlot slot) {
+        if (isItemEquipped(itemName, slot)) {
+            return true;
+        }
+        return Rs2Inventory.interact(itemName, action, true)
+                && sleepUntil(() -> isItemEquipped(itemName, slot), 2000);
+    }
+
+    private boolean applyLoadoutAttackMode(PestControlLoadout loadout) {
+        if (loadout.attackOption != null) {
+            return selectAttackOption(loadout.attackOption);
+        }
+        String magicMode = config.magicCastingMode() == PestControlMagicMode.AUTOCAST
+                ? "Autocast " + config.magicAutocastSpell().getName()
+                : "Powered staff";
+        recordCombatMode(loadout.weapon, magicMode);
+        return true;
+    }
+
+    private boolean markLoadoutReady(PestControlLoadout loadout) {
+        boolean changed = !loadout.key().equals(activeLoadoutKey);
+        activeLoadoutKey = loadout.key();
+        loadoutFailuresLogged.removeIf(failure -> failure.startsWith(loadout.key() + ":"));
+        loadoutRetryAfterByKey.remove(loadout.key());
+        if (changed) {
+            Microbot.log("Pest Control loadout ready: " + loadout.label
+                    + " - " + loadout.weapon
+                    + (loadout.offhand.isEmpty() ? " (empty off-hand)" : " + " + loadout.offhand)
+                    + " + " + loadout.helmet);
+        }
+        return true;
+    }
+
+    private static boolean isLoadoutEquipped(PestControlLoadout loadout) {
+        boolean offhandMatches = loadout.requiresEmptyOffhand()
+                ? Rs2Equipment.get(EquipmentInventorySlot.SHIELD) == null
+                : isItemEquipped(loadout.offhand, EquipmentInventorySlot.SHIELD);
+        return isItemEquipped(loadout.weapon, EquipmentInventorySlot.WEAPON)
+                && isItemEquipped(loadout.helmet, EquipmentInventorySlot.HEAD)
+                && offhandMatches;
+    }
+
+    private static boolean isItemAvailable(String itemName, EquipmentInventorySlot slot) {
+        return isItemEquipped(itemName, slot) || Rs2Inventory.hasItem(itemName, true);
+    }
+
+    private static boolean isItemEquipped(String itemName, EquipmentInventorySlot slot) {
+        return itemName != null
+                && !itemName.isEmpty()
+                && itemName.equalsIgnoreCase(getEquippedItemName(slot));
+    }
+
+    private static String getEquippedItemName(EquipmentInventorySlot slot) {
+        Rs2ItemModel item = Rs2Equipment.get(slot);
+        return item == null || item.getName() == null ? "" : item.getName().trim();
+    }
+
+    private void logLoadoutFailure(
+            PestControlLoadout loadout,
+            String reason,
+            boolean missingOrBlocked) {
+        String failureKey = loadout.key() + ":" + reason.toLowerCase(Locale.ROOT);
+        if (loadoutFailuresLogged.add(failureKey)) {
+            Microbot.log("Pest Control loadout unavailable: " + loadout.label + " - " + reason);
+        }
+        loadoutRetryAfterByKey.put(
+                loadout.key(),
+                System.currentTimeMillis()
+                        + (missingOrBlocked ? MISSING_LOADOUT_RETRY_MILLIS : LOADOUT_RETRY_MILLIS));
     }
 
     private boolean selectAttackOption(String desiredStyle) {
@@ -2579,32 +2652,6 @@ public class PestControlScript extends Script {
         return score;
     }
 
-    private boolean isConfiguredPortalWeapon(String weaponName) {
-        if (weaponName == null || weaponName.isEmpty()) {
-            return false;
-        }
-        return configuredPortalWeapons().stream()
-                .anyMatch(configured -> configured.equalsIgnoreCase(weaponName));
-    }
-
-    private List<String> configuredPortalWeapons() {
-        return Arrays.asList(
-                        config.rangedWeapon(),
-                        config.magicWeapon(),
-                        config.slashStabWeapon(),
-                        config.crushWeapon())
-                .stream()
-                .filter(weapon -> !isPrimaryFallback(weapon))
-                .map(String::trim)
-                .collect(Collectors.toList());
-    }
-
-    private static boolean isPrimaryFallback(String weaponName) {
-        return weaponName == null
-                || weaponName.trim().isEmpty()
-                || weaponName.trim().equalsIgnoreCase("None");
-    }
-
     private static String getEquippedWeaponName() {
         Rs2ItemModel equippedWeapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
         return equippedWeapon == null || equippedWeapon.getName() == null
@@ -2612,22 +2659,8 @@ public class PestControlScript extends Script {
                 : equippedWeapon.getName().trim();
     }
 
-    private static boolean isWeaponEquipped(String weaponName) {
-        Rs2ItemModel equippedWeapon = Rs2Equipment.get(EquipmentInventorySlot.WEAPON);
-        return equippedWeapon != null
-                && equippedWeapon.getName() != null
-                && equippedWeapon.getName().equalsIgnoreCase(weaponName);
-    }
-
     private static String normalizeWeaponName(String weaponName) {
         return weaponName == null ? "" : weaponName.trim().toLowerCase(Locale.ROOT);
-    }
-
-    private enum PortalAttackMode {
-        RAPID,
-        SLASH_STAB,
-        CRUSH,
-        PRESERVE
     }
 
     /**
@@ -2859,6 +2892,15 @@ public class PestControlScript extends Script {
                 portal.getRegionX(),
                 portal.getRegionY(),
                 playerLocation.getPlane());
+    }
+
+    private static WorldPoint portalApproachLocation(
+            Portal portal,
+            WorldPoint playerLocation,
+            int engagementDistance) {
+        return engagementDistance > MELEE_ENGAGEMENT_DISTANCE
+                ? rangedPortalStagingLocation(portal, playerLocation)
+                : logicalPortalLocation(portal, playerLocation);
     }
 
     private static WorldPoint rangedPortalStagingLocation(Portal portal, WorldPoint playerLocation) {
@@ -3164,6 +3206,12 @@ public class PestControlScript extends Script {
         autoRetaliateDisableLogged = false;
         selectedPortal = null;
         openingPortal = null;
+        activeLoadoutKey = null;
+        loadoutRetryAfterByKey.clear();
+        loadoutFailuresLogged.clear();
+        loadoutFallbacksLogged.clear();
+        startupCombatPrepared = false;
+        startupAutocastPrepared = false;
         lastBoardingAttemptAt = 0L;
         boardingAttemptPending = false;
         loginUnavailableSince = 0L;

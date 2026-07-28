@@ -3,7 +3,7 @@
 ![img.png](assets/img.png)
 
 The **Pest Control Script** automates the Old School RuneScape Pest Control mini-game using the Microbot RuneLite client.  
-It handles portal and NPC combat while preserving a simple user-supplied loadout.
+It handles portal and NPC combat with ordered melee, ranged, and magic loadouts.
 
 ---
 
@@ -17,10 +17,11 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 | **Travel to Island**      | Walks to the Pest Control island if not already there.                      |
 | **Boat Selection**        | Uses novice below 70, intermediate at 70-99, and veteran at 100+.           |
 | **Quick Prayer**          | Automatically enables Quick Prayer at game start (optional).                |
-| **Special Attack**        | Uses special attack when above configured energy threshold.                  |
-| **Target Priority**       | Customizable attack order: Brawlers, Portals, Spinners.                      |
+| **Special Attack**        | Uses special attacks only against configured portals when enough energy is available. |
 | **Portal Zerg Targeting** | Joins the largest group at a live portal, stays through small crowd changes, and uses purple as a tie-break. |
-| **Weapon and Style Switching** | Uses per-weakness weapon slots, selects the matching attack option, then restores the primary. |
+| **Tribrid Loadouts**      | Supports three ordered styles, Void helmet switches, and verified weapon/off-hand changes. |
+| **Melee Variants**        | Supports independent stab, slash, and crush weapon/off-hand combinations.    |
+| **Magic Preparation**     | Supports powered staves or a startup-only remembered autocast check.         |
 | **Combat Idle Handling**  | Attacks nearby NPCs when idle.                                               |
 | **Brawler Blocking Fix**  | Attacks brawlers if they block movement.                                     |
 | **Boat Alching**          | High-alchs a chosen item while waiting in the boat (optional).               |
@@ -33,7 +34,8 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 
 ## Requirements
 - Microbot RuneLite client
-- A primary weapon equipped and every configured non-None portal weapon in inventory
+- Every enabled style's weapon, optional off-hand, and matching Void helmet
+- One free inventory slot when changing from an equipped off-hand to an empty-off-hand/two-handed loadout
 - Pest Control world access
 
 ---
@@ -41,30 +43,31 @@ It handles portal and NPC combat while preserving a simple user-supplied loadout
 ## Configuration Options
 - **World**: Target world to play on.
 - **Quick Prayer**: Enable/disable Quick Prayer usage.
-- **Special Attack Percentage**: Energy threshold for using special attacks.
-- **Target Priority**: Set the attack order for Brawlers, Portals, and Spinners.
 - **Alching in Boat**: Enable/disable high-alching between matches.
 - **Alch Item**: Name of item to alch.
-- **Primary Combat Style**: The style used whenever a portal weapon is `None` (preloaded as Ranged).
-- **Ranged Weapon (Purple)**: Preloaded as `Adamant crossbow`; it is also the primary restore target while the primary style is Ranged and is kept on Rapid.
-- **Magic Weapon (Blue)**: Preloaded as `None`, so the primary ranged weapon is retained.
-- **Slash/Stab Weapon (Yellow)**: Preloaded as `Dragon scimitar`. The script prefers its Slash option and falls back to a Stab option when necessary.
-- **Crush Weapon (Red)**: Preloaded as `None`, so the primary ranged weapon is retained.
+- **Style 1**: Mandatory main style and fallback loadout.
+- **Style 2 / Style 3**: Optional additional unique combat styles.
+- **Ranged**: Exact weapon and optional off-hand; Rapid is selected and verified.
+- **Magic**: Exact weapon/off-hand plus powered-staff or autocast mode. Autocast is checked and set once at plugin startup, then left to the game's per-weapon memory.
+- **Melee**: Independent stab, slash, and crush weapon/off-hand loadouts, plus configurable default, Yellow, and Red variants.
+- **Void helmets**: Automatically maps Melee, Ranged, and Magic to their matching Void helmets.
+- **Opening selection**: Style 1, equal random, or normalized Purple/Blue/Yellow weights. Red is never selected first.
+- **Special attacks**: Enabled separately per portal and never used against ordinary pests or Brawlers.
 
-`None` (or a blank value) means to restore and use the captured primary weapon. A configured magic weapon preserves its existing spell/autocast setup; spell selection is not changed.
+`None` (or a blank off-hand) means that the loadout expects the shield slot to be empty. Missing style-specific weapons fall back to Style 1; missing equipped items or incompatible 2h/off-hand combinations are reported without repeated click spam. No equipment outside the weapon, shield/off-hand, and head slots is changed.
 
 ---
 
 ## How It Works
 1. The script checks if you are logged in and on the right world.
 2. If needed, it hops worlds and travels to the Pest Control island.
-3. Captures the equipped primary weapon and boards the correct boat for your combat level.
+3. Validates the configured Style 1 loadout and performs any one-time autocast setup.
 4. During games:
-    - Moves to the center.
+    - Stages at a melee or ranged/magic distance appropriate to the selected portal loadout.
     - Activates prayers and special attacks as configured.
     - Follows the largest live-portal group, kills nearby Spinners, then focuses the portal.
-    - Keeps ranged on Rapid and selects Slash/Stab or Crush when using those configured portal weapons.
-5. After games, it immediately reboards, then restores the primary weapon once the boat is confirmed.
+    - Verifies the Void helmet, weapon, off-hand, and combat option before attacking.
+5. After games, it immediately reboards, then restores Style 1 once the boat is confirmed.
 
 ---
 
