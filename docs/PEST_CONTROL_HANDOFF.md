@@ -132,34 +132,138 @@ activity meter to decay.
 
 ### Deferred switching improvement
 
-Do not implement this while collecting the 2.5.4 progress report. The next
-iteration should retain the verified equipment transaction but make preparation
-asynchronous with movement:
+Do not implement this while collecting the 2.5.4 progress report. The following
+plan comes from a clean two-round ranged smoke. No code changes were made during
+that smoke, the worktree remained clean, Pest Control remained running, and the
+client stayed open.
 
-1. Select and start the destination portal loadout during pre-positioning or a
-   long portal chase, while the character would otherwise be travelling or
-   waiting.
-2. Keep the current movement waypoint authoritative while equipment actions
-   progress across scheduled ticks. A gear action must not clear or replace a
-   healthy movement command.
-3. Cache per-slot completion and remembered attack modes. Reopen the Combat tab
-   only when the newly equipped weapon has no verified cached mode.
-4. Require the full weapon/off-hand/helmet/mode verification only at the final
-   portal or NPC interaction boundary. If travel ends first, pause there rather
-   than issuing an attack with a partial loadout.
-5. Prefer naturally idle windows: boat/startup preparation, waiting at a
-   shielded portal, the moment after a portal dies, and established long-distance
-   movement. Do not switch away from a live portal target or interrupt activity
-   recovery merely to prepare a later target.
-6. Keep bounded retries and transaction diagnostics. Do not replace the current
-   safe pause with repeated equip clicks, oscillating profiles, or an unverified
-   attack.
+#### Smoke result
 
-Acceptance should compare movement and interaction timestamps around every
-switch, confirm no full stationary gap when travel time was available, verify
-all equipped slots and attack modes before the first hit, and preserve
-reward-backed results across ranged, melee, magic, one-handed/off-hand, and
-two-handed profiles.
+Two complete rounds passed:
+
+- 2 played, 2 paid wins, and 8 points gained.
+- The next round launched four seconds after reaching the boat.
+- No exceptions, client-thread errors, watchdog recoveries, unreachable clicks,
+  gate timeouts, activity failures, or boarding retries occurred.
+- Brawler handling progressed through flank, clear, and portal attack.
+- Camera steering, Spinner preemption, portal staging, and the 40/70 activity
+  policy behaved correctly.
+
+This machine had only Ranged enabled, so actual tribrid switching was not
+exercised.
+
+#### Proposed plan
+
+1. **Implement a tick-driven loadout transaction.**
+
+   Replace blocking `sleepUntil` sequences with phases such as:
+
+   `VERIFY -> HELMET -> WEAPON -> OFFHAND -> ATTACK_MODE -> READY`
+
+   Each tick performs at most one equipment action, then waits for observed slot
+   state without blocking the script thread. Retry each phase within a bounded
+   timeout.
+
+2. **Keep movement authoritative during preparation.**
+
+   Begin preparing the destination loadout during:
+
+   - Outer-perimeter portal travel.
+   - Gate approaches and committed crossings.
+   - Shielded-portal pre-positioning.
+   - Boat/startup preparation.
+   - Travel after the previous portal dies.
+
+   Healthy movement continues normally while the transaction advances.
+   Equipment work must never clear or replace a movement command.
+
+3. **Block only the final combat interaction.**
+
+   Movement, camera steering, and gate recovery may continue with a pending
+   loadout. Portal, Spinner, or pest attack dispatch waits until weapon,
+   off-hand, helmet, and combat mode are all verified.
+
+4. **Add transaction priority and cancellation.**
+
+   Suggested order:
+
+   - Activity-recovery loadout.
+   - Current vulnerable portal.
+   - Current portal Spinner.
+   - Shielded staging portal prefetch.
+   - Primary-loadout restoration.
+
+   A lower-priority prefetch is cancelled when activity recovery starts or the
+   active portal changes. Do not switch away from ongoing portal combat merely
+   to prepare a later target.
+
+5. **Reuse remembered combat modes asynchronously.**
+
+   Keep the existing weapon/style cache. When uncached:
+
+   - Open Combat once.
+   - Wait for the tab on later ticks.
+   - Select the style once.
+   - Wait for `COM_MODE`.
+   - Mark the weapon/style pair verified.
+
+   Autocast should use the same phased model and normally be prepared once
+   during startup or boat time.
+
+6. **Fix transient startup loadout detection.**
+
+   Startup logged `missing Magic Shortbow (i)` and then found it five seconds
+   later, matching the missing-loadout retry interval. Require stable inventory
+   and equipment snapshots across two ticks before declaring an item missing.
+   Report this as `equipment cache pending`, not an unavailable loadout.
+
+7. **Guard special-attack activation.**
+
+   Five special-toggle dispatches were logged. Three occurred within three
+   seconds at Purple. Add a pending-special acknowledgement:
+
+   - Record energy and widget state before clicking.
+   - Suppress another click until the widget enables, energy decreases, or a
+     short timeout expires.
+   - Re-arm only after a confirmed special fires and enough energy remains.
+
+   This still permits legitimate repeated DDS/MSB specials without repeatedly
+   clicking the orb before the first activation is acknowledged.
+
+8. **Improve diagnostics.**
+
+   Add overlay fields for:
+
+   - Desired loadout.
+   - Transaction reason.
+   - Current phase.
+   - Phase and total age.
+   - Last equipment action.
+   - Verified slots.
+   - Pending special activation.
+
+   Log one start, phase transition, completion, cancellation, or failure, not
+   every scheduled tick.
+
+9. **Clean up two low-priority diagnostics.**
+
+   - Preserve the final in-round activity value before resetting the overlay;
+     both wins still reported `activity unknown`.
+   - Replace the harmless `REQUEUE - boarding now` state seen during the
+     next-launch transition with a dedicated launch-transition detail. No
+     gangplank click was dispatched in that case.
+
+10. **Acceptance sequence.**
+
+    - Unit-test the transaction state machine and cancellation priorities.
+    - Run a Ranged-only regression against this clean two-round result.
+    - Enable and test Melee, Magic, then tribrid with explicit operator
+      approval.
+    - Verify each portal's resolved weapon, off-hand, helmet, attack mode, and
+      special weapon.
+    - Require observed movement during long switches, no duplicate equip
+      clicks, no attack before full verification, two paid rounds, and the
+      immediate requeue boundary.
 
 ### Deferred round-result accounting correction
 
