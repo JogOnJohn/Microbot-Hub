@@ -161,6 +161,73 @@ all equipped slots and attack modes before the first hit, and preserve
 reward-backed results across ranged, melee, magic, one-handed/off-hand, and
 two-handed profiles.
 
+### Deferred round-result accounting correction
+
+Do not fold this into the stable 2.5.4 runtime unless more Pest Control work is
+actually needed. The script is otherwise working well and this correction is a
+substantive result-state change, so preserve it as a follow-up plan rather than
+risk the current checkpoint.
+
+The 2026-07-28 live session proves the current counter invariant is broken. Two
+Void Knight losses completed with only one portal destroyed. At 18:34:17 the
+script logged `6 played, 5 won, 0 lost`, and at 18:38:59 it logged
+`7 played, 5 won, 0 lost`; both rounds had no point increase and were finalized
+as `UNKNOWN`. The following rewarded round correctly produced
+`8 played, 6 won, 0 lost` and 24 points gained. The cause is
+`recordCompletedRound()`: it always increments `roundsPlayed`, but an
+`UNKNOWN` outcome increments neither `roundsWon` nor `roundsLost`.
+
+Do not restore the old incomplete-portal heuristic. A previous attempt to infer
+a loss from portals remaining could mark a late team win as lost when one or
+two portal-death observations were delayed or missed. Portal destruction,
+activity, and Void Knight health are useful diagnostics, but they are not
+authoritative reward evidence.
+
+Recommended implementation:
+
+1. Create one pending result record at the round boundary with a unique round
+   sequence, points-at-start, points-at-exit/boat, final activity if available,
+   destroyed-portal count, team-result evidence, reward evidence, and the
+   evidence source. Keep it pending through the existing post-round grace and
+   fast requeue boundary so delayed chat or the boat points overlay can update
+   the same record without double-counting it.
+2. Treat an awarded-points chat message or a reliable positive total-points
+   delta as an authoritative rewarded win. Explicit successful-defense chat is
+   supporting team-win evidence, but a team win with insufficient activity can
+   still award zero points.
+3. Treat the explicit Void Knight death message/dialog as an authoritative team
+   loss. If no explicit result arrives, a reliable unchanged points total after
+   the grace period still finalizes the round as an unrewarded/non-win result;
+   it must not remain permanently `UNKNOWN` after `roundsPlayed` advances.
+4. Keep team outcome separate from reward outcome internally. Suggested values
+   are `TEAM_WIN`, `TEAM_LOSS`, or `TEAM_UNKNOWN`, plus `REWARDED` or
+   `UNREWARDED`, with sources such as `SUCCESS_CHAT`, `LOSS_CHAT`,
+   `AWARD_CHAT`, `POINT_DELTA`, and `NO_POINT_DELTA`. This preserves the
+   distinction between a dead Void Knight and a winning team that did not pay
+   the player because activity was too low.
+5. For the existing simple W/L overlay, make the displayed loss/non-win count
+   equal to finalized played rounds minus rewarded wins. This guarantees
+   `played == wins + losses` and matches the operator's practical definition:
+   wins are rounds that paid; every other completed round is a non-win. If the
+   label remains `Lost`, document that it includes unrewarded team wins;
+   `Unrewarded` would be the more precise label.
+6. Do not use an unavailable initial points baseline as proof of zero reward.
+   Establish the first valid boat total, accept awarded-points chat immediately,
+   and retain an unresolved first result until a reliable total or explicit
+   outcome arrives. A later reliable snapshot should reconcile it once, rather
+   than silently dropping it or counting it twice.
+7. Log and expose the pending/final result, reward delta, team outcome, evidence
+   source, and reconciliation age in the overlay diagnostics. Preserve the last
+   in-round activity before clearing lobby overlay state so activity failures
+   are visible even though they do not decide the paid-win counter.
+
+Acceptance must cover a rewarded win, a team win with no activity reward, a
+Void Knight loss with one or two portals destroyed, missing or delayed result
+chat, the first round before a points baseline exists, and a sub-five-second
+winning-team requeue. Reproduce the current two consecutive non-wins and verify
+that each finalized round changes exactly one side of the W/L total, point gains
+are never double-counted, and `played == wins + losses` after reconciliation.
+
 ## Historical staged 2.5.0 combat-profile candidate
 
 The combat-profile refactor is implemented in source and has been compiled in
