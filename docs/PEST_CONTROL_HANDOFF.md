@@ -4,7 +4,7 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Plugin version: `2.4.34` (packaged, not yet installed or live-smoked)
+- Plugin version: `2.4.34` (installed and known-good for ranged combat on Bizza)
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -58,6 +58,95 @@ The visible client was not relaunched after packaging 2.4.34. Pest Control was
 stopped at a safe boat boundary after the 2.4.33 smoke, and the client was no
 longer running at final handover verification. Install 2.4.34 and start a fresh
 client before testing the new compass-flank path.
+
+## Current known-good ranged baseline on Bizza
+
+The later Bizza validation supersedes the earlier "not installed" status above.
+As of 2026-07-28, the Bizza client has loaded the packaged 2.4.34 JAR and is
+running the known-good ranged configuration:
+
+- Source commit: `2ceb413` (`fix: recover around blocking Brawlers`)
+- Handover commit before this update: `2fe3c42`
+- Plugin version: `2.4.34`
+- Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\PestControlPlugin.jar`
+- Installed size: `63,546` bytes
+- Installed SHA-256: `213B84CEB2B496D733C062CFF6B287C3A8138561749588003A9E2607B35054AC`
+- Preserved rollback JAR: `C:\Users\VMAdmin2\operator-work\output\archive\pest-control-plugin-backups\PestControlPlugin-2.4.34-KNOWN-GOOD-RANGED.jar`
+- Rollback size and SHA-256: identical to the installed JAR
+- Primary style: `RANGED`
+- Ranged weapon: `Magic Shortbow (i)`
+- Slash/stab weapon: `Dragon dagger(p++)`
+- Activity recovery thresholds: `40 / 70`
+
+The strongest uninterrupted log evidence reached 27 rounds played, 27 inferred
+wins, zero inferred losses, and 104 Pest Control points gained. After a plugin
+restart, the next session reached 4 played, 4 inferred wins, zero inferred
+losses, and 12 points gained. Its first completion logged zero points because of
+the new session baseline, so continue to prefer reward/point movement over the
+overlay counters when validating results.
+
+Treat this JAR as the pre-combat-profile ranged rollback baseline. Do not
+rebuild, replace, or overwrite the installed or preserved JAR until the operator
+explicitly authorizes combat-profile testing.
+
+## Planned combat-profile refactor
+
+Keep the movement, gate, Brawler, activity, requeue, and reward-accounting
+behaviour narrow and unchanged. Refactor only combat loadout selection,
+equipment switching, engagement distance, opening selection, and the minimum
+staging logic that currently assumes ranged distance.
+
+Configuration should expose three ordered loadout profiles:
+
+1. Style 1 is mandatory and is the fallback/main style.
+2. Style 2 is optional.
+3. Style 3 is optional.
+
+Each enabled profile owns one unique combat style (`MELEE`, `RANGED`, or
+`MAGIC`), a required main-hand weapon, an optional off-hand item, the style's
+Void helmet, and style-specific combat settings. Equipment switching is limited
+to the weapon, shield/off-hand, and head slots. Do not switch torso, legs,
+gloves, cape, neck, boots, or ring equipment.
+
+Map the Void helmet from the selected combat style:
+
+- Melee: Void melee helm
+- Ranged: Void ranger helm
+- Magic: Void mage helm
+
+The switch must behave as a verified transaction instead of issuing repeated
+equip clicks. A two-handed profile requires an empty off-hand and enough
+inventory space to receive an equipped off-hand. A one-handed profile may equip
+its configured off-hand. Do not issue the next combat interaction until the
+expected weapon, off-hand state, and Void helmet are equipped. Missing items,
+full-inventory two-handed transitions, and failed verification must produce a
+bounded recovery or clear error rather than click spam.
+
+Magic needs an explicit casting mode in addition to weapon and off-hand:
+
+- Powered staff: verify the staff can attack and has charges.
+- Autocast spell: configure the spell, verify rune availability, and reapply or
+  verify autocast after a weapon switch.
+
+Opening-side selection should support:
+
+- `MAIN_STYLE`: open toward the portal associated with Style 1.
+- `EVEN_RANDOM`: true equal random selection across Purple, Blue, and Yellow.
+- `WEIGHTED_RANDOM`: normalize the configured Purple, Blue, and Yellow weights.
+
+Red remains excluded from the first opening target. Portal combat maps Purple
+to Ranged, Blue to Magic, and Yellow/Red to Melee when that style is configured;
+otherwise it falls back to Style 1. Yellow should request slash/stab and Red
+should request crush where the configured melee weapon supports those modes.
+Warn clearly when one melee loadout cannot provide both rather than silently
+switching unrelated gear.
+
+The acceptance sequence is ranged regression against the preserved baseline,
+then melee-only, magic-only, and tribrid rounds. Tribrid testing must include
+one-handed plus off-hand and two-handed transitions, a deliberately full
+inventory case, Void helmet changes, portal-style fallback, death/re-entry,
+gate/Brawler recovery, and reward-backed round results. Do not build or install
+this refactor until the operator says the live client is ready.
 
 ## Historical Bizza guest runtime state
 
@@ -408,7 +497,7 @@ winning-team requeue.
 Keep these fixes local to Pest Control unless a separate reproduction proves a
 shared WebWalker defect.
 
-## Current Bizza build and install
+## Historical Bizza 2.4.29 build and install
 
 The focused validation commands were:
 
