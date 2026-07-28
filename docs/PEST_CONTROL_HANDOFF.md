@@ -4,8 +4,8 @@
 
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
-- Installed plugin: `2.4.34` (known-good for ranged combat on Bizza)
-- Staged candidate: `2.5.0` (combat profiles, built but not installed)
+- Installed plugin: `2.5.4` (current known-good tribrid checkpoint on Bizza)
+- Preserved ranged rollback: `2.4.34`
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
 
@@ -86,15 +86,87 @@ losses, and 12 points gained. Its first completion logged zero points because of
 the new session baseline, so continue to prefer reward/point movement over the
 overlay counters when validating results.
 
-Treat this JAR as the pre-combat-profile ranged rollback baseline. Do not
-rebuild, replace, or overwrite the installed or preserved JAR until the operator
-explicitly authorizes combat-profile testing.
+Treat this JAR as the pre-combat-profile ranged rollback baseline. Combat-profile
+testing has now moved to 2.5.4, but do not overwrite the preserved 2.4.34 JAR;
+it remains the fast rollback for the nearly flawless ranged-only strategy.
 
-## Staged 2.5.0 combat-profile candidate
+## Current known-good tribrid checkpoint on Bizza
+
+Version 2.5.4 supersedes the staged 2.5.0 candidate below. As of 2026-07-28 it
+is installed in the visible Bizza client and is the checkpoint to preserve while
+the operator collects a longer progress report:
+
+- Source commit: `efb1a42bf37f561225d305ee243bcfcfd09a22a2`
+- Plugin version: `2.5.4`
+- Microbot client: `2.6.15`
+- Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\PestControlPlugin.jar`
+- Installed size: `79,277` bytes
+- Installed SHA-256: `AD3532925A0A95941D4D219447C4BC0E26BADC7AEE35E0C15C357F88D0793E5B`
+- Preserved checkpoint: `C:\Users\VMAdmin2\operator-work\output\archive\pest-control-plugin-backups\PestControlPlugin-2.5.4-KNOWN-GOOD-TRIBRID.jar`
+- Preserved size and SHA-256: identical to the installed JAR
+- Previous 2.5.3 rollback: `C:\Users\VMAdmin2\operator-work\output\archive\pest-control-plugin-backups\PestControlPlugin-2.5.3-20260728-165620.jar`
+- Previous 2.5.3 SHA-256: `5913484CF0439B8DD765F7EBB8818F495764DFF1C72CB3F353DD7F8B2BEE85E3`
+
+The focused build, Gradle tests, JAR packaging, and
+`PestControlCombatPlanTest` passed. The loaded client was queried through
+`127.0.0.1:8081` with the guest-local `X-Agent-Token`; it reported one active
+Pest Control script, a responsive visible RuneLite process, and stable guest
+memory. Do not close or relaunch that client merely to verify this handoff.
+
+The current live profile enables Ranged, Melee, and Magic. Startup retained
+Fire Bolt for the configured staff, verified Rapid for the ranged weapon, and
+enabled automatic switching across the complete Ranged/Melee/Magic Void helmet
+set. Yellow uses one shared melee weapon/off-hand with an explicit Stab or Slash
+selection. Red has its own Crush weapon/off-hand fields. The current live
+configuration does not yet contain a Red Crush weapon, so Red deliberately
+falls back to Style 1 instead of trying an invalid Crush mode on the Dragon
+dagger.
+
+The operator describes this version as almost perfect after live rounds. Keep
+it running for a longer reward-backed progress report before changing combat
+timing. The main observed defect is switching deadtime: the script stops
+movement and combat while it equips and verifies the weapon, off-hand, Void
+helmet, and attack mode. This is safe and avoids interacting with a partially
+equipped profile, but the complete pause looks mechanical and can allow the
+activity meter to decay.
+
+### Deferred switching improvement
+
+Do not implement this while collecting the 2.5.4 progress report. The next
+iteration should retain the verified equipment transaction but make preparation
+asynchronous with movement:
+
+1. Select and start the destination portal loadout during pre-positioning or a
+   long portal chase, while the character would otherwise be travelling or
+   waiting.
+2. Keep the current movement waypoint authoritative while equipment actions
+   progress across scheduled ticks. A gear action must not clear or replace a
+   healthy movement command.
+3. Cache per-slot completion and remembered attack modes. Reopen the Combat tab
+   only when the newly equipped weapon has no verified cached mode.
+4. Require the full weapon/off-hand/helmet/mode verification only at the final
+   portal or NPC interaction boundary. If travel ends first, pause there rather
+   than issuing an attack with a partial loadout.
+5. Prefer naturally idle windows: boat/startup preparation, waiting at a
+   shielded portal, the moment after a portal dies, and established long-distance
+   movement. Do not switch away from a live portal target or interrupt activity
+   recovery merely to prepare a later target.
+6. Keep bounded retries and transaction diagnostics. Do not replace the current
+   safe pause with repeated equip clicks, oscillating profiles, or an unverified
+   attack.
+
+Acceptance should compare movement and interaction timestamps around every
+switch, confirm no full stationary gap when travel time was available, verify
+all equipped slots and attack modes before the first hit, and preserve
+reward-backed results across ranged, melee, magic, one-handed/off-hand, and
+two-handed profiles.
+
+## Historical staged 2.5.0 combat-profile candidate
 
 The combat-profile refactor is implemented in source and has been compiled in
-an isolated Bizza clone against Microbot 2.6.15. It has not been installed or
-live-smoked.
+an isolated Bizza clone against Microbot 2.6.15. This section records the
+pre-install checkpoint and is superseded by the installed 2.5.4 checkpoint
+above.
 
 - Candidate JAR: `C:\Users\VMAdmin2\operator-work\output\pest-control-builds\PestControlPlugin-2.5.0-combat-profiles-UNINSTALLED.jar`
 - Candidate size: `76,915` bytes
