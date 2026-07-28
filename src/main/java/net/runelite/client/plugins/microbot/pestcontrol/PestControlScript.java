@@ -801,13 +801,37 @@ public class PestControlScript extends Script {
                 .filter(candidate -> {
                     WorldPoint location = templateLocation(candidate);
                     return location != null
-                            && location.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE
-                            && !gateReuseCooldowns.containsKey(location);
+                            && location.distanceTo(gateCenter) <= LANE_GATE_MATCH_DISTANCE;
                 })
                 .collect(Collectors.toList());
 
+        Rs2TileObjectModel destroyedGate = nearbyGateLeaves.stream()
+                .filter(PestControlScript::isDestroyedGate)
+                .min(Comparator.comparingInt(candidate ->
+                        playerLocation.distanceTo(templateLocation(candidate))))
+                .orElse(null);
+        if (destroyedGate != null) {
+            WorldPoint gateLocation = templateLocation(destroyedGate);
+            lastGateLocation = null;
+            activeGateCrossingTarget = null;
+            transitionTo(RuntimeState.OPEN_GATE,
+                    "crossing destroyed " + side + " lane gate for " + portal);
+            long now = System.currentTimeMillis();
+            if (now - lastMovementCommandAt >= MOVEMENT_RETRY_IDLE_MILLIS) {
+                Rs2Walker.walkFastCanvas(outerCrossing);
+                lastMovementCommandAt = now;
+            }
+            if (now - lastGateDiagnosticAt >= WATCHDOG_LOG_INTERVAL_MILLIS) {
+                Microbot.log("Pest Control bypassing destroyed " + side
+                        + " lane gate at " + gateLocation + " for " + portal + " portal");
+                lastGateDiagnosticAt = now;
+            }
+            return true;
+        }
+
         Rs2TileObjectModel closedGate = nearbyGateLeaves.stream()
                 .filter(this::hasOpenAction)
+                .filter(candidate -> !gateReuseCooldowns.containsKey(templateLocation(candidate)))
                 .min(Comparator.comparingInt(candidate ->
                         playerLocation.distanceTo(templateLocation(candidate))))
                 .orElse(null);
@@ -830,6 +854,7 @@ public class PestControlScript extends Script {
 
         Rs2TileObjectModel openGate = nearbyGateLeaves.stream()
                 .filter(this::hasCloseAction)
+                .filter(candidate -> !gateReuseCooldowns.containsKey(templateLocation(candidate)))
                 .min(Comparator.comparingInt(candidate ->
                         playerLocation.distanceTo(templateLocation(candidate))))
                 .orElse(null);
@@ -1704,13 +1729,21 @@ public class PestControlScript extends Script {
     }
 
     private boolean hasOpenAction(Rs2TileObjectModel object) {
-        if (object == null) {
+        if (object == null || isDestroyedGate(object)) {
             return false;
         }
         ObjectComposition composition = object.getObjectComposition();
         String[] actions = composition == null ? null : composition.getActions();
         return actions != null && Arrays.stream(actions)
                 .anyMatch(action -> action != null && action.equalsIgnoreCase("Open"));
+    }
+
+    private static boolean isDestroyedGate(Rs2TileObjectModel object) {
+        return object != null && isDestroyedGateId(object.getId());
+    }
+
+    static boolean isDestroyedGateId(int objectId) {
+        return objectId == ObjectID.GATE_14245;
     }
 
     private boolean hasCloseAction(Rs2TileObjectModel object) {

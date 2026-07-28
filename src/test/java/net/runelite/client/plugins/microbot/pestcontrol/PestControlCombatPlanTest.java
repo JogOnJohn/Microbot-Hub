@@ -26,6 +26,7 @@ public final class PestControlCombatPlanTest {
         roundFinalizationWaitsForEvidenceOrGrace();
         awardedPointMessagesAreDeduplicated();
         sessionPointsIgnoreEvidenceOrder();
+        destroyedGateVariantIsNeverOpened();
         System.out.println("PestControlCombatPlanTest passed");
     }
 
@@ -202,6 +203,15 @@ public final class PestControlCombatPlanTest {
                 "total delta should recover a missing award message");
         check(PestControlScript.reconcileSessionPoints(4, -1, 104) == 4,
                 "award chat should work without an initial total-points baseline");
+    }
+
+    private static void destroyedGateVariantIsNeverOpened() {
+        check(PestControlScript.isDestroyedGateId(14245),
+                "Pest Control's totally destroyed gate variant must be recognized");
+        check(!PestControlScript.isDestroyedGateId(14233),
+                "an intact closed gate must remain interactable");
+        check(!PestControlScript.isDestroyedGateId(14241),
+                "a damaged but usable gate must remain interactable");
     }
 
     private static void voidHelmetMappingFollowsCombatStyle() {

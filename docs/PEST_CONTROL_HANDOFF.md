@@ -5,7 +5,7 @@
 - Repository: `https://github.com/JogOnJohn/Microbot-Hub.git`
 - Branch: `fix/pest-control-strategy`
 - Installed plugin: `2.5.4` (current known-good tribrid checkpoint on Bizza)
-- Source candidate: `2.5.5` (W/L accounting fix; not packaged or installed)
+- Source candidate: `2.5.6` (W/L and destroyed-gate fixes; not packaged or installed)
 - Preserved ranged rollback: `2.4.34`
 - Microbot client used for validation: `2.6.15`
 - Strategy reference: `https://oldschool.runescape.wiki/w/Pest_Control/Strategies`
@@ -327,6 +327,33 @@ activity reward, a Void Knight loss with one or two portals destroyed, missing
 or delayed result chat, and a sub-five-second requeue. Confirm that point gains
 are not duplicated and that every completed round changes exactly one side of
 the W/L total.
+
+### Implemented destroyed-gate guard (2.5.6 candidate)
+
+The 2026-07-28 live 2.5.4 log captured a reproducible east/Blue gate failure.
+From 18:50:12 through 18:50:28 the script clicked object `14245` six times at
+the east gate, with each three-second confirmation timeout causing another
+`Open` dispatch. The game chat responded that the gate was totally destroyed,
+but the object still exposed a misleading `Open` action.
+
+RuneLite's canonical game-value mapping identifies `14245` as
+`PEST_WALL_GATE_DESTROYED`. Version 2.5.6 now:
+
+- Excludes object `14245` from all closed-gate/`Open` selection, even though its
+  composition advertises that action.
+- Detects the destroyed variant before intact or damaged gate leaves at the
+  east and west lane crossings.
+- Treats the destroyed gate as passable and issues a throttled movement command
+  through the outer crossing instead of waiting for a `Close` variant or
+  retrying `Open`.
+- Logs one throttled `bypassing destroyed ... lane gate` diagnostic and resumes
+  normal portal targeting after the player crosses.
+- Retains normal `Open` handling for intact and damaged gate variants.
+
+Focused regression coverage checks that `14245` is destroyed while intact
+`14233` and damaged `14241` remain usable. This source candidate still needs a
+packaged/live round that encounters a destroyed lane gate. The running client
+remains on the unchanged known-good 2.5.4 JAR.
 
 ## Historical staged 2.5.0 combat-profile candidate
 
