@@ -9,6 +9,8 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.PluginConstants;
+import net.runelite.client.plugins.microbot.giantsfoundry.enums.Stage;
+import net.runelite.client.plugins.microbot.giantsfoundry.enums.State;
 import net.runelite.client.ui.overlay.OverlayManager;
 
 import javax.inject.Inject;
@@ -28,7 +30,7 @@ import java.awt.*;
 @Slf4j
 public class GiantsFoundryPlugin extends Plugin {
 
-    public static final String version = "1.3.1";
+    public static final String version = "1.4.0";
 
     @Inject
     private GiantsFoundryConfig config;
@@ -57,6 +59,10 @@ public class GiantsFoundryPlugin extends Plugin {
     // previous heat varbit value, used to filter out passive heat decay.
     private int previousHeat = 0;
     private static final int VARBIT_HEAT = 13948;
+    private static final int VARBIT_PROGRESS = 13949;
+    // stage derived from the last progress varbit update, for same-tick flip detection
+    private Stage eventStage;
+
     @Subscribe
     public void onVarbitChanged(VarbitChanged event)
     {
@@ -73,6 +79,40 @@ public class GiantsFoundryPlugin extends Plugin {
                 GiantsFoundryState.heatingCoolingState.onTick();
             }
             previousHeat = event.getValue();
+        }
+        else if (event.getVarbitId() == VARBIT_PROGRESS)
+        {
+            handleProgressChanged(event.getValue());
+        }
+    }
+
+    /**
+     * Detects a workstation-stage flip on the same game tick it happens and lets the
+     * script interrupt the old station immediately. The 300ms polled interrupt loses
+     * the race against the grindstone's 2-tick swing (-5 quality per loss).
+     */
+    private void handleProgressChanged(int progress)
+    {
+        if (progress <= 0)
+        {
+            // hand-in or reset, not a stage transition
+            eventStage = null;
+            return;
+        }
+        State state = GiantsFoundryScript.state;
+        if (state != State.CRAFTING_WEAPON && state != State.HEATING && state != State.COOLING_DOWN)
+        {
+            eventStage = GiantsFoundryState.getCurrentStage(progress);
+            return;
+        }
+        Stage stage = GiantsFoundryState.getCurrentStage(progress);
+        if (stage != null && eventStage != null && stage != eventStage)
+        {
+            giantsFoundryScript.onStageFlip(stage);
+        }
+        if (stage != null)
+        {
+            eventStage = stage;
         }
     }
 

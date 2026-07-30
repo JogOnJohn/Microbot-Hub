@@ -80,7 +80,7 @@ public class GiantsFoundryScript extends Script
     private boolean secondMaterialAdded;
     private boolean bonusClickConsumed;
     private boolean lastBonusActive;
-    private boolean temperatureActionInProgress;
+    private volatile boolean temperatureActionInProgress;
     private boolean errorLatched;
     private boolean cycleCostRecorded;
     private boolean cycleCompletionRecorded;
@@ -88,13 +88,14 @@ public class GiantsFoundryScript extends Script
     private int sessionStartSmithingLevel = -1;
     private int sessionStartSmithingXp = -1;
     private int cyclePlanLevel;
-    private long lastActionAt;
+    private volatile long lastActionAt;
     private long lastSnapshotLogAt;
     private long materialsCompleteAt;
     private State lastCalculatedState;
     private FoundrySnapshot pendingHandIn;
-    private Stage lastObservedStage;
-    private boolean interruptForStageChange;
+    // written from both the scheduler thread and the client-thread stage-flip event
+    private volatile Stage lastObservedStage;
+    private volatile boolean interruptForStageChange;
     private String lastFailureKey;
     private int consecutiveFailures;
     private int shopTargetLevel = -1;
@@ -896,6 +897,15 @@ public class GiantsFoundryScript extends Script
                 : (fast ? "Quench-preform" : "Cool-preform");
         setState(heating ? State.HEATING : State.COOLING_DOWN,
                 (fast ? "Fast " : "Fine ") + (heating ? "heating" : "cooling") + " (" + change + ")");
+        if (!GiantsFoundryState.heatingCoolingState.isIdle())
+        {
+            // a stage-flip event already issued this action on the client thread;
+            // only the monitoring is left to do here
+            monitorTemperatureAction(String.valueOf(GiantsFoundryState.heatingCoolingState.getActionname()),
+                    GiantsFoundryState.getHeatAmount(),
+                    GiantsFoundryState.getPreformQuality());
+            return;
+        }
         if (!actionReady() || Rs2Player.isMoving())
         {
             return;
@@ -930,9 +940,18 @@ public class GiantsFoundryScript extends Script
                 GiantsFoundryState.heatingCoolingState.isOverShooting(),
                 Rs2Player.isAnimating());
 
+        monitorTemperatureAction(action, startHeat, startQuality);
+    }
+
+    private void monitorTemperatureAction(String action, int startHeat, int startQuality)
+    {
         boolean completed = sleepUntil(
                 () -> GiantsFoundryState.heatingCoolingState.getRemainingDuration() <= 1,
                 TEMPERATURE_ACTION_TIMEOUT_MS);
+        // settle pause: 1-2 in-flight heat ticks still land after the stop decision, so
+        // the action cooldown keeps the next correction from firing against a heat
+        // reading that is about to change (the observed double waterfall sips)
+        markAction();
         log.info("Giants' Foundry action result: temperature action={} completed={} remainingTicks={} heat={}->{} "
                         + "quality={}->{} heatChangeNeeded={}",
                 action,
@@ -1123,6 +1142,11 @@ public class GiantsFoundryScript extends Script
         Stage currentStage = GiantsFoundryState.getCurrentStage(progress);
         int[] currentHeatRange = GiantsFoundryState.getHeatRange(currentStage);
         int[] oreCounts = GiantsFoundryState.getOreCounts();
+        int heatChange = GiantsFoundryState.calculateHeatChangeNeeded(currentStage, heat, currentHeatRange);
+        if (suppressHeatTopUp(heatChange, currentStage, heat, currentHeatRange))
+        {
+            heatChange = 0;
+        }
         return new FoundrySnapshot(
                 progress,
                 heat,
@@ -1135,7 +1159,7 @@ public class GiantsFoundryScript extends Script
                 hasCommission(),
                 hasSelectedMould(),
                 currentStage,
-                GiantsFoundryState.calculateHeatChangeNeeded(currentStage, heat, currentHeatRange),
+                heatChange,
                 oreCounts,
                 GiantsFoundryState.totalOreCount(oreCounts),
                 Rs2Inventory.count(materialPlan.getFirst().getName()),
@@ -1143,6 +1167,30 @@ public class GiantsFoundryScript extends Script
                 Rs2Player.isMoving(),
                 Rs2Player.isAnimating(),
                 String.valueOf(Rs2Player.getWorldLocation()));
+    }
+
+    /**
+     * Skips a proactive in-band correction when the current heat already supports
+     * enough station actions to keep working. Kills the second "top-up" sip at the
+     * waterfall/lava after a temperature action lands slightly inside its margin.
+     */
+    private boolean suppressHeatTopUp(int heatChange, Stage stage, int heat, int[] range)
+    {
+        if (heatChange == 0 || stage == null || range == null || range.length < 2)
+        {
+            return false;
+        }
+        if (heat <= range[0] || heat >= range[1])
+        {
+            return false;
+        }
+        int actionsLeft = GiantsFoundryState.getActionsLeftInStage();
+        if (actionsLeft <= 0)
+        {
+            return false;
+        }
+        return GiantsFoundryState.countActionsAvailable(heat, range, stage)
+                >= Math.min(actionsLeft, 3);
     }
 
     private void logSnapshot(State calculatedState, FoundrySnapshot snapshot)
@@ -1195,6 +1243,8 @@ public class GiantsFoundryScript extends Script
     /**
      * Wrong-stage station hits cost quality, so a stage transition clears the action
      * cooldown and the animation guard to let the interrupting click fire immediately.
+     * This polled path is the fallback; {@link #onStageFlip(Stage)} normally handles
+     * the flip on the same game tick via the progress varbit event.
      */
     private void detectStageChange(FoundrySnapshot snapshot)
     {
@@ -1210,6 +1260,66 @@ public class GiantsFoundryScript extends Script
             interruptForStageChange = true;
         }
         lastObservedStage = snapshot.stage;
+    }
+
+    /**
+     * Same-tick stage-flip interrupt, called from the plugin's progress-varbit event on
+     * the client thread. The grindstone swings every 2 game ticks, so the 300ms polled
+     * interrupt loses that race and costs 5 quality; issuing the temperature click here
+     * beats the next swing reliably. The scheduler tick then finds the state machine
+     * active and only monitors it.
+     */
+    void onStageFlip(Stage newStage)
+    {
+        try
+        {
+            if (errorLatched || newStage == null || newStage == lastObservedStage)
+            {
+                return;
+            }
+            Stage previous = lastObservedStage;
+            lastObservedStage = newStage;
+            if (previous == null)
+            {
+                // first observation of this sword's stage, not a transition
+                return;
+            }
+            lastActionAt = 0;
+            interruptForStageChange = true;
+            if (!GiantsFoundryState.heatingCoolingState.isIdle())
+            {
+                return;
+            }
+            int change = GiantsFoundryState.getHeatChangeNeeded();
+            if (change == 0)
+            {
+                // correct heat already; the scheduler's station click interrupts instead
+                log.info("Giants' Foundry: stage flip {} -> {} needs no temperature change", previous, newStage);
+                return;
+            }
+            boolean heating = change > 0;
+            boolean fast = Math.abs(change) >= FAST_HEAT_THRESHOLD;
+            String action = heating
+                    ? (fast ? "Dunk-preform" : "Heat-preform")
+                    : (fast ? "Quench-preform" : "Cool-preform");
+            int startHeat = GiantsFoundryState.getHeatAmount();
+            if (!Microbot.getRs2TileObjectCache().query().interact(heating ? LAVA_POOL : WATERFALL, action))
+            {
+                // polled fallback will retry through adjustTemperature
+                log.warn("Giants' Foundry: same-tick stage-flip interrupt could not click {}", action);
+                return;
+            }
+            GiantsFoundryState.heatingCoolingState.setup(fast, heating, action);
+            GiantsFoundryState.heatingCoolingState.start(startHeat);
+            markAction();
+            temperatureActionInProgress = true;
+            log.info("Giants' Foundry: same-tick stage-flip interrupt {} -> {}: action={} heat={} change={}",
+                    previous, newStage, action, startHeat, change);
+        }
+        catch (Exception exception)
+        {
+            log.warn("Giants' Foundry: stage-flip interrupt failed", exception);
+        }
     }
 
     private void initializeSessionMetrics(int level)

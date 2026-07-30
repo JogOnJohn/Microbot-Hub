@@ -91,7 +91,12 @@ public class HeatActionSolver
                 break;
             }
 
-            if (dx0 + DX_1[index] >= max)
+            // The script interrupts an action ~2 ticks after the stop decision, and the
+            // per-tick rate keeps accelerating in that window. Reserve headroom for those
+            // in-flight ticks so a long fine action cannot sail past the band ceiling
+            // (observed live: planned stop 939, actual 997-998 of a 1000 damage cap).
+            int momentum = DX_1[Math.min(index + 1, MAX_INDEX)];
+            if (dx0 + DX_1[index] + momentum >= max)
             {
                 break;
             }
