@@ -14,11 +14,13 @@ import net.runelite.client.plugins.microbot.giantsfoundry.enums.SmithableBars;
 @ConfigGroup(GiantsFoundryConfig.GROUP)
 @ConfigInformation(
         "Start inside Giants' Foundry after completing Sleeping Giants.<br />" +
-        "Auto modes lock one alloy per sword: iron/steel below level 50, then steel/mithril from level 50.<br />" +
+        "Auto modes lock one alloy per sword: bronze/iron below 30, iron/steel from 30, steel/mithril from 50, " +
+        "18 mithril + 10 adamant from 70, then 19 adamant + 9 rune from 85 (Auto: economical stays on mithril/adamant).<br />" +
         "The plugin stops cleanly rather than substituting metals when the current strategy runs out of supplies.<br />" +
         "Start with empty weapon and shield slots. Ice gloves are the default; a bucket or Smiths gloves (i) is also supported.<br />" +
         "Manual materials must provide exactly 28 bars. Recycled item amounts are bar equivalents, not item counts.<br />" +
-        "Optional shop automation buys usable moulds in level order, then the Smiths outfit; consumables and other rewards are not bought."
+        "Optional shop automation buys usable moulds in level order, prioritises the Smiths outfit once six moulds are " +
+        "unlocked, then finishes the remaining moulds; consumables and other rewards are not bought."
 )
 public interface GiantsFoundryConfig extends Config
 {
@@ -146,7 +148,7 @@ public interface GiantsFoundryConfig extends Config
     @ConfigItem(
             keyName = "shopStrategy",
             name = "Automatic purchases",
-            description = "Buy level-usable moulds first, optionally followed by the Smiths outfit",
+            description = "Buy level-usable moulds; the outfit mode prioritises the Smiths outfit once six moulds are unlocked",
             position = 0,
             section = rewardSection
     )

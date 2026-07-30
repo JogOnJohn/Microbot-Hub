@@ -107,12 +107,13 @@ public class HeatActionSolver
             decay = !decay;
         }
 
+        int nextDx = DX_1[index];
         if (isFast)
         {
             index -= FAST_INDEX;
         }
 
-        return SolveResult.of(index, dx0, DX_1[index], -1);
+        return SolveResult.of(index, dx0, nextDx, -1);
     }
 
 

@@ -122,7 +122,12 @@ public class HeatActionStateMachine
 
         predictedHeat = result.getPredictedHeat();
 
-        estimatedDuration = result.getDuration();
+        // The solver can return 0 or 1 ticks for tiny in-range corrections. The script
+        // interrupts at remainingDuration <= 1, so anything below 2 stops the action
+        // before the first heat tick even lands, producing repeated no-op clicks
+        // (e.g. 292->292 chatter). One fine action moves ~7-15 heat and every heat band
+        // is 150+ wide, so flooring to 2 ticks is always safe.
+        estimatedDuration = Math.max(2, result.getDuration());
     }
 
     /**
