@@ -5,6 +5,7 @@ import lombok.Setter;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.Heat;
+import net.runelite.client.plugins.microbot.giantsfoundry.enums.SmithableBars;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.Stage;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
@@ -15,11 +16,19 @@ import java.util.List;
 import static net.runelite.client.plugins.microbot.giantsfoundry.enums.Stage.*;
 
 public class GiantsFoundryState {
+    private static final int TOOL_HEAT_SAFETY_MARGIN = 5;
     // heat and progress are from 0-1000
     private static final int VARBIT_HEAT = 13948;
     private static final int VARBIT_PROGRESS = 13949;
+    private static final int VARBIT_PREFORM_QUALITY = 13939;
+    private static final int VARBIT_PREFORM_START_QUALITY = 13950;
 
-    public static final int VARBIT_ORE_COUNT = 13934;
+    private static final int VARBIT_BRONZE_COUNT = 13931;
+    private static final int VARBIT_IRON_COUNT = 13932;
+    private static final int VARBIT_STEEL_COUNT = 13933;
+    private static final int VARBIT_MITHRIL_COUNT = 13934;
+    private static final int VARBIT_ADAMANT_COUNT = 13935;
+    private static final int VARBIT_RUNE_COUNT = 13936;
     public static final int VARBIT_FORTE_SELECTED = 13910;
     public static final int VARBIT_BLADE_SELECTED = 13911;
     public static final int VARBIT_TIP_SELECTED = 13912;
@@ -56,7 +65,52 @@ public class GiantsFoundryState {
     }
 
     public static int getOreCount() {
-        return Microbot.getVarbitValue(VARBIT_ORE_COUNT);
+        return totalOreCount(getOreCounts());
+    }
+
+    public static int getOreCount(SmithableBars metal) {
+        if (metal == null) {
+            return 0;
+        }
+        return Microbot.getVarbitValue(getOreCountVarbit(metal));
+    }
+
+    public static int[] getOreCounts() {
+        return new int[]{
+                Microbot.getVarbitValue(VARBIT_BRONZE_COUNT),
+                Microbot.getVarbitValue(VARBIT_IRON_COUNT),
+                Microbot.getVarbitValue(VARBIT_STEEL_COUNT),
+                Microbot.getVarbitValue(VARBIT_MITHRIL_COUNT),
+                Microbot.getVarbitValue(VARBIT_ADAMANT_COUNT),
+                Microbot.getVarbitValue(VARBIT_RUNE_COUNT)
+        };
+    }
+
+    static int totalOreCount(int... counts) {
+        int total = 0;
+        for (int count : counts) {
+            total += Math.max(0, count);
+        }
+        return total;
+    }
+
+    private static int getOreCountVarbit(SmithableBars metal) {
+        switch (metal) {
+            case BRONZE_BAR:
+                return VARBIT_BRONZE_COUNT;
+            case IRON_BAR:
+                return VARBIT_IRON_COUNT;
+            case STEEL_BAR:
+                return VARBIT_STEEL_COUNT;
+            case MITHRIL_BAR:
+                return VARBIT_MITHRIL_COUNT;
+            case ADAMANT_BAR:
+                return VARBIT_ADAMANT_COUNT;
+            case RUNE_BAR:
+                return VARBIT_RUNE_COUNT;
+            default:
+                throw new IllegalArgumentException("Unsupported Foundry metal: " + metal);
+        }
     }
 
     public static int getHeatAmount() {
@@ -65,6 +119,18 @@ public class GiantsFoundryState {
 
     public static int getProgressAmount() {
         return Microbot.getVarbitValue(VARBIT_PROGRESS);
+    }
+
+    public static int getPreformQuality() {
+        return Microbot.getVarbitValue(VARBIT_PREFORM_QUALITY);
+    }
+
+    public static int getPreformStartQuality() {
+        return Microbot.getVarbitValue(VARBIT_PREFORM_START_QUALITY);
+    }
+
+    public static int getGameStage() {
+        return Microbot.getVarbitValue(VARBIT_GAME_STAGE);
     }
 
     public static double getHeatRangeRatio() {
@@ -144,11 +210,15 @@ public class GiantsFoundryState {
     }
 
     public static Stage getCurrentStage() {
+        return getCurrentStage(getProgressAmount());
+    }
+
+    static Stage getCurrentStage(int progress) {
         List<Stage> currentStages = getStages();
         if (currentStages.isEmpty()) {
             return null;
         }
-        int index = (int) (getProgressAmount() / 1000d * currentStages.size());
+        int index = (int) (progress / 1000d * currentStages.size());
         if (index < 0 || index >= currentStages.size()) {
             return null;
         }
@@ -208,38 +278,46 @@ public class GiantsFoundryState {
     {
         Stage currentStage = getCurrentStage();
         if (currentStage == null) return 0;
-        Heat requiredHeat = currentStage.getHeat();
-        int heat = getHeatAmount();
+        return calculateHeatChangeNeeded(currentStage, getHeatAmount(), getHeatRange(currentStage));
+    }
 
-        int[] range;
-        switch (requiredHeat)
+    static int calculateHeatChangeNeeded(Stage stage, int heat, int[] range)
+    {
+        if (stage == null || range == null || range.length < 2)
         {
-            case LOW:
-                range = getLowHeatRange();
-                break;
-            case MED:
-                range = getMedHeatRange();
-                break;
-            case HIGH:
-                range = getHighHeatRange();
-                break;
-            default:
-                return 0;
+            return 0;
+        }
+        if (heat < range[0])
+        {
+            return range[0] - heat;
+        }
+        if (heat > range[1])
+        {
+            return range[1] - heat;
         }
 
-        if (heat < range[0])
-            return range[0] - heat;
-        else if (heat > range[1])
-            return range[1] - heat;
-        else
-            return 0;
+        int toolHeatChange = stage.getHeatChange();
+        if (toolHeatChange > 0)
+        {
+            int safeUpperBound = range[1] - toolHeatChange - TOOL_HEAT_SAFETY_MARGIN;
+            return heat > safeUpperBound ? safeUpperBound - heat : 0;
+        }
+        if (toolHeatChange < 0)
+        {
+            int safeLowerBound = range[0] + Math.abs(toolHeatChange) + TOOL_HEAT_SAFETY_MARGIN;
+            return heat < safeLowerBound ? safeLowerBound - heat : 0;
+        }
+        return 0;
     }
 
 
     public static int[] getCurrentHeatRange() {
-        Stage currentStage = getCurrentStage();
-        if (currentStage == null) return new int[]{0, 0};
-        switch (currentStage) {
+        return getHeatRange(getCurrentStage());
+    }
+
+    static int[] getHeatRange(Stage stage) {
+        if (stage == null) return new int[]{0, 0};
+        switch (stage) {
             case POLISHING_WHEEL:
                 return getLowHeatRange();
             case GRINDSTONE:
