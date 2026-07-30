@@ -58,7 +58,8 @@ public class GiantsFoundryScript extends Script
     private static volatile String materialDescription = "Not resolved";
     private static volatile String supplyDescription = "Checking at the Foundry bank";
     private static volatile String currentCraftDescription = "No active commission";
-    private static volatile String nextShopPurchase = "None";
+    private static volatile String nextShopPurchaseName = "None";
+    private static volatile int nextShopPurchaseCost = -1;
     private static volatile int currentProgress;
     private static volatile int currentQuality;
     private static volatile int currentStartQuality;
@@ -330,9 +331,7 @@ public class GiantsFoundryScript extends Script
     {
         int level = Rs2Player.getRealSkillLevel(Skill.SMITHING);
         FoundryShopPlanner.Purchase purchase = findNextShopPurchase(level);
-        nextShopPurchase = purchase == null
-                ? "None"
-                : purchase.getName() + " (" + purchase.getCost() + " rep)";
+        setShopTarget(purchase);
         if (purchase == null || getFoundryReputation() < purchase.getCost())
         {
             return false;
@@ -411,12 +410,15 @@ public class GiantsFoundryScript extends Script
         {
             return;
         }
-        FoundryShopPlanner.Purchase purchase = findNextShopPurchase(level);
-        nextShopPurchase = purchase == null
-                ? "None"
-                : purchase.getName() + " (" + purchase.getCost() + " rep)";
+        setShopTarget(findNextShopPurchase(level));
         shopTargetLevel = level;
         shopTargetCheckedAt = now;
+    }
+
+    private static void setShopTarget(FoundryShopPlanner.Purchase purchase)
+    {
+        nextShopPurchaseName = purchase == null ? "None" : purchase.getName();
+        nextShopPurchaseCost = purchase == null ? -1 : purchase.getCost();
     }
 
     private boolean purchaseCompleted(FoundryShopPlanner.Purchase purchase)
@@ -1312,7 +1314,7 @@ public class GiantsFoundryScript extends Script
         currentStartQuality = 0;
         currentCraftDescription = "No active commission";
         supplyDescription = "Checking at the Foundry bank";
-        nextShopPurchase = "None";
+        setShopTarget(null);
         supplySnapshotKnown = false;
         sessionStartedAt = System.currentTimeMillis();
     }
@@ -1427,9 +1429,14 @@ public class GiantsFoundryScript extends Script
         return currentCraftDescription;
     }
 
-    public static String getNextShopPurchase()
+    public static String getNextShopPurchaseName()
     {
-        return nextShopPurchase;
+        return nextShopPurchaseName;
+    }
+
+    public static int getNextShopPurchaseCost()
+    {
+        return nextShopPurchaseCost;
     }
 
     public static int getCurrentProgress()
