@@ -28,7 +28,7 @@ import java.awt.*;
 @Slf4j
 public class GiantsFoundryPlugin extends Plugin {
 
-    public static final String version = "1.0.7";
+    public static final String version = "1.1.0";
 
     @Inject
     private GiantsFoundryConfig config;
@@ -47,7 +47,7 @@ public class GiantsFoundryPlugin extends Plugin {
 
     @Override
     protected void startUp() throws AWTException {
-        Microbot.pauseAllScripts.compareAndSet(true, false);
+        previousHeat = GiantsFoundryState.getHeatAmount();
         if (overlayManager != null) {
             overlayManager.add(giantsFoundryOverlay);
         }

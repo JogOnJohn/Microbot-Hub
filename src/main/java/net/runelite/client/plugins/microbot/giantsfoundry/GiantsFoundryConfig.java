@@ -1,74 +1,108 @@
 package net.runelite.client.plugins.microbot.giantsfoundry;
 
-import net.runelite.client.config.*;
+import net.runelite.client.config.Config;
+import net.runelite.client.config.ConfigGroup;
+import net.runelite.client.config.ConfigInformation;
+import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.ConfigSection;
+import net.runelite.client.config.Range;
+import net.runelite.client.plugins.microbot.giantsfoundry.enums.AlloyStrategy;
+import net.runelite.client.plugins.microbot.giantsfoundry.enums.CoolingMethod;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.SmithableBars;
 
 @ConfigGroup(GiantsFoundryConfig.GROUP)
 @ConfigInformation(
-        "• Start at the giants foundry minigame. <br />" +
-                "• Please select the bars or items in your UI <br />" +
-                "• Make sure you type in the names of the items correctly! <br />" +
-                "• Make sure you are wearing ice gloves & no weapon/shield equipped <br />"
+        "Start inside Giants' Foundry after completing Sleeping Giants.<br />" +
+        "Auto modes choose a valid alloy for your current Smithing level; level 45 uses 14 iron and 14 steel.<br />" +
+        "Start with empty weapon and shield slots. Ice gloves are the default; a bucket or Smiths gloves (i) is also supported.<br />" +
+        "Manual materials must provide exactly 28 bars. Recycled item amounts are bar equivalents, not item counts."
 )
-public interface GiantsFoundryConfig extends Config {
-
+public interface GiantsFoundryConfig extends Config
+{
     String GROUP = "GiantsFoundry";
 
     @ConfigSection(
-            name = "Bar Configuration",
-            description = "Settings for when using bars",
+            name = "Materials",
+            description = "Alloy and material settings",
             position = 1
     )
-    String barSection = "barSection";
+    String materialSection = "materialSection";
 
     @ConfigSection(
-            name = "Item Configuration",
-            description = "Settings for when using items",
+            name = "Requirements",
+            description = "Preform retrieval requirements",
             position = 2
     )
-    String itemSection = "itemSection";
+    String requirementSection = "requirementSection";
 
     @ConfigItem(
-            keyName = "useBars",
-            name = "Use Bars",
-            description = "Should use bars instead of items?",
-            position = 0
+            keyName = "alloyStrategy",
+            name = "Alloy strategy",
+            description = "Automatically choose an alloy or use a validated manual setup",
+            position = 0,
+            section = materialSection
     )
-    default boolean useBars()
+    default AlloyStrategy alloyStrategy()
     {
-        return true;
+        return AlloyStrategy.AUTO_BEST;
     }
 
     @ConfigItem(
             keyName = "FirstBar",
-            name = "First Bar",
-            description = "Choose the first type of bar",
+            name = "First metal",
+            description = "First metal for manual bars",
             position = 1,
-            section = barSection
+            section = materialSection
     )
     default SmithableBars FirstBar()
     {
-        return SmithableBars.STEEL_BAR;
+        return SmithableBars.IRON_BAR;
     }
 
     @ConfigItem(
             keyName = "SecondBars",
-            name = "Second bar",
-            description = "Choose the second type of bar",
+            name = "Second metal",
+            description = "Second metal for manual bars",
             position = 2,
-            section = barSection
+            section = materialSection
     )
     default SmithableBars SecondBar()
     {
-        return SmithableBars.MITHRIL_BAR;
+        return SmithableBars.STEEL_BAR;
+    }
+
+    @Range(min = 1, max = 27)
+    @ConfigItem(
+            keyName = "firstBarAmount",
+            name = "First contribution",
+            description = "Bars, or returned-bar equivalents for recycled items",
+            position = 3,
+            section = materialSection
+    )
+    default int firstBarAmount()
+    {
+        return 14;
+    }
+
+    @Range(min = 1, max = 27)
+    @ConfigItem(
+            keyName = "secondBarAmount",
+            name = "Second contribution",
+            description = "Both contributions must total exactly 28",
+            position = 4,
+            section = materialSection
+    )
+    default int secondBarAmount()
+    {
+        return 14;
     }
 
     @ConfigItem(
             keyName = "firstItem",
-            name = "First Item",
-            description = "Item type to use",
-            section = itemSection,
-            position = 1
+            name = "First recycled item",
+            description = "Full item name, used only by Manual recycled items",
+            position = 5,
+            section = materialSection
     )
     default String firstItem()
     {
@@ -77,10 +111,10 @@ public interface GiantsFoundryConfig extends Config {
 
     @ConfigItem(
             keyName = "secondItem",
-            name = "Second Item",
-            description = "Second item type",
-            section = itemSection,
-            position = 2
+            name = "Second recycled item",
+            description = "Full item name, used only by Manual recycled items",
+            position = 6,
+            section = materialSection
     )
     default String secondItem()
     {
@@ -88,25 +122,14 @@ public interface GiantsFoundryConfig extends Config {
     }
 
     @ConfigItem(
-            keyName = "firstBarAmount",
-            name = "First Bar / Item Amount",
-            description = "Choose the amount of first item",
-            position = 3
+            keyName = "coolingMethod",
+            name = "Cooling item",
+            description = "Item used to collect a poured preform",
+            position = 0,
+            section = requirementSection
     )
-    default int firstBarAmount()
+    default CoolingMethod coolingMethod()
     {
-        return 14;
+        return CoolingMethod.ICE_GLOVES;
     }
-
-    @ConfigItem(
-            keyName = "secondBarAmount",
-            name = "Second Bar / Item Amount",
-            description = "Choose the amount of second item",
-            position = 4
-    )
-    default int secondBarAmount()
-    {
-        return 14;
-    }
-
 }

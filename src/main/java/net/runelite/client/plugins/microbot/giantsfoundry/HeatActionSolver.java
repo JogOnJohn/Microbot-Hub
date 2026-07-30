@@ -45,7 +45,7 @@ public class HeatActionSolver
             2
     };
 
-    public static final int MAX_INDEX = DX_1.length;
+    public static final int MAX_INDEX = DX_1.length - 1;
     public static final int FAST_INDEX = 10;
 
     @Value(staticConstructor = "of")
@@ -59,12 +59,12 @@ public class HeatActionSolver
 
     private static SolveResult heatingSolve(int start, int goal, boolean overshoot, int max, boolean isFast)
     {
-        return relativeSolve(goal - start, overshoot, max - start, isFast, -1);
+        return relativeSolve(goal - start, overshoot, max - start, isFast, 1);
     }
 
     private static SolveResult coolingSolve(int start, int goal, boolean overshoot, int min, boolean isFast)
     {
-        return relativeSolve(start - goal, overshoot, start - min, isFast, 1);
+        return relativeSolve(start - goal, overshoot, start - min, isFast, -1);
     }
 
     private static SolveResult relativeSolve(int goal, boolean overshoot, int max, boolean isFast, int decayValue)
@@ -77,7 +77,7 @@ public class HeatActionSolver
 
         while (true) {
 
-            if (index > MAX_INDEX)
+            if (index >= MAX_INDEX)
             {
                 break;
             }

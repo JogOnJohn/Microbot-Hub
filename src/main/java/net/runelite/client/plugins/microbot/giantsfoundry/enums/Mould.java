@@ -11,7 +11,7 @@ import static net.runelite.client.plugins.microbot.giantsfoundry.enums.MouldType
 @AllArgsConstructor
 public enum Mould {
     CHOPPER_FORTE("Chopper Forte", FORTE, ImmutableMap.of(BROAD, 4, LIGHT, 4, FLAT, 4)),
-    GALDIUS_RICASSO("Galdius Ricasso", FORTE, ImmutableMap.of(BROAD, 4, HEAVY, 4, FLAT, 4)),
+    GLADIUS_RICASSO("Gladius Ricasso", FORTE, ImmutableMap.of(BROAD, 4, HEAVY, 4, FLAT, 4)),
     DISARMING_FORTE("Disarming Forte", FORTE, ImmutableMap.of(NARROW, 4, LIGHT, 4, SPIKED, 4)),
     MEDUSA_RICASSO("Medusa Ricasso", FORTE, ImmutableMap.of(BROAD, 8, HEAVY, 6, FLAT, 8)),
     SERPENT_RICASSO("Serpent Ricasso", FORTE, ImmutableMap.of(NARROW, 6, LIGHT, 8, FLAT, 8)),

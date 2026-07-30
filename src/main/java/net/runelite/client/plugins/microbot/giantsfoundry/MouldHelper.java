@@ -22,12 +22,12 @@ public class MouldHelper {
     private static final int DISABLED_TEXT_COLOR = 0x9f9f9f;
     private static final int GREEN = 0xdc10d;
 
-    public static void selectBest()
+    public static boolean selectBest()
     {
         Widget parent = Rs2Widget.getWidget(MOULD_LIST_PARENT);
         if (parent == null || parent.getChildren() == null)
         {
-            return;
+            return false;
         }
 
         Map<Mould, Widget> mouldToChild = getOptions(parent.getChildren());
@@ -59,8 +59,10 @@ public class MouldHelper {
             if (bestWidget != null) {
                     Microbot.doInvoke(new NewMenuEntry(bestWidget.getIndex(), MOULD_LIST_PARENT, MenuAction.CC_OP.getId(), 1, -1, "Select"),
                             bestWidget.getBounds());
+                    return true;
             }
         }
+        return false;
     }
 
     private static Map<Mould, Widget> getOptions(Widget[] children)

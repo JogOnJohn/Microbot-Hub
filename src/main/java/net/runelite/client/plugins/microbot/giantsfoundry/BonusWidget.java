@@ -12,6 +12,7 @@ public class BonusWidget {
         return bonusWidget != null
                 && bonusWidget.getChildren() != null
                 && bonusWidget.getChildren().length != 0
+                && bonusWidget.getChild(0) != null
                 && bonusWidget.getChild(0).getTextColor() == BONUS_COLOR;
     }
 }

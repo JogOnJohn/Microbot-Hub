@@ -55,6 +55,10 @@ public class GiantsFoundryState {
         heatRangeRatio = 0;
     }
 
+    public static int getOreCount() {
+        return Microbot.getVarbitValue(VARBIT_ORE_COUNT);
+    }
+
     public static int getHeatAmount() {
         return Microbot.getVarbitValue(VARBIT_HEAT);
     }
@@ -67,7 +71,7 @@ public class GiantsFoundryState {
         if (heatRangeRatio == 0) {
             Widget heatWidget = Rs2Widget.getWidget(WIDGET_HEAT_PARENT);
             Widget medHeat = Rs2Widget.getWidget(WIDGET_MED_HEAT_PARENT);
-            if (medHeat == null || heatWidget == null) {
+            if (medHeat == null || heatWidget == null || heatWidget.getWidth() <= 0 || medHeat.getWidth() <= 0) {
                 return 0;
             }
 
@@ -99,28 +103,32 @@ public class GiantsFoundryState {
     }
 
     public static List<Stage> getStages() {
-        if (stages.isEmpty()) {
-            Widget progressParent = Rs2Widget.getWidget(WIDGET_PROGRESS_PARENT);
-            if (progressParent == null || progressParent.getChildren() == null) {
-                return new ArrayList<>();
-            }
+        Widget progressParent = Rs2Widget.getWidget(WIDGET_PROGRESS_PARENT);
+        if (progressParent == null || progressParent.getChildren() == null) {
+            return new ArrayList<>(stages);
+        }
 
-            for (Widget child : progressParent.getChildren()) {
-                switch (child.getSpriteId()) {
-                    case SPRITE_ID_TRIP_HAMMER:
-                        stages.add(TRIP_HAMMER);
-                        break;
-                    case SPRITE_ID_GRINDSTONE:
-                        stages.add(GRINDSTONE);
-                        break;
-                    case SPRITE_ID_POLISHING_WHEEL:
-                        stages.add(POLISHING_WHEEL);
-                        break;
-                }
+        List<Stage> visibleStages = new ArrayList<>();
+        for (Widget child : progressParent.getChildren()) {
+            switch (child.getSpriteId()) {
+                case SPRITE_ID_TRIP_HAMMER:
+                    visibleStages.add(TRIP_HAMMER);
+                    break;
+                case SPRITE_ID_GRINDSTONE:
+                    visibleStages.add(GRINDSTONE);
+                    break;
+                case SPRITE_ID_POLISHING_WHEEL:
+                    visibleStages.add(POLISHING_WHEEL);
+                    break;
             }
         }
 
-        return stages;
+        if (!visibleStages.isEmpty()) {
+            stages.clear();
+            stages.addAll(visibleStages);
+        }
+
+        return new ArrayList<>(stages);
     }
 
     public static Rs2TileObjectModel getStageObject(Stage stage) {
@@ -136,12 +144,16 @@ public class GiantsFoundryState {
     }
 
     public static Stage getCurrentStage() {
-        int index = (int) (getProgressAmount() / 1000d * getStages().size());
-        if (index < 0 || index > getStages().size() - 1) {
+        List<Stage> currentStages = getStages();
+        if (currentStages.isEmpty()) {
+            return null;
+        }
+        int index = (int) (getProgressAmount() / 1000d * currentStages.size());
+        if (index < 0 || index >= currentStages.size()) {
             return null;
         }
 
-        return getStages().get(index);
+        return currentStages.get(index);
     }
 
     public static Heat getCurrentHeat() {
@@ -169,15 +181,18 @@ public class GiantsFoundryState {
      * Get the amount of progress each stage needs
      */
     public static double getProgressPerStage() {
-        return 1000d / getStages().size();
+        int stageCount = getStages().size();
+        return stageCount == 0 ? 0 : 1000d / stageCount;
     }
 
     public static int getActionsLeftInStage() {
         int progress = getProgressAmount();
         double progressPerStage = getProgressPerStage();
-        double progressTillNext = progressPerStage - progress % progressPerStage;
-
         Stage current = getCurrentStage();
+        if (progressPerStage <= 0 || current == null) {
+            return 0;
+        }
+        double progressTillNext = progressPerStage - progress % progressPerStage;
         return (int) Math.ceil(progressTillNext / current.getProgressPerAction());
     }
 
@@ -191,7 +206,9 @@ public class GiantsFoundryState {
 
     public static int getHeatChangeNeeded()
     {
-        Heat requiredHeat = getCurrentStage().getHeat();
+        Stage currentStage = getCurrentStage();
+        if (currentStage == null) return 0;
+        Heat requiredHeat = currentStage.getHeat();
         int heat = getHeatAmount();
 
         int[] range;
@@ -220,7 +237,9 @@ public class GiantsFoundryState {
 
 
     public static int[] getCurrentHeatRange() {
-        switch (getCurrentStage()) {
+        Stage currentStage = getCurrentStage();
+        if (currentStage == null) return new int[]{0, 0};
+        switch (currentStage) {
             case POLISHING_WHEEL:
                 return getLowHeatRange();
             case GRINDSTONE:
