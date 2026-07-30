@@ -6,8 +6,8 @@ Read this before continuing work on the Giants' Foundry plugin.
 
 - Branch: `feat/upgrade-foundry-plugin`
 - Base: `origin/main` at `551da81`
-- Latest code commit: `f2ab87a` (`fix(giants-foundry): harden recovery and align rewards with wiki strategy`)
-- Plugin version: `1.3.0` (**not yet live-validated** — see below)
+- Latest code commit: `d9b111d` (`fix(giants-foundry): same-tick stage interrupts and heat momentum control`)
+- Plugin version: `1.4.0` (**not yet live-validated**; `1.3.0` was live-smoked on the laptop on 2026-07-30 — see "Laptop live smoke" below)
 - Validated VM: `Bizza 12345` (`clanker\vmadmin2`)
 - Authoritative guest worktree: `C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade`
 - Host context worktree: `F:\vmware boxs\MBOT\repos\Microbot-Hub-giants-foundry`
@@ -107,10 +107,64 @@ Commit `10787c4` fixes both sides:
 
 The full hand-in, shop purchase, next commission, bank withdrawal, and crucible-fill sequence was observed live after this fix.
 
+## Laptop live smoke: 2026-07-30 evening (1.3.0)
+
+Client on the laptop (`Bizza 12345`, Smithing 55), JAR hash `25d9ef15...`, script started 21:20:31,
+four complete swords plus most of a fifth by 21:48. Zero errors, zero transient failures, zero
+temperature-action stalls, no no-op heat clicks.
+
+Confirmed live on 1.3.0:
+
+- All four hand-ins counted (`sessionCraft=1..4`). Sword 3 hit the exact acknowledgement race from
+  the VM smoke and the reconcile path caught it (`hand-in acknowledgement arrived late; reconciling`).
+- Startup purchase of Defender Base (359->59 rep) and mid-session purchase of Defenders Tip
+  (344->44 rep, 3 seconds after the sword 3 hand-in). Rep gating reads live varp 3436.
+- Qualities: 86/91, 107/107 (a -5 was repaired by a sweet spot), 92/97, 115/115.
+- The polled stage-change interrupt fired on every boundary; hammer and polish exits never lost
+  quality, but grindstone exits lost 5 quality on 3 of 4 occasions (2-tick swing beats the 300ms
+  poll). Every hammer entry's long fine heat overshot to 997-998 of the 1000 damage cap and forced
+  a double cool. Roughly two redundant "top-up" temperature sips per sword.
+
+Those three findings are what `d9b111d` (1.4.0) addresses:
+
+1. Same-tick stage-flip interrupt via the progress varbit (13949) event in
+   `GiantsFoundryPlugin.onVarbitChanged` -> `GiantsFoundryScript.onStageFlip`. The polled
+   interrupt remains as fallback; `adjustTemperature` now monitors an already-running
+   action instead of re-clicking.
+2. `HeatActionSolver.relativeSolve` reserves headroom for the accelerating in-flight ticks that
+   land after the stop decision (`momentum` guard against `max`).
+3. Temperature actions end with a settle cooldown (`markAction` after monitoring) and
+   `suppressHeatTopUp` skips proactive in-band corrections while current heat still supports
+   `min(actionsLeftInStage, 3)` station actions.
+
+### Testing notes for the next session (1.4.0)
+
+1. Rebuild and install: `gradlew --no-daemon test GiantsFoundryPluginJar -PpluginList=GiantsFoundryPlugin`,
+   copy `build/libs/GiantsFoundryPlugin-1.4.0.jar` to `~/.runelite/microbot-plugins/GiantsFoundryPlugin.jar`
+   while the client is closed, then full client restart (overlay title must read v1.4.0).
+2. Watch grindstone exits specifically: expect `same-tick stage-flip interrupt` log lines and no
+   -5 quality in the temperature window after `GRINDSTONE -> TRIP_HAMMER` / `GRINDSTONE ->
+   POLISHING_WHEEL`. The polled `stage changed ... interrupting` line should now be rare
+   (it fires only if the event path missed).
+3. Watch hammer entries: the long fine heat should stop ~2 ticks earlier and post-interrupt heat
+   should peak well below 990 (was 997-998 on every hammer entry in the 1.3.0 smoke), with no
+   immediate double-cool afterwards.
+4. Confirm temperature actions are followed by a ~1.2s pause and that back-to-back same-direction
+   sips (two cools or two heats within ~10s) have mostly disappeared.
+5. Watch for regressions the event interrupt could introduce: a spurious temperature click right
+   after hand-in (progress reset) or at the first stage of a new sword. Guards exist (progress<=0,
+   script-state check, first-observation check) but they are unit-tested only.
+6. If the event interrupt ever misbehaves, it fails safe: `onStageFlip` catches all exceptions and
+   the polled path still runs. Worst case matches 1.3.0 behavior.
+7. Longer soak: Claymore Blade should be bought at Smithing 59, and once six shop moulds are
+   unlocked the next purchase target should switch to Smiths boots (outfit priority).
+
 ## Known limits and remaining tests
 
-- **Everything in 1.3.0 (`f2ab87a`) is unit-tested but not live-validated.** The highest-value live checks are: the hand-in reconcile path, the stage-change interrupt (watch for quality losses at stage boundaries), the two-tick temperature floor (watch for chatter or overshoot), bucket-of-water mode end to end, a mid-fill restart with an empty inventory, and a multi-purchase shop visit.
-- Heat overshoot from travel momentum (heating to 922 then cooling from 965 in the 1.2.0 smoke) is still open; momentum-aware stopping has not been implemented.
+- **Everything in 1.4.0 (`d9b111d`) is unit-tested but not live-validated** — see the testing notes
+  above. From 1.3.0, the following remain unexercised live: bucket-of-water mode end to end, a
+  mid-fill restart with an empty inventory, a genuine transient-failure retry, and a
+  multi-purchase shop visit (two items affordable at once).
 - Graceful supply exhaustion is covered by planner/state tests but has not been deliberately tested against a depleted live bank.
 - The shop interaction uses an allowlisted contract captured from live widget group `753`, child `22`, with entries spaced by 13 and purchase action identifier 2. Unknown names fail closed, but a game widget update may require recapturing this mapping.
 - Outfit purchasing has not been reached live. Note it now takes priority once six shop moulds are unlocked, so it will be reached earlier than under 1.2.0 ordering.
