@@ -8,14 +8,17 @@ import net.runelite.client.config.ConfigSection;
 import net.runelite.client.config.Range;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.AlloyStrategy;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.CoolingMethod;
+import net.runelite.client.plugins.microbot.giantsfoundry.enums.FoundryShopStrategy;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.SmithableBars;
 
 @ConfigGroup(GiantsFoundryConfig.GROUP)
 @ConfigInformation(
         "Start inside Giants' Foundry after completing Sleeping Giants.<br />" +
-        "Auto modes choose a valid alloy for your current Smithing level; level 45 uses 14 iron and 14 steel.<br />" +
+        "Auto modes lock one alloy per sword: iron/steel below level 50, then steel/mithril from level 50.<br />" +
+        "The plugin stops cleanly rather than substituting metals when the current strategy runs out of supplies.<br />" +
         "Start with empty weapon and shield slots. Ice gloves are the default; a bucket or Smiths gloves (i) is also supported.<br />" +
-        "Manual materials must provide exactly 28 bars. Recycled item amounts are bar equivalents, not item counts."
+        "Manual materials must provide exactly 28 bars. Recycled item amounts are bar equivalents, not item counts.<br />" +
+        "Optional shop automation buys usable moulds in level order, then the Smiths outfit; consumables and other rewards are not bought."
 )
 public interface GiantsFoundryConfig extends Config
 {
@@ -34,6 +37,13 @@ public interface GiantsFoundryConfig extends Config
             position = 2
     )
     String requirementSection = "requirementSection";
+
+    @ConfigSection(
+            name = "Reward shop",
+            description = "Automatic Foundry reputation purchases between swords",
+            position = 3
+    )
+    String rewardSection = "rewardSection";
 
     @ConfigItem(
             keyName = "alloyStrategy",
@@ -131,5 +141,17 @@ public interface GiantsFoundryConfig extends Config
     default CoolingMethod coolingMethod()
     {
         return CoolingMethod.ICE_GLOVES;
+    }
+
+    @ConfigItem(
+            keyName = "shopStrategy",
+            name = "Automatic purchases",
+            description = "Buy level-usable moulds first, optionally followed by the Smiths outfit",
+            position = 0,
+            section = rewardSection
+    )
+    default FoundryShopStrategy shopStrategy()
+    {
+        return FoundryShopStrategy.MOULDS_THEN_OUTFIT;
     }
 }

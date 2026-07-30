@@ -14,5 +14,7 @@ public enum State
     CRAFTING_WEAPON,
     HANDING_IN,
     WAITING,
+    BUYING_REWARDS,
+    OUT_OF_SUPPLIES,
     ERROR
 }

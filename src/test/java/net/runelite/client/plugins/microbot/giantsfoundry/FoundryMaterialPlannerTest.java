@@ -166,6 +166,18 @@ class FoundryMaterialPlannerTest
         assertEquals(2, rune.getBarEquivalent());
     }
 
+    @Test
+    void reportsCraftsAndExactSupplyShortages()
+    {
+        FoundryMaterialPlan plan = FoundryMaterialPlanner.create(config(AlloyStrategy.AUTO_BEST), 50).getPlan();
+
+        assertEquals(3, plan.getCraftsAvailable(50, 55));
+        assertEquals(0, plan.getCraftsAvailable(13, 100));
+        assertEquals("missing 1 Steel bar", plan.getSupplyShortage(13, 100));
+        assertEquals("missing 4 Steel bar and 6 Mithril bar", plan.getSupplyShortage(10, 8));
+        assertEquals(null, plan.getSupplyShortage(14, 14));
+    }
+
     private static void assertAutoPlan(int level, SmithableBars first, int firstAmount, SmithableBars second, int secondAmount)
     {
         FoundryMaterialPlanner.PlanResult result = FoundryMaterialPlanner.create(config(AlloyStrategy.AUTO_BEST), level);

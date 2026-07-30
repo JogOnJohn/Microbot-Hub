@@ -24,6 +24,7 @@ import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
+import net.runelite.client.plugins.microbot.util.item.Rs2ItemManager;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
@@ -47,11 +48,27 @@ public class GiantsFoundryScript extends Script
     private static final long SNAPSHOT_LOG_INTERVAL_MS = 5000;
     private static final long FULL_CRUCIBLE_GRACE_MS = 5000;
     private static final int TEMPERATURE_ACTION_TIMEOUT_MS = 45000;
+    private static final int VARP_FOUNDRY_REPUTATION = 3436;
 
     public static volatile State state = State.VALIDATING;
     private static volatile String status = "Starting";
     private static volatile String error = "";
     private static volatile String materialDescription = "Not resolved";
+    private static volatile String supplyDescription = "Checking at the Foundry bank";
+    private static volatile String currentCraftDescription = "No active commission";
+    private static volatile String nextShopPurchase = "None";
+    private static volatile int currentProgress;
+    private static volatile int currentQuality;
+    private static volatile int currentStartQuality;
+    private static volatile int currentSmithingLevel;
+    private static volatile int smithingLevelsGained;
+    private static volatile int smithingXpGained;
+    private static volatile int successfulCrafts;
+    private static volatile int currentReputation;
+    private static volatile int reputationEarned;
+    private static volatile int reputationSpent;
+    private static volatile long materialCost;
+    private static volatile long sessionStartedAt;
 
     private GiantsFoundryConfig config;
     private FoundryMaterialPlan materialPlan;
@@ -62,6 +79,12 @@ public class GiantsFoundryScript extends Script
     private boolean lastBonusActive;
     private boolean temperatureActionInProgress;
     private boolean errorLatched;
+    private boolean cycleCostRecorded;
+    private boolean cycleCompletionRecorded;
+    private boolean supplySnapshotKnown;
+    private int sessionStartSmithingLevel = -1;
+    private int sessionStartSmithingXp = -1;
+    private int cyclePlanLevel;
     private long lastActionAt;
     private long lastSnapshotLogAt;
     private long materialsCompleteAt;
@@ -71,6 +94,7 @@ public class GiantsFoundryScript extends Script
     {
         this.config = config;
         clearError();
+        resetSessionMetrics();
         resetCycle();
         Rs2Antiban.setActivityIntensity(ActivityIntensity.MODERATE);
         log.info("Giants' Foundry: mouse activity intensity set to MODERATE");
@@ -84,10 +108,18 @@ public class GiantsFoundryScript extends Script
                 }
                 tick();
             }
-            catch (Exception ex)
+            catch (Throwable throwable)
             {
-                setError("Unexpected error: " + safeMessage(ex));
-                log.error("Giants' Foundry tick failed", ex);
+                if (throwable instanceof ThreadDeath)
+                {
+                    throw (ThreadDeath) throwable;
+                }
+                if (throwable instanceof VirtualMachineError)
+                {
+                    throw (VirtualMachineError) throwable;
+                }
+                setError("Unexpected error: " + safeMessage(throwable));
+                log.error("Giants' Foundry tick failed", throwable);
             }
         }, 0, 300, TimeUnit.MILLISECONDS);
         return true;
@@ -105,13 +137,18 @@ public class GiantsFoundryScript extends Script
         }
 
         FoundrySnapshot snapshot = captureSnapshot();
+        updateLiveMetrics(snapshot);
+        if (snapshot.oreCount > 0)
+        {
+            recordCycleMaterialCost();
+        }
         State calculatedState = FoundryStateResolver.calculate(snapshot.toFacts());
         logSnapshot(calculatedState, snapshot);
 
         switch (calculatedState)
         {
             case HANDING_IN:
-                handIn(snapshot.hasPreform && snapshot.preformQuality <= 0);
+                handIn(snapshot);
                 break;
             case HEATING:
                 adjustTemperature(true, snapshot.heatChange);
@@ -132,7 +169,10 @@ public class GiantsFoundryScript extends Script
                 pourCrucible();
                 break;
             case GETTING_COMMISSION:
-                getCommission();
+                if (!handleRewardShop())
+                {
+                    getCommission();
+                }
                 break;
             case SELECTING_MOULD:
                 selectMould();
@@ -176,6 +216,17 @@ public class GiantsFoundryScript extends Script
         }
 
         int level = Rs2Player.getRealSkillLevel(Skill.SMITHING);
+        if (materialPlan == null && !resolveMaterialPlan(level))
+        {
+            return false;
+        }
+        initializeSessionMetrics(level);
+        updateShopTarget(level);
+        return true;
+    }
+
+    private boolean resolveMaterialPlan(int level)
+    {
         FoundryMaterialPlanner.PlanResult result = FoundryMaterialPlanner.create(config, level);
         if (!result.isValid())
         {
@@ -184,6 +235,8 @@ public class GiantsFoundryScript extends Script
         }
         materialPlan = result.getPlan();
         materialDescription = materialPlan.getDescription();
+        cyclePlanLevel = level;
+        log.info("Giants' Foundry: locked material plan at Smithing {}: {}", level, materialDescription);
         return true;
     }
 
@@ -216,7 +269,6 @@ public class GiantsFoundryScript extends Script
     {
         setState(State.GETTING_COMMISSION, "Requesting commission");
         GiantsFoundryState.reset();
-        resetCycle();
         if (Rs2Dialogue.hasContinue())
         {
             Rs2Dialogue.clickContinue();
@@ -249,6 +301,108 @@ public class GiantsFoundryScript extends Script
         }
         markAction();
         sleepUntil(this::hasCommission, 5000);
+    }
+
+    private boolean handleRewardShop()
+    {
+        int level = Rs2Player.getRealSkillLevel(Skill.SMITHING);
+        FoundryShopPlanner.Purchase purchase = findNextShopPurchase(level);
+        nextShopPurchase = purchase == null
+                ? "None"
+                : purchase.getName() + " (" + purchase.getCost() + " rep)";
+        if (purchase == null || getFoundryReputation() < purchase.getCost())
+        {
+            return false;
+        }
+
+        setState(State.BUYING_REWARDS, "Buying " + purchase.getName());
+        if (!FoundryRewardShop.isOpen())
+        {
+            if (!actionReady())
+            {
+                return true;
+            }
+            if (!FoundryRewardShop.open())
+            {
+                setError("Could not open Kovac's reward shop.");
+                return true;
+            }
+            markAction();
+            if (!sleepUntil(FoundryRewardShop::isOpen, 5000))
+            {
+                setError("Kovac's reward shop did not open.");
+            }
+            return true;
+        }
+        if (!actionReady())
+        {
+            return true;
+        }
+
+        int pointsBefore = getFoundryReputation();
+        if (!FoundryRewardShop.purchase(purchase))
+        {
+            setError("Could not purchase " + purchase.getName() + " from Kovac.");
+            return true;
+        }
+        markAction();
+        boolean confirmed = sleepUntil(() -> purchaseCompleted(purchase)
+                || getFoundryReputation() < pointsBefore, 5000);
+        int pointsAfter = getFoundryReputation();
+        log.info("Giants' Foundry shop result: item={} confirmed={} reputation={}->{}",
+                purchase.getName(), confirmed, pointsBefore, pointsAfter);
+        if (!confirmed)
+        {
+            setError("Could not confirm purchasing " + purchase.getName() + ".");
+            return true;
+        }
+        reputationSpent += Math.max(0, pointsBefore - pointsAfter);
+        Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
+        sleepUntil(() -> !FoundryRewardShop.isOpen(), 3000);
+        updateShopTarget(level);
+        return true;
+    }
+
+    private FoundryShopPlanner.Purchase findNextShopPurchase(int level)
+    {
+        return FoundryShopPlanner.nextTarget(
+                level,
+                config.shopStrategy(),
+                varbit -> Microbot.getVarbitValue(varbit) > 0,
+                this::ownsReward);
+    }
+
+    private void updateShopTarget(int level)
+    {
+        FoundryShopPlanner.Purchase purchase = findNextShopPurchase(level);
+        nextShopPurchase = purchase == null
+                ? "None"
+                : purchase.getName() + " (" + purchase.getCost() + " rep)";
+    }
+
+    private boolean purchaseCompleted(FoundryShopPlanner.Purchase purchase)
+    {
+        return purchase.isMould()
+                ? Microbot.getVarbitValue(purchase.getUnlockVarbit()) > 0
+                : ownsReward(purchase.getItemId());
+    }
+
+    private boolean ownsReward(int itemId)
+    {
+        if (itemId == ItemID.SMITHS_GLOVES
+                && (Rs2Bank.hasItem(ItemID.SMITHS_GLOVES_I)
+                || Rs2Inventory.hasItem(ItemID.SMITHS_GLOVES_I)
+                || Rs2Equipment.isWearing(ItemID.SMITHS_GLOVES_I)))
+        {
+            return true;
+        }
+        return Rs2Bank.hasItem(itemId) || Rs2Inventory.hasItem(itemId) || Rs2Equipment.isWearing(itemId);
+    }
+
+    private int getFoundryReputation()
+    {
+        return Microbot.getClientThread().runOnClientThreadOptional(
+                () -> Microbot.getClient().getVarpValue(VARP_FOUNDRY_REPUTATION)).orElse(0);
     }
 
     private boolean hasSelectedMould()
@@ -328,6 +482,10 @@ public class GiantsFoundryScript extends Script
         {
             if (hasRemainingMaterials(snapshot, firstLoaded, secondLoaded))
             {
+                if (!supplySnapshotKnown)
+                {
+                    refreshSupplySnapshot(false);
+                }
                 inventoryPrepared = true;
                 log.info("Giants' Foundry: resumed material load at {}/28 with required inventory present", snapshot.oreCount);
             }
@@ -438,6 +596,16 @@ public class GiantsFoundryScript extends Script
             setError("Could not clear the inventory before withdrawing materials.");
             return false;
         }
+        int firstSupply = availableSupply(materialPlan.getFirst());
+        int secondSupply = availableSupply(materialPlan.getSecond());
+        updateSupplySnapshot(firstSupply, secondSupply);
+        String shortage = materialPlan.getSupplyShortage(firstSupply, secondSupply);
+        if (shortage != null)
+        {
+            Rs2Bank.closeBank();
+            stopForSupplies("Stopped: current level strategy is " + materialDescription + ", " + shortage + ".");
+            return false;
+        }
         if (config.coolingMethod() == CoolingMethod.BUCKET_OF_WATER
                 && !Rs2Equipment.isWearing(ItemID.SMITHS_GLOVES_I)
                 && !Rs2Bank.withdrawDeficit(ItemID.BUCKET_OF_WATER, 1))
@@ -447,7 +615,11 @@ public class GiantsFoundryScript extends Script
         }
         if (!withdrawMaterial(materialPlan.getFirst()) || !withdrawMaterial(materialPlan.getSecond()))
         {
-            setError("The bank does not contain the configured Foundry materials.");
+            int refreshedFirst = availableSupply(materialPlan.getFirst());
+            int refreshedSecond = availableSupply(materialPlan.getSecond());
+            updateSupplySnapshot(refreshedFirst, refreshedSecond);
+            Rs2Bank.closeBank();
+            stopForSupplies("Stopped: the bank could not provide " + materialDescription + ".");
             return false;
         }
         if (!Rs2Bank.closeBank())
@@ -456,7 +628,41 @@ public class GiantsFoundryScript extends Script
             return false;
         }
         inventoryPrepared = true;
+        recordCycleMaterialCost();
+        updateSupplySnapshot(
+                availableSupply(materialPlan.getFirst()),
+                availableSupply(materialPlan.getSecond()));
         return true;
+    }
+
+    private int availableSupply(FoundryMaterialPlan.Material material)
+    {
+        return Rs2Bank.count(material.getName(), true) + Rs2Inventory.count(material.getName());
+    }
+
+    private void refreshSupplySnapshot(boolean depositInventory)
+    {
+        if (!Rs2Bank.openBank())
+        {
+            return;
+        }
+        if (depositInventory)
+        {
+            Rs2Bank.depositAll();
+        }
+        updateSupplySnapshot(
+                availableSupply(materialPlan.getFirst()),
+                availableSupply(materialPlan.getSecond()));
+        Rs2Bank.closeBank();
+    }
+
+    private void updateSupplySnapshot(int firstSupply, int secondSupply)
+    {
+        supplySnapshotKnown = true;
+        int crafts = materialPlan.getCraftsAvailable(firstSupply, secondSupply);
+        supplyDescription = materialPlan.getFirst().getName() + " " + firstSupply
+                + " | " + materialPlan.getSecond().getName() + " " + secondSupply
+                + " (" + crafts + " crafts)";
     }
 
     private boolean withdrawMaterial(FoundryMaterialPlan.Material material)
@@ -717,8 +923,9 @@ public class GiantsFoundryScript extends Script
         }
     }
 
-    private void handIn(boolean damaged)
+    private void handIn(FoundrySnapshot snapshot)
     {
+        boolean damaged = snapshot.hasPreform && snapshot.preformQuality <= 0;
         setState(State.HANDING_IN, damaged ? "Returning damaged sword to Kovac" : "Handing the sword to Kovac");
         if (Rs2Dialogue.hasContinue())
         {
@@ -726,12 +933,13 @@ public class GiantsFoundryScript extends Script
             sleep(400, 700);
             if (!isPreform(get(EquipmentInventorySlot.WEAPON)))
             {
+                recordCompletedCraft(snapshot, damaged);
                 GiantsFoundryState.reset();
                 resetCycle();
             }
             return;
         }
-        if (!damaged && GiantsFoundryState.getProgressAmount() < MAX_PROGRESS)
+        if (!damaged && snapshot.progress < MAX_PROGRESS)
         {
             GiantsFoundryState.reset();
             resetCycle();
@@ -758,9 +966,28 @@ public class GiantsFoundryScript extends Script
         }
         if (!isPreform(get(EquipmentInventorySlot.WEAPON)))
         {
+            recordCompletedCraft(snapshot, damaged);
             GiantsFoundryState.reset();
             resetCycle();
         }
+    }
+
+    private void recordCompletedCraft(FoundrySnapshot snapshot, boolean damaged)
+    {
+        if (cycleCompletionRecorded || damaged || snapshot.progress < MAX_PROGRESS)
+        {
+            return;
+        }
+        cycleCompletionRecorded = true;
+        successfulCrafts++;
+        reputationEarned += Math.max(0, snapshot.preformQuality);
+        log.info("Giants' Foundry craft complete: sessionCraft={} quality={}/{} xpGained={} materialCost={} netGp={}",
+                successfulCrafts,
+                snapshot.preformQuality,
+                snapshot.preformStartQuality,
+                smithingXpGained,
+                materialCost,
+                getNetGp());
     }
 
     public static char getKeyFromBar(net.runelite.client.plugins.microbot.giantsfoundry.enums.SmithableBars bar)
@@ -853,14 +1080,122 @@ public class GiantsFoundryScript extends Script
         lastActionAt = System.currentTimeMillis();
     }
 
+    private void initializeSessionMetrics(int level)
+    {
+        int xp = getSmithingXp();
+        if (sessionStartSmithingXp < 0)
+        {
+            sessionStartSmithingXp = xp;
+            sessionStartSmithingLevel = level;
+            currentSmithingLevel = level;
+            sessionStartedAt = System.currentTimeMillis();
+        }
+        currentSmithingLevel = level;
+        currentReputation = getFoundryReputation();
+        smithingLevelsGained = Math.max(0, level - sessionStartSmithingLevel);
+        smithingXpGained = Math.max(0, xp - sessionStartSmithingXp);
+    }
+
+    private int getSmithingXp()
+    {
+        return Microbot.getClientThread().runOnClientThreadOptional(
+                () -> Microbot.getClient().getSkillExperience(Skill.SMITHING)).orElse(0);
+    }
+
+    private void updateLiveMetrics(FoundrySnapshot snapshot)
+    {
+        initializeSessionMetrics(Rs2Player.getRealSkillLevel(Skill.SMITHING));
+        currentProgress = snapshot.progress;
+        currentQuality = snapshot.preformQuality;
+        currentStartQuality = snapshot.preformStartQuality;
+        currentReputation = getFoundryReputation();
+        CommissionType first = CommissionType.forVarbit(Microbot.getVarbitValue(MouldHelper.SWORD_TYPE_1_VARBIT));
+        CommissionType second = CommissionType.forVarbit(Microbot.getVarbitValue(MouldHelper.SWORD_TYPE_2_VARBIT));
+        currentCraftDescription = first == CommissionType.NONE || second == CommissionType.NONE
+                ? "No active commission"
+                : readableCommission(first) + " " + readableCommission(second);
+    }
+
+    private String readableCommission(CommissionType type)
+    {
+        String value = type.name().toLowerCase();
+        return Character.toUpperCase(value.charAt(0)) + value.substring(1);
+    }
+
+    private void recordCycleMaterialCost()
+    {
+        if (cycleCostRecorded || materialPlan == null)
+        {
+            return;
+        }
+        long cost = materialValue(materialPlan.getFirst()) + materialValue(materialPlan.getSecond());
+        materialCost += Math.max(0, cost);
+        cycleCostRecorded = true;
+        log.info("Giants' Foundry material accounting: planLevel={} plan={} cycleCost={} totalCost={}",
+                cyclePlanLevel, materialDescription, cost, materialCost);
+    }
+
+    private long materialValue(FoundryMaterialPlan.Material material)
+    {
+        int itemId = Rs2ItemManager.getItemIdByName(material.getName(), false);
+        if (itemId <= 0)
+        {
+            return 0;
+        }
+        int price = Microbot.getClientThread().runOnClientThreadOptional(
+                () -> Microbot.getItemManager().getItemPrice(itemId)).orElse(0);
+        return (long) Math.max(0, price) * material.getQuantity();
+    }
+
+    private void stopForSupplies(String message)
+    {
+        Microbot.log("Giants' Foundry: " + message);
+        log.warn("Giants' Foundry: {}", message);
+        state = State.OUT_OF_SUPPLIES;
+        status = message;
+        error = "";
+        if (mainScheduledFuture != null)
+        {
+            mainScheduledFuture.cancel(false);
+        }
+    }
+
+    private void resetSessionMetrics()
+    {
+        sessionStartSmithingLevel = -1;
+        sessionStartSmithingXp = -1;
+        currentSmithingLevel = 0;
+        smithingLevelsGained = 0;
+        smithingXpGained = 0;
+        successfulCrafts = 0;
+        currentReputation = 0;
+        reputationEarned = 0;
+        reputationSpent = 0;
+        materialCost = 0;
+        currentProgress = 0;
+        currentQuality = 0;
+        currentStartQuality = 0;
+        currentCraftDescription = "No active commission";
+        supplyDescription = "Checking at the Foundry bank";
+        nextShopPurchase = "None";
+        supplySnapshotKnown = false;
+        sessionStartedAt = System.currentTimeMillis();
+    }
+
     private void resetCycle()
     {
+        materialPlan = null;
+        materialDescription = "Resolving current level strategy";
+        supplySnapshotKnown = false;
+        supplyDescription = "Checking current strategy supplies";
         inventoryPrepared = false;
         firstMaterialAdded = false;
         secondMaterialAdded = false;
         bonusClickConsumed = false;
         lastBonusActive = false;
         temperatureActionInProgress = false;
+        cycleCostRecorded = false;
+        cycleCompletionRecorded = false;
         materialsCompleteAt = 0;
     }
 
@@ -894,9 +1229,9 @@ public class GiantsFoundryScript extends Script
         errorLatched = false;
     }
 
-    private static String safeMessage(Exception exception)
+    private static String safeMessage(Throwable throwable)
     {
-        return exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+        return throwable.getMessage() == null ? throwable.getClass().getSimpleName() : throwable.getMessage();
     }
 
     public static String getStatus()
@@ -912,6 +1247,91 @@ public class GiantsFoundryScript extends Script
     public static String getMaterialDescription()
     {
         return materialDescription;
+    }
+
+    public static String getSupplyDescription()
+    {
+        return supplyDescription;
+    }
+
+    public static String getCurrentCraftDescription()
+    {
+        return currentCraftDescription;
+    }
+
+    public static String getNextShopPurchase()
+    {
+        return nextShopPurchase;
+    }
+
+    public static int getCurrentProgress()
+    {
+        return currentProgress;
+    }
+
+    public static int getCurrentQuality()
+    {
+        return currentQuality;
+    }
+
+    public static int getCurrentStartQuality()
+    {
+        return currentStartQuality;
+    }
+
+    public static int getCurrentSmithingLevel()
+    {
+        return currentSmithingLevel;
+    }
+
+    public static int getSmithingLevelsGained()
+    {
+        return smithingLevelsGained;
+    }
+
+    public static int getSmithingXpGained()
+    {
+        return smithingXpGained;
+    }
+
+    public static int getSuccessfulCrafts()
+    {
+        return successfulCrafts;
+    }
+
+    public static int getCurrentReputation()
+    {
+        return currentReputation;
+    }
+
+    public static int getReputationEarned()
+    {
+        return reputationEarned;
+    }
+
+    public static int getReputationSpent()
+    {
+        return reputationSpent;
+    }
+
+    public static long getRewardGp()
+    {
+        return (long) smithingXpGained * 2;
+    }
+
+    public static long getMaterialCost()
+    {
+        return materialCost;
+    }
+
+    public static long getNetGp()
+    {
+        return getRewardGp() - materialCost;
+    }
+
+    public static long getSessionRuntimeMillis()
+    {
+        return Math.max(0, System.currentTimeMillis() - sessionStartedAt);
     }
 
     @Override
