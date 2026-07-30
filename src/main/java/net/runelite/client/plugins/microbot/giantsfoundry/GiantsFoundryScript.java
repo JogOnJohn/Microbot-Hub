@@ -478,6 +478,15 @@ public class GiantsFoundryScript extends Script
         firstMaterialAdded = firstLoaded >= materialPlan.getFirst().getBarEquivalentAmount();
         secondMaterialAdded = secondLoaded >= materialPlan.getSecond().getBarEquivalentAmount();
 
+        if (inventoryPrepared && snapshot.oreCount == 0
+                && !hasRemainingMaterials(snapshot, firstLoaded, secondLoaded))
+        {
+            log.warn("Giants' Foundry: prepared-material flag was stale with an empty crucible; reopening the bank");
+            inventoryPrepared = false;
+            prepareMaterials();
+            return;
+        }
+
         if (!inventoryPrepared)
         {
             if (hasRemainingMaterials(snapshot, firstLoaded, secondLoaded))
@@ -931,12 +940,7 @@ public class GiantsFoundryScript extends Script
         {
             Rs2Dialogue.clickContinue();
             sleep(400, 700);
-            if (!isPreform(get(EquipmentInventorySlot.WEAPON)))
-            {
-                recordCompletedCraft(snapshot, damaged);
-                GiantsFoundryState.reset();
-                resetCycle();
-            }
+            completeHandInIfAcknowledged(snapshot, damaged);
             return;
         }
         if (!damaged && snapshot.progress < MAX_PROGRESS)
@@ -964,12 +968,26 @@ public class GiantsFoundryScript extends Script
             setError("Kovac did not acknowledge the completed sword.");
             return;
         }
-        if (!isPreform(get(EquipmentInventorySlot.WEAPON)))
+        completeHandInIfAcknowledged(snapshot, damaged);
+    }
+
+    private boolean completeHandInIfAcknowledged(FoundrySnapshot snapshot, boolean damaged)
+    {
+        boolean preformRemoved = !isPreform(get(EquipmentInventorySlot.WEAPON));
+        boolean progressReset = !damaged
+                && snapshot.progress >= MAX_PROGRESS
+                && GiantsFoundryState.getProgressAmount() < MAX_PROGRESS;
+        if (!preformRemoved && !progressReset)
         {
-            recordCompletedCraft(snapshot, damaged);
-            GiantsFoundryState.reset();
-            resetCycle();
+            return false;
         }
+
+        log.info("Giants' Foundry hand-in acknowledged: preformRemoved={} progressReset={}",
+                preformRemoved, progressReset);
+        recordCompletedCraft(snapshot, damaged);
+        GiantsFoundryState.reset();
+        resetCycle();
+        return true;
     }
 
     private void recordCompletedCraft(FoundrySnapshot snapshot, boolean damaged)
