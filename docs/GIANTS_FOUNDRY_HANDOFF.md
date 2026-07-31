@@ -7,17 +7,19 @@ Read this before continuing work on the Giants' Foundry plugin.
 - Branch: `feat/upgrade-foundry-plugin`
 - Base: `origin/main` at `551da81`
 - Rollback commit: `0cc07d6` (`revert(giants-foundry): restore 7866f97 checkpoint`)
-- Source plugin version: `1.2.1` (**implemented and unit-tested, not built or installed**)
+- Source plugin version: `1.2.1` (**built, installed, and live-smoked**)
 - Validated VM: `Bizza 12345` (`clanker\vmadmin2`)
 - Authoritative guest worktree: `C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade`
 - Host context worktree: `F:\vmware boxs\MBOT\repos\Microbot-Hub-giants-foundry`
 - Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\GiantsFoundryPlugin.jar`
-- Installed JAR SHA256: `BE74F9F8E53514E39D9110A8A69CF5DD4455E4DD5EF84B2D2277073B56289FFC`
+- Installed JAR SHA256: `A9434E4759E70383FCF792D43CAFADA7663A27E5F36E890B2ECAE78F3F4C715F`
 
-The installed `1.2.0` JAR remains the current known-good runtime checkpoint. The client and plugin
-were left running and were not restarted for the pending `1.2.1` source work.
+The installed `1.2.1` JAR is the current validated runtime checkpoint. The previous `1.2.0`
+known-good JAR is retained at:
+`C:\Users\VMAdmin2\operator-work\output\archive\giants-foundry-plugin-backups\GiantsFoundryPlugin-before-1.2.1-20260731-151157.jar`.
+The client and plugin were left running into a third sword after the two-craft smoke.
 
-## Pending 1.2.1: passive cooling route decision
+## Version 1.2.1: passive cooling route decision
 
 The 2026-07-31 rollback smoke observed two complete clean-start swords:
 
@@ -41,20 +43,21 @@ temperature-tool action:
 - Sweet-spot bonuses, fast cooling, movement, missing scene data, and invalid inputs all retain the
   existing waterfall behavior.
 
-Focused and full Foundry unit-test selections pass in the Bizza VM. No
-`GiantsFoundryPluginJar` task was run for this change, and the installed JAR hash remains:
-`BE74F9F8E53514E39D9110A8A69CF5DD4455E4DD5EF84B2D2277073B56289FFC`.
+The Bizza VM build ran `test GiantsFoundryPluginJar` successfully with 33 tests and zero
+failures. The built and installed JAR hashes both matched:
+`A9434E4759E70383FCF792D43CAFADA7663A27E5F36E890B2ECAE78F3F4C715F`.
 
 ## Branch commits
 
-The Foundry-specific branch work is four commits on top of `origin/main`:
+The current runtime checkpoint is the rollback baseline plus the passive-cooling change:
 
 ```text
-10787c4 fix(giants-foundry): reset materials after hand-in
-093d2c5 feat(giants-foundry): automate progression and rewards
-c9a9e1f fix(giants-foundry): harden live state handling
-bd4f720 feat(giants-foundry): upgrade activity automation
+0d08e1b feat(giants-foundry): prefer efficient passive cooling
+0cc07d6 revert(giants-foundry): restore 7866f97 checkpoint
+7866f97 docs(giants-foundry): add laptop handoff
 ```
+
+The branch retains the earlier upgrade, live-fix, and documentation history below that checkpoint.
 
 ## Implemented behavior
 
@@ -76,6 +79,15 @@ The final installed JAR was built and tested in the Bizza VM, not only in the ho
 
 Confirmed live:
 
+- Version `1.2.1` completed and handed in two clean-start 14 steel/14 mithril swords on
+  2026-07-31. Both logged `95/105`; session totals after the second hand-in were two crafts,
+  8,511 Smithing XP gained, 42,392 GP estimated material cost, and -25,370 estimated net GP.
+- The two cycles issued 39 temperature actions, including 12 zero-tick actions. There were five
+  logged quality-loss transitions, no transient failures, no temperature stalls, no script
+  errors, and no passive-cooling timeouts.
+- No passive-cooling wait was selected in these two cycles. The observed position and route-cost
+  combinations stayed on the existing waterfall path, so this smoke validates no regression but
+  does not exercise the new wait branch.
 - Recovery from an empty inventory at the Foundry bank.
 - Exact withdrawal and loading of 14 steel plus 14 mithril at Smithing 53.
 - Full crucible, pour, preform pickup, heat management, all workstations, and hand-in.
@@ -110,6 +122,15 @@ The full hand-in, shop purchase, next commission, bank withdrawal, and crucible-
 
 ## Known limits and remaining tests
 
+- Exercise an eligible passive-cooling decision live. The first two `1.2.1` swords did not produce
+  a route comparison that met the current guard and minimum two-tick saving.
+- Temperature control still loses quality at some boundary transitions. Both `1.2.1` smoke swords
+  finished at `95/105`; one long fast-heat action and several fine heat/cool transitions accounted
+  for the observed losses. This predates the passive-cooling decision and did not stall the state
+  machine.
+- The Agent Server script-health route reported `NO_HEARTBEAT`/loop count zero while the plugin was
+  active and fresh Foundry transitions were continuing. Treat live transitions and craft
+  completion as authoritative for this plugin until its scheduler reports health heartbeats.
 - Graceful supply exhaustion is covered by planner/state tests but has not been deliberately tested against a depleted live bank.
 - The shop interaction uses an allowlisted contract captured from live widget group `753`, child `22`, with entries spaced by 13 and purchase action identifier 2. Unknown names fail closed, but a game widget update may require recapturing this mapping.
 - Outfit purchasing has not been reached live because it requires all eligible moulds first and much more reputation.
@@ -142,15 +163,15 @@ Use the host checkout for fast reading, but build and validate in the Bizza VM. 
 The current build output is:
 
 ```text
-C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade\build\libs\GiantsFoundryPlugin-1.2.0.jar
+C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade\build\libs\GiantsFoundryPlugin-1.2.1.jar
 ```
 
 The last interactive launch helper is:
 
 ```text
-Host:  F:\vmware boxs\MBOT\operator-work\temp\launch-bizza-giants-foundry-1.2.0.ps1
-Guest: C:\Users\VMAdmin2\operator-work\temp\launch-bizza-giants-foundry-1.2.0.ps1
-Log:   C:\Users\VMAdmin2\operator-work\output\logs\microbot-client-launch-giants-foundry-1.2.0.log
+Host:  F:\vmware boxs\MBOT\operator-work\temp\launch-bizza-giants-foundry-1.2.1.ps1
+Guest: C:\Users\VMAdmin2\operator-work\temp\launch-bizza-giants-foundry-1.2.1.ps1
+Log:   C:\Users\VMAdmin2\operator-work\output\logs\microbot-client-launch-giants-foundry-1.2.1.log
 ```
 
 The Agent Server is guest-local on port 8081 and requires the configured `X-Agent-Token`. Prefer the guest `microbot-cli` wrapper so the token is never printed or copied into documentation. Useful passive checks are:
@@ -164,7 +185,7 @@ Set-Location C:\Users\VMAdmin2\IdeaProjects\Microbot
 
 ## Recommended next sequence
 
-1. Fetch this branch and confirm `10787c4` or later before making changes.
+1. Fetch this branch and confirm `0d08e1b` or later before making changes.
 2. Passively inspect the current client and recent Foundry log before restarting anything.
 3. Let several more hand-in/rebank cycles run to stress the fixed cycle reset.
 4. Test a controlled supply shortage when interrupting the existing progression is acceptable.
