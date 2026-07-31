@@ -92,6 +92,8 @@ public class GiantsFoundryScript extends Script
     private long lastSnapshotLogAt;
     private long materialsCompleteAt;
     private State lastCalculatedState;
+    private Stage lastObservedStage;
+    private boolean interruptForStageChange;
     private boolean passiveCoolingWaitActive;
     private boolean passiveCoolingWaitTimedOut;
     private int passiveCoolingStartHeat;
@@ -147,6 +149,7 @@ public class GiantsFoundryScript extends Script
 
         FoundrySnapshot snapshot = captureSnapshot();
         updateLiveMetrics(snapshot);
+        detectStageChange(snapshot);
         if (snapshot.oreCount > 0)
         {
             recordCycleMaterialCost();
@@ -839,7 +842,7 @@ public class GiantsFoundryScript extends Script
         {
             return;
         }
-        if (!actionReady() || Rs2Player.isMoving())
+        if (!interruptForStageChange && (!actionReady() || Rs2Player.isMoving()))
         {
             return;
         }
@@ -877,6 +880,8 @@ public class GiantsFoundryScript extends Script
         boolean completed = sleepUntil(
                 () -> GiantsFoundryState.heatingCoolingState.getRemainingDuration() <= 1,
                 TEMPERATURE_ACTION_TIMEOUT_MS);
+        // Let residual temperature momentum settle before the next decision.
+        markAction();
         log.info("Giants' Foundry action result: temperature action={} completed={} remainingTicks={} heat={}->{} "
                         + "quality={}->{} heatChangeNeeded={}",
                 action,
@@ -901,6 +906,7 @@ public class GiantsFoundryScript extends Script
                 || stage == null
                 || change >= FAST_HEAT_THRESHOLD
                 || BonusWidget.isActive()
+                || interruptForStageChange
                 || Rs2Player.isMoving())
         {
             return false;
@@ -1010,7 +1016,7 @@ public class GiantsFoundryScript extends Script
         }
         lastBonusActive = bonusActive;
 
-        if (Rs2Player.isMoving() || !actionReady())
+        if (!interruptForStageChange && (Rs2Player.isMoving() || !actionReady()))
         {
             return;
         }
@@ -1021,7 +1027,9 @@ public class GiantsFoundryScript extends Script
                 return;
             }
         }
-        else if (Rs2Player.isAnimating(1200) && !temperatureActionInProgress)
+        else if (Rs2Player.isAnimating(1200)
+                && !temperatureActionInProgress
+                && !interruptForStageChange)
         {
             return;
         }
@@ -1156,6 +1164,12 @@ public class GiantsFoundryScript extends Script
         Stage currentStage = GiantsFoundryState.getCurrentStage(progress);
         int[] currentHeatRange = GiantsFoundryState.getHeatRange(currentStage);
         int[] oreCounts = GiantsFoundryState.getOreCounts();
+        int heatChange = GiantsFoundryState.calculateHeatChangeNeeded(
+                currentStage, heat, currentHeatRange);
+        if (suppressHeatTopUp(heatChange, currentStage, heat, currentHeatRange))
+        {
+            heatChange = 0;
+        }
         return new FoundrySnapshot(
                 progress,
                 heat,
@@ -1168,7 +1182,7 @@ public class GiantsFoundryScript extends Script
                 hasCommission(),
                 hasSelectedMould(),
                 currentStage,
-                GiantsFoundryState.calculateHeatChangeNeeded(currentStage, heat, currentHeatRange),
+                heatChange,
                 oreCounts,
                 GiantsFoundryState.totalOreCount(oreCounts),
                 Rs2Inventory.count(materialPlan.getFirst().getName()),
@@ -1176,6 +1190,29 @@ public class GiantsFoundryScript extends Script
                 Rs2Player.isMoving(),
                 Rs2Player.isAnimating(),
                 String.valueOf(Rs2Player.getWorldLocation()));
+    }
+
+    /**
+     * Avoids a proactive top-up when the current heat supports enough remaining
+     * workstation actions. This prevents immediate second sips after momentum settles.
+     */
+    private boolean suppressHeatTopUp(int heatChange, Stage stage, int heat, int[] range)
+    {
+        if (heatChange == 0 || stage == null || range == null || range.length < 2)
+        {
+            return false;
+        }
+        if (heat <= range[0] || heat >= range[1])
+        {
+            return false;
+        }
+        int actionsLeft = GiantsFoundryState.getActionsLeftInStage();
+        if (actionsLeft <= 0)
+        {
+            return false;
+        }
+        return GiantsFoundryState.countActionsAvailable(heat, range, stage)
+                >= Math.min(actionsLeft, 3);
     }
 
     private void logSnapshot(State calculatedState, FoundrySnapshot snapshot)
@@ -1222,6 +1259,33 @@ public class GiantsFoundryScript extends Script
     private void markAction()
     {
         lastActionAt = System.currentTimeMillis();
+        interruptForStageChange = false;
+    }
+
+    /**
+     * A stage flip invalidates the previous workstation immediately. The scheduler
+     * retains sole ownership of interactions, but bypasses movement and cooldown
+     * guards once so it can redirect before another wrong-stage action lands.
+     */
+    private void detectStageChange(FoundrySnapshot snapshot)
+    {
+        if (snapshot.stage == null)
+        {
+            if (snapshot.progress <= 0)
+            {
+                lastObservedStage = null;
+                interruptForStageChange = false;
+            }
+            return;
+        }
+        if (lastObservedStage != null && snapshot.stage != lastObservedStage)
+        {
+            log.info("Giants' Foundry: stage changed {} -> {}; scheduling immediate workstation interrupt",
+                    lastObservedStage, snapshot.stage);
+            lastActionAt = 0;
+            interruptForStageChange = true;
+        }
+        lastObservedStage = snapshot.stage;
     }
 
     private void initializeSessionMetrics(int level)
@@ -1341,6 +1405,8 @@ public class GiantsFoundryScript extends Script
         cycleCostRecorded = false;
         cycleCompletionRecorded = false;
         materialsCompleteAt = 0;
+        lastObservedStage = null;
+        interruptForStageChange = false;
     }
 
     private void setState(State nextState, String nextStatus)

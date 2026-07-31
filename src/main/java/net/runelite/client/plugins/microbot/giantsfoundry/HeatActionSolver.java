@@ -91,7 +91,10 @@ public class HeatActionSolver
                 break;
             }
 
-            if (dx0 + DX_1[index] >= max)
+            // The interrupt click can leave another accelerating heat tick in flight.
+            // Reserve that momentum so the action settles inside the working band.
+            int momentum = DX_1[Math.min(index + 1, MAX_INDEX)];
+            if (dx0 + DX_1[index] + momentum >= max)
             {
                 break;
             }

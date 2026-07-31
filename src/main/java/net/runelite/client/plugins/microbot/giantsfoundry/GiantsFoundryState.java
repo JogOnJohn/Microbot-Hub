@@ -16,7 +16,7 @@ import java.util.List;
 import static net.runelite.client.plugins.microbot.giantsfoundry.enums.Stage.*;
 
 public class GiantsFoundryState {
-    private static final int TOOL_HEAT_SAFETY_MARGIN = 5;
+    private static final int TOOL_HEAT_SAFETY_MARGIN = 10;
     // heat and progress are from 0-1000
     private static final int VARBIT_HEAT = 13948;
     private static final int VARBIT_PROGRESS = 13949;
@@ -343,14 +343,23 @@ public class GiantsFoundryState {
             return 0;
         }
 
-        int[] range = getCurrentHeatRange();
-        int actions = 0;
-        int heat = getHeatAmount();
-        while (heat > range[0] && heat < range[1]) {
-            actions++;
-            heat += stage.getHeatChange();
-        }
+        return countActionsAvailable(getHeatAmount(), getCurrentHeatRange(), stage);
+    }
 
+    /**
+     * Number of consecutive workstation actions available before its heat change
+     * leaves the current working band.
+     */
+    static int countActionsAvailable(int heat, int[] range, Stage stage) {
+        if (stage == null || range == null || range.length < 2) {
+            return 0;
+        }
+        int actions = 0;
+        int current = heat;
+        while (current > range[0] && current < range[1]) {
+            actions++;
+            current += stage.getHeatChange();
+        }
         return actions;
     }
 

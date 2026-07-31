@@ -7,17 +7,87 @@ Read this before continuing work on the Giants' Foundry plugin.
 - Branch: `feat/upgrade-foundry-plugin`
 - Base: `origin/main` at `551da81`
 - Rollback commit: `0cc07d6` (`revert(giants-foundry): restore 7866f97 checkpoint`)
-- Source plugin version: `1.2.1` (**built, installed, and live-smoked**)
+- Source plugin version: `1.2.2` (**built, installed, and live-smoked**)
 - Validated VM: `Bizza 12345` (`clanker\vmadmin2`)
 - Authoritative guest worktree: `C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade`
 - Host context worktree: `F:\vmware boxs\MBOT\repos\Microbot-Hub-giants-foundry`
 - Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\GiantsFoundryPlugin.jar`
-- Installed JAR SHA256: `A9434E4759E70383FCF792D43CAFADA7663A27E5F36E890B2ECAE78F3F4C715F`
+- Installed JAR SHA256: `D489D84C7E5661A1E4EE5CBFF020A2950A89D7C22127E9570C132221C65C5272`
 
-The installed `1.2.1` JAR is the current validated runtime checkpoint. The previous `1.2.0`
-known-good JAR is retained at:
+The installed `1.2.2` JAR is the current experimental quality-control build. It completed two
+clean-start swords, but it is not yet a perfect-quality checkpoint; see the 1.2.2 smoke below.
+The previous `1.2.1` JAR is retained at:
+`C:\Users\VMAdmin2\operator-work\output\archive\giants-foundry-plugin-backups\GiantsFoundryPlugin-before-1.2.2-20260731-160412.jar`.
+The previous `1.2.0` known-good JAR is retained at:
 `C:\Users\VMAdmin2\operator-work\output\archive\giants-foundry-plugin-backups\GiantsFoundryPlugin-before-1.2.1-20260731-151157.jar`.
-The client and plugin were left running into a third sword after the two-craft smoke.
+The client was left open and logged in; the plugin was stopped after the two-craft 1.2.2 smoke to
+avoid consuming a third set of bars.
+
+## Version 1.2.2: quality-control experiment
+
+Version 1.2.2 keeps all 1.2.1 behavior and adds four bounded changes:
+
+- Reserves one additional accelerating heat/cooling tick in `HeatActionSolver` so an interrupt has
+  more room to settle before the edge of a working band.
+- Raises the workstation heat safety margin from 5 to 10.
+- Suppresses a redundant in-band top-up when the current heat already supports at least the next
+  three workstation actions (or all remaining actions when fewer than three remain).
+- Detects stage changes on the scheduler thread and bypasses movement, animation, and action
+  cooldown guards once, so the old workstation is interrupted as soon as the next scheduler
+  snapshot observes the new stage. Interactions remain scheduler-owned; this does not restore the
+  unsafe cross-thread 1.4.0 event action.
+
+Guest validation used JDK 11 and:
+
+```powershell
+.\gradlew.bat --no-daemon '-Dorg.gradle.java.home=C:\Users\VMAdmin2\.jdks\temurin-11.0.31' test GiantsFoundryPluginJar '-PpluginList=GiantsFoundryPlugin' --console=plain
+```
+
+All 35 tests passed. The built and installed JAR hashes matched:
+`D489D84C7E5661A1E4EE5CBFF020A2950A89D7C22127E9570C132221C65C5272`.
+
+Live smoke on 2026-07-31:
+
+- A pre-crash partial sword resumed only for hand-in at `116/121`; it was excluded from the two
+  clean-start samples.
+- Clean sword 1 completed at `114/119` (95.8%), compared with the previous 1.2.1 two-sword result
+  of `95/105` (90.5%) each. Two five-quality losses occurred and Juggernaut Forte recovered one.
+- Clean sword 2 completed at `81/111`. A shared RuneLite client-thread pause occurred from about
+  16:16:25 to 16:16:36 AEST: both Giants Foundry and an unrelated QoL Wintertodt worker logged
+  `ClientThread TimeoutException`, and quality had already fallen from 106 to 91 when the next
+  Foundry snapshot ran. No DWM/display event or new VMware DX12 presentation error coincided with
+  this pause. Additional five-quality losses occurred during large stage-boundary temperature
+  corrections.
+- The passive-cooling branch exercised successfully at 16:15:42 AEST, waiting about 700 ms and
+  entering the trip-hammer range without a waterfall round trip.
+- Both swords completed and handed in. There were no reverse-stage transitions, temperature-state
+  stalls, repeated-click loops, or damaged-sword failures.
+
+Conclusion: the momentum, settle, top-up, and passive-wait controls are useful, and a normal first
+sword improved materially. The remaining deterministic loss is the interval between a progress
+stage flip and completing travel to the new temperature tool. A future event-assisted interrupt
+must queue work onto the existing single scheduler and carry a stage generation/token so a stale
+snapshot cannot issue a reverse action. Do not restore direct client-thread interactions.
+
+## Bizza graphics finding
+
+The repeated VM failures are not supported by a VRAM-exhaustion theory. The VM has 2 GiB configured
+graphics memory, while the VMware log reported about 98 MiB local usage and several GiB available
+during the failure. The previous crash instead showed:
+
+- repeated guest `dwm.exe` crashes and a graphics watchdog report;
+- broad RuneLite `ClientThread TimeoutException` failures after DWM destabilized;
+- repeated host `DX12Presentation: failed to close/reset command list` warnings with
+  `E_INVALIDARG`;
+- the presentation surface changing to approximately `3538 x 1935`, consistent with the reported
+  4K-monitor/viewport-resize trigger.
+
+The current VM keeps the DX12 renderer enabled. Broadcom's documented Workstation workaround for
+this DX12 presentation failure is the host-global preference
+`mks.enableDX12Presentation = "FALSE"` in
+`C:\Users\bizz4\AppData\Roaming\VMware\preferences.ini`. That preference has not been changed
+because it is host-global and should be applied with VMware Workstation/VMs stopped. Until then,
+avoid resizing the VM display or opening/closing the Workstation side panel during a live craft.
 
 ## Version 1.2.1: passive cooling route decision
 

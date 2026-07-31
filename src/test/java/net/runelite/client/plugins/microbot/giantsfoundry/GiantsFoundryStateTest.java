@@ -23,14 +23,14 @@ class GiantsFoundryStateTest
     @Test
     void requestsCoolingBeforeGrindingWouldCrossTheHeatBand()
     {
-        assertEquals(-6, GiantsFoundryState.calculateHeatChangeNeeded(
+        assertEquals(-11, GiantsFoundryState.calculateHeatChangeNeeded(
                 Stage.GRINDSTONE, 626, new int[]{359, 640}));
     }
 
     @Test
     void requestsHeatingBeforeHammeringWouldCrossTheHeatBand()
     {
-        assertEquals(2, GiantsFoundryState.calculateHeatChangeNeeded(
+        assertEquals(7, GiantsFoundryState.calculateHeatChangeNeeded(
                 Stage.TRIP_HAMMER, 720, new int[]{692, 974}));
     }
 
@@ -53,5 +53,20 @@ class GiantsFoundryStateTest
     {
         assertEquals(-7, GiantsFoundryState.calculateHeatChangeNeeded(
                 Stage.TRIP_HAMMER, 981, new int[]{692, 974}));
+    }
+
+    @Test
+    void countsWorkstationActionsAvailableWithinTheBand()
+    {
+        assertEquals(9, GiantsFoundryState.countActionsAvailable(
+                900, new int[]{692, 974}, Stage.TRIP_HAMMER));
+        assertEquals(2, GiantsFoundryState.countActionsAvailable(
+                620, new int[]{359, 640}, Stage.GRINDSTONE));
+        assertEquals(0, GiantsFoundryState.countActionsAvailable(
+                692, new int[]{692, 974}, Stage.TRIP_HAMMER));
+        assertEquals(0, GiantsFoundryState.countActionsAvailable(
+                500, null, Stage.TRIP_HAMMER));
+        assertEquals(0, GiantsFoundryState.countActionsAvailable(
+                500, new int[]{359, 640}, null));
     }
 }
