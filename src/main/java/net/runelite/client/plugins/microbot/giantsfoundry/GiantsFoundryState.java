@@ -343,23 +343,14 @@ public class GiantsFoundryState {
             return 0;
         }
 
-        return countActionsAvailable(getHeatAmount(), getCurrentHeatRange(), stage);
-    }
-
-    /**
-     * How many consecutive actions the stage tool can perform from the given heat
-     * before the tool's own heat change pushes it out of the working band.
-     */
-    static int countActionsAvailable(int heat, int[] range, Stage stage) {
-        if (stage == null || range == null || range.length < 2) {
-            return 0;
-        }
+        int[] range = getCurrentHeatRange();
         int actions = 0;
-        int current = heat;
-        while (current > range[0] && current < range[1]) {
+        int heat = getHeatAmount();
+        while (heat > range[0] && heat < range[1]) {
             actions++;
-            current += stage.getHeatChange();
+            heat += stage.getHeatChange();
         }
+
         return actions;
     }
 

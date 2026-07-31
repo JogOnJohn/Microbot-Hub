@@ -10,13 +10,6 @@ import java.util.function.IntPredicate;
 
 final class FoundryShopPlanner
 {
-    /**
-     * The wiki strategy guide values the Smiths outfit (~15% rate gain) above the tail
-     * of the mould list (~3-5%), so once this many shop moulds are unlocked the outfit
-     * takes priority and the remaining moulds are bought afterwards.
-     */
-    static final int CORE_MOULDS_BEFORE_OUTFIT = 6;
-
     private static final List<Purchase> MOULDS = Arrays.asList(
             Purchase.mould("Flamberge Blade", 48, 300, 13921),
             Purchase.mould("Stiletto Forte", 50, 300, 13916),
@@ -54,40 +47,26 @@ final class FoundryShopPlanner
             return null;
         }
 
-        Purchase nextMould = null;
-        int unlockedMoulds = 0;
         for (Purchase purchase : MOULDS)
         {
-            if (mouldUnlocked.test(purchase.getUnlockVarbit()))
+            if (purchase.getRequiredLevel() <= smithingLevel
+                    && !mouldUnlocked.test(purchase.getUnlockVarbit()))
             {
-                unlockedMoulds++;
-            }
-            else if (nextMould == null && purchase.getRequiredLevel() <= smithingLevel)
-            {
-                nextMould = purchase;
+                return purchase;
             }
         }
 
-        if (strategy == FoundryShopStrategy.MOULDS_ONLY)
+        if (strategy == FoundryShopStrategy.MOULDS_THEN_OUTFIT)
         {
-            return nextMould;
-        }
-
-        Purchase nextOutfit = null;
-        for (Purchase purchase : OUTFIT)
-        {
-            if (!rewardOwned.test(purchase.getItemId()))
+            for (Purchase purchase : OUTFIT)
             {
-                nextOutfit = purchase;
-                break;
+                if (!rewardOwned.test(purchase.getItemId()))
+                {
+                    return purchase;
+                }
             }
         }
-
-        if (nextOutfit != null && unlockedMoulds >= CORE_MOULDS_BEFORE_OUTFIT)
-        {
-            return nextOutfit;
-        }
-        return nextMould != null ? nextMould : nextOutfit;
+        return null;
     }
 
     @Value

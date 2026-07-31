@@ -37,27 +37,6 @@ class HeatActionSolverTest
         }
     }
 
-    @Test
-    void reservesInFlightMomentumHeadroomBelowTheBandCeiling()
-    {
-        // Heating into the hammer band. The script's monitor exits one tick before the
-        // solver's stop point (predicted already includes that tick) and the interrupt
-        // click lets one more accelerating tick land, so predicted plus that next tick
-        // must stay at or below the padded ceiling (range top + padding/travel decay,
-        // which for TRIP_HAMMER heating while running is 910 + 2 + 4 = 916).
-        int[] range = {755, 910};
-        int paddedMax = 916;
-        for (int start = 400; start <= 740; start += 20)
-        {
-            HeatActionSolver.DurationResult result =
-                    HeatActionSolver.solve(Stage.TRIP_HAMMER, range, 10, start, false, true, 3, true);
-            int nextTick = HeatActionSolver.DX_1[Math.min(result.getDuration(), HeatActionSolver.MAX_INDEX)];
-            assertTrue(result.getPredictedHeat() + nextTick <= paddedMax,
-                    "start " + start + " predicted " + result.getPredictedHeat()
-                            + " + nextTick " + nextTick + " exceeds " + paddedMax);
-        }
-    }
-
     private static int[] rangeFor(Stage stage)
     {
         switch (stage)

@@ -28,7 +28,7 @@ import java.awt.*;
 @Slf4j
 public class GiantsFoundryPlugin extends Plugin {
 
-    public static final String version = "1.4.1";
+    public static final String version = "1.2.0";
 
     @Inject
     private GiantsFoundryConfig config;
@@ -57,7 +57,6 @@ public class GiantsFoundryPlugin extends Plugin {
     // previous heat varbit value, used to filter out passive heat decay.
     private int previousHeat = 0;
     private static final int VARBIT_HEAT = 13948;
-
     @Subscribe
     public void onVarbitChanged(VarbitChanged event)
     {

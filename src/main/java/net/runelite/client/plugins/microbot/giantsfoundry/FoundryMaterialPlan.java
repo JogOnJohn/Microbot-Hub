@@ -31,13 +31,8 @@ public class FoundryMaterialPlan
 
     public String getSupplyShortage(int firstSupply, int secondSupply)
     {
-        return getSupplyShortage(firstSupply, secondSupply, first.getQuantity(), second.getQuantity());
-    }
-
-    public String getSupplyShortage(int firstSupply, int secondSupply, int firstRequired, int secondRequired)
-    {
-        int firstMissing = Math.max(0, firstRequired - firstSupply);
-        int secondMissing = Math.max(0, secondRequired - secondSupply);
+        int firstMissing = Math.max(0, first.getQuantity() - firstSupply);
+        int secondMissing = Math.max(0, second.getQuantity() - secondSupply);
         if (firstMissing == 0 && secondMissing == 0)
         {
             return null;

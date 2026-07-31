@@ -49,8 +49,6 @@ public class GiantsFoundryScript extends Script
     private static final long FULL_CRUCIBLE_GRACE_MS = 5000;
     private static final int TEMPERATURE_ACTION_TIMEOUT_MS = 45000;
     private static final int VARP_FOUNDRY_REPUTATION = 3436;
-    private static final int TRANSIENT_FAILURE_LIMIT = 3;
-    private static final long SHOP_TARGET_REFRESH_MS = 5000;
 
     public static volatile State state = State.VALIDATING;
     private static volatile String status = "Starting";
@@ -58,8 +56,7 @@ public class GiantsFoundryScript extends Script
     private static volatile String materialDescription = "Not resolved";
     private static volatile String supplyDescription = "Checking at the Foundry bank";
     private static volatile String currentCraftDescription = "No active commission";
-    private static volatile String nextShopPurchaseName = "None";
-    private static volatile int nextShopPurchaseCost = -1;
+    private static volatile String nextShopPurchase = "None";
     private static volatile int currentProgress;
     private static volatile int currentQuality;
     private static volatile int currentStartQuality;
@@ -92,13 +89,6 @@ public class GiantsFoundryScript extends Script
     private long lastSnapshotLogAt;
     private long materialsCompleteAt;
     private State lastCalculatedState;
-    private FoundrySnapshot pendingHandIn;
-    private Stage lastObservedStage;
-    private boolean interruptForStageChange;
-    private String lastFailureKey;
-    private int consecutiveFailures;
-    private int shopTargetLevel = -1;
-    private long shopTargetCheckedAt;
 
     public boolean run(GiantsFoundryConfig config)
     {
@@ -128,8 +118,8 @@ public class GiantsFoundryScript extends Script
                 {
                     throw (VirtualMachineError) throwable;
                 }
+                setError("Unexpected error: " + safeMessage(throwable));
                 log.error("Giants' Foundry tick failed", throwable);
-                setTransient("tick-exception", "Unexpected error: " + safeMessage(throwable));
             }
         }, 0, 300, TimeUnit.MILLISECONDS);
         return true;
@@ -148,21 +138,12 @@ public class GiantsFoundryScript extends Script
 
         FoundrySnapshot snapshot = captureSnapshot();
         updateLiveMetrics(snapshot);
-        detectStageChange(snapshot);
+        if (snapshot.oreCount > 0)
+        {
+            recordCycleMaterialCost();
+        }
         State calculatedState = FoundryStateResolver.calculate(snapshot.toFacts());
-        if (calculatedState != lastCalculatedState)
-        {
-            lastFailureKey = null;
-            consecutiveFailures = 0;
-        }
         logSnapshot(calculatedState, snapshot);
-
-        if (pendingHandIn != null && calculatedState != State.HANDING_IN)
-        {
-            log.info("Giants' Foundry: hand-in acknowledgement arrived late; reconciling the completed sword");
-            finalizeCompletedHandIn(false);
-            return;
-        }
 
         switch (calculatedState)
         {
@@ -207,19 +188,14 @@ public class GiantsFoundryScript extends Script
 
     private boolean validateRuntime()
     {
-        if (Rs2Player.getWorldLocation() == null)
-        {
-            setState(State.VALIDATING, "Waiting for the player position");
-            return false;
-        }
-        if (Rs2Player.getWorldLocation().getRegionID() != FOUNDRY_REGION)
-        {
-            setError("Start inside Giants' Foundry.");
-            return false;
-        }
         if (Rs2Player.getQuestState(Quest.SLEEPING_GIANTS) != QuestState.FINISHED)
         {
             setError("Complete Sleeping Giants before starting the plugin.");
+            return false;
+        }
+        if (Rs2Player.getWorldLocation() == null || Rs2Player.getWorldLocation().getRegionID() != FOUNDRY_REGION)
+        {
+            setError("Start inside Giants' Foundry.");
             return false;
         }
 
@@ -320,7 +296,7 @@ public class GiantsFoundryScript extends Script
         var kovac = Microbot.getRs2NpcCache().query().withName("kovac").nearestOnClientThread();
         if (kovac == null || !kovac.click("Commission"))
         {
-            setTransient("commission", "Kovac is not available for a commission.");
+            setError("Kovac is not available for a commission.");
             return;
         }
         markAction();
@@ -331,7 +307,9 @@ public class GiantsFoundryScript extends Script
     {
         int level = Rs2Player.getRealSkillLevel(Skill.SMITHING);
         FoundryShopPlanner.Purchase purchase = findNextShopPurchase(level);
-        setShopTarget(purchase);
+        nextShopPurchase = purchase == null
+                ? "None"
+                : purchase.getName() + " (" + purchase.getCost() + " rep)";
         if (purchase == null || getFoundryReputation() < purchase.getCost())
         {
             return false;
@@ -346,13 +324,13 @@ public class GiantsFoundryScript extends Script
             }
             if (!FoundryRewardShop.open())
             {
-                setTransient("shop-open", "Could not open Kovac's reward shop.");
+                setError("Could not open Kovac's reward shop.");
                 return true;
             }
             markAction();
             if (!sleepUntil(FoundryRewardShop::isOpen, 5000))
             {
-                setTransient("shop-open-confirm", "Kovac's reward shop did not open.");
+                setError("Kovac's reward shop did not open.");
             }
             return true;
         }
@@ -375,17 +353,13 @@ public class GiantsFoundryScript extends Script
                 purchase.getName(), confirmed, pointsBefore, pointsAfter);
         if (!confirmed)
         {
-            setTransient("shop-purchase-confirm", "Could not confirm purchasing " + purchase.getName() + ".");
+            setError("Could not confirm purchasing " + purchase.getName() + ".");
             return true;
         }
         reputationSpent += Math.max(0, pointsBefore - pointsAfter);
-        updateShopTarget(level, true);
-        FoundryShopPlanner.Purchase next = findNextShopPurchase(level);
-        if (next == null || getFoundryReputation() < next.getCost())
-        {
-            Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
-            sleepUntil(() -> !FoundryRewardShop.isOpen(), 3000);
-        }
+        Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
+        sleepUntil(() -> !FoundryRewardShop.isOpen(), 3000);
+        updateShopTarget(level);
         return true;
     }
 
@@ -400,25 +374,10 @@ public class GiantsFoundryScript extends Script
 
     private void updateShopTarget(int level)
     {
-        updateShopTarget(level, false);
-    }
-
-    private void updateShopTarget(int level, boolean force)
-    {
-        long now = System.currentTimeMillis();
-        if (!force && level == shopTargetLevel && now - shopTargetCheckedAt < SHOP_TARGET_REFRESH_MS)
-        {
-            return;
-        }
-        setShopTarget(findNextShopPurchase(level));
-        shopTargetLevel = level;
-        shopTargetCheckedAt = now;
-    }
-
-    private static void setShopTarget(FoundryShopPlanner.Purchase purchase)
-    {
-        nextShopPurchaseName = purchase == null ? "None" : purchase.getName();
-        nextShopPurchaseCost = purchase == null ? -1 : purchase.getCost();
+        FoundryShopPlanner.Purchase purchase = findNextShopPurchase(level);
+        nextShopPurchase = purchase == null
+                ? "None"
+                : purchase.getName() + " (" + purchase.getCost() + " rep)";
     }
 
     private boolean purchaseCompleted(FoundryShopPlanner.Purchase purchase)
@@ -462,25 +421,25 @@ public class GiantsFoundryScript extends Script
         }
         if (!Microbot.getRs2TileObjectCache().query().withId(MOULD_JIG).interact())
         {
-            setTransient("mould-jig", "Could not open the mould jig.");
+            setError("Could not open the mould jig.");
             return;
         }
         markAction();
         if (!sleepUntil(() -> Rs2Widget.findWidget("Forte", null) != null, 5000))
         {
-            setTransient("mould-interface", "Mould selection interface did not open.");
+            setError("Mould selection interface did not open.");
             return;
         }
 
         if (!selectMouldTab("Forte") || !selectMouldTab("Blades") || !selectMouldTab("Tips"))
         {
-            setTransient("mould-select", "Could not select a mould for every sword section.");
+            setError("Could not select a mould for every sword section.");
             return;
         }
         Widget setMould = Rs2Widget.getWidget(47054854);
         if (setMould == null)
         {
-            setTransient("mould-confirm", "Set mould button is unavailable.");
+            setError("Set mould button is unavailable.");
             return;
         }
         Microbot.getMouse().click(setMould.getBounds());
@@ -519,11 +478,13 @@ public class GiantsFoundryScript extends Script
         firstMaterialAdded = firstLoaded >= materialPlan.getFirst().getBarEquivalentAmount();
         secondMaterialAdded = secondLoaded >= materialPlan.getSecond().getBarEquivalentAmount();
 
-        if (inventoryPrepared && !hasRemainingMaterials(snapshot, firstLoaded, secondLoaded))
+        if (inventoryPrepared && snapshot.oreCount == 0
+                && !hasRemainingMaterials(snapshot, firstLoaded, secondLoaded))
         {
-            log.warn("Giants' Foundry: prepared-material flag was stale at {}/28 loaded; re-checking the bank",
-                    snapshot.oreCount);
+            log.warn("Giants' Foundry: prepared-material flag was stale with an empty crucible; reopening the bank");
             inventoryPrepared = false;
+            prepareMaterials();
+            return;
         }
 
         if (!inventoryPrepared)
@@ -537,23 +498,16 @@ public class GiantsFoundryScript extends Script
                 inventoryPrepared = true;
                 log.info("Giants' Foundry: resumed material load at {}/28 with required inventory present", snapshot.oreCount);
             }
+            else if (snapshot.oreCount > 0)
+            {
+                setError("Crucible contains " + snapshot.oreCount
+                        + "/28 bars but the inventory does not contain the planned remainder ("
+                        + materialDescription + ").");
+                return;
+            }
             else
             {
-                int firstNeeded = remainingItemCount(materialPlan.getFirst(), firstLoaded);
-                int secondNeeded = remainingItemCount(materialPlan.getSecond(), secondLoaded);
-                if (firstNeeded < 0 || secondNeeded < 0)
-                {
-                    setError("Crucible contains " + snapshot.oreCount
-                            + "/28 bars that do not align with the planned materials ("
-                            + materialDescription + ").");
-                    return;
-                }
-                if (snapshot.oreCount > 0)
-                {
-                    log.info("Giants' Foundry: resuming a partially filled crucible ({}/28); banking for the remainder",
-                            snapshot.oreCount);
-                }
-                prepareMaterials(firstNeeded, secondNeeded);
+                prepareMaterials();
                 return;
             }
         }
@@ -634,7 +588,7 @@ public class GiantsFoundryScript extends Script
         return remainingBars / material.getBarEquivalentPerItem();
     }
 
-    private boolean prepareMaterials(int firstQuantity, int secondQuantity)
+    private boolean prepareMaterials()
     {
         setState(State.PREPARING_MATERIALS, "Preparing " + materialDescription);
         if (!actionReady())
@@ -643,41 +597,47 @@ public class GiantsFoundryScript extends Script
         }
         if (!Rs2Bank.openBank())
         {
-            setTransient("bank-open", "Could not open the Foundry bank chest.");
+            setError("Could not open the Foundry bank chest.");
             return false;
         }
         if (!Rs2Bank.depositAll())
         {
-            setTransient("bank-deposit", "Could not clear the inventory before withdrawing materials.");
+            setError("Could not clear the inventory before withdrawing materials.");
             return false;
         }
         int firstSupply = availableSupply(materialPlan.getFirst());
         int secondSupply = availableSupply(materialPlan.getSecond());
         updateSupplySnapshot(firstSupply, secondSupply);
-        String shortage = materialPlan.getSupplyShortage(firstSupply, secondSupply, firstQuantity, secondQuantity);
+        String shortage = materialPlan.getSupplyShortage(firstSupply, secondSupply);
         if (shortage != null)
         {
             Rs2Bank.closeBank();
             stopForSupplies("Stopped: current level strategy is " + materialDescription + ", " + shortage + ".");
             return false;
         }
-        if (!withdrawMaterial(materialPlan.getFirst(), firstQuantity)
-                || !withdrawMaterial(materialPlan.getSecond(), secondQuantity))
+        if (config.coolingMethod() == CoolingMethod.BUCKET_OF_WATER
+                && !Rs2Equipment.isWearing(ItemID.SMITHS_GLOVES_I)
+                && !Rs2Bank.withdrawDeficit(ItemID.BUCKET_OF_WATER, 1))
         {
-            updateSupplySnapshot(
-                    availableSupply(materialPlan.getFirst()),
-                    availableSupply(materialPlan.getSecond()));
+            setError("No bucket of water is available in the bank.");
+            return false;
+        }
+        if (!withdrawMaterial(materialPlan.getFirst()) || !withdrawMaterial(materialPlan.getSecond()))
+        {
+            int refreshedFirst = availableSupply(materialPlan.getFirst());
+            int refreshedSecond = availableSupply(materialPlan.getSecond());
+            updateSupplySnapshot(refreshedFirst, refreshedSecond);
             Rs2Bank.closeBank();
-            setTransient("bank-withdraw", "Could not withdraw " + materialDescription + " from the Foundry bank.");
+            stopForSupplies("Stopped: the bank could not provide " + materialDescription + ".");
             return false;
         }
         if (!Rs2Bank.closeBank())
         {
-            setTransient("bank-close", "Could not close the bank after withdrawing materials.");
+            setError("Could not close the bank after withdrawing materials.");
             return false;
         }
         inventoryPrepared = true;
-        recordMaterialCost(firstQuantity, secondQuantity);
+        recordCycleMaterialCost();
         updateSupplySnapshot(
                 availableSupply(materialPlan.getFirst()),
                 availableSupply(materialPlan.getSecond()));
@@ -714,14 +674,10 @@ public class GiantsFoundryScript extends Script
                 + " (" + crafts + " crafts)";
     }
 
-    private boolean withdrawMaterial(FoundryMaterialPlan.Material material, int quantity)
+    private boolean withdrawMaterial(FoundryMaterialPlan.Material material)
     {
-        if (quantity <= 0)
-        {
-            return true;
-        }
-        return Rs2Bank.withdrawDeficit(material.getName(), quantity, true)
-                && sleepUntil(() -> Rs2Inventory.hasItemAmount(material.getName(), quantity), 3000);
+        return Rs2Bank.withdrawDeficit(material.getName(), material.getQuantity(), true)
+                && sleepUntil(() -> Rs2Inventory.hasItemAmount(material.getName(), material.getQuantity()), 3000);
     }
 
     private boolean addMaterial(FoundryMaterialPlan.Material material, int loadedBars)
@@ -733,9 +689,7 @@ public class GiantsFoundryScript extends Script
         }
         if (!Rs2Inventory.hasItemAmount(material.getName(), remainingQuantity))
         {
-            inventoryPrepared = false;
-            setTransient("add-material-missing", "Missing " + remainingQuantity + " " + material.getName()
-                    + " from inventory; re-checking the bank.");
+            setError("Missing " + remainingQuantity + " " + material.getName() + " from inventory.");
             return false;
         }
         FoundryMaterialPlan.Material remainder = new FoundryMaterialPlan.Material(
@@ -762,7 +716,7 @@ public class GiantsFoundryScript extends Script
                 material.getName(), confirmed, afterMetal, afterInventory, canPour());
         if (!confirmed)
         {
-            setTransient("add-material-confirm", "Could not confirm adding " + material.getName()
+            setError("Could not confirm adding " + material.getName()
                     + " (metal " + beforeMetal + "->" + afterMetal
                     + ", inventory " + beforeInventory + "->" + afterInventory + ").");
             return false;
@@ -774,12 +728,12 @@ public class GiantsFoundryScript extends Script
     {
         if (!Microbot.getRs2TileObjectCache().query().interact(CRUCIBLE, "Fill"))
         {
-            setTransient("crucible-fill", "Could not interact with the crucible.");
+            setError("Could not interact with the crucible.");
             return false;
         }
         if (!sleepUntil(() -> Rs2Widget.findWidget("What metal would you like to add?", null) != null, 5000))
         {
-            setTransient("crucible-dialog", "Crucible metal selection did not appear.");
+            setError("Crucible metal selection did not appear.");
             return false;
         }
         Rs2Keyboard.keyPress(getKeyFromBar(material.getMetal()));
@@ -791,12 +745,12 @@ public class GiantsFoundryScript extends Script
         if (!Rs2Inventory.use(material.getName())
                 || !Microbot.getRs2TileObjectCache().query().withId(CRUCIBLE).interact())
         {
-            setTransient("crucible-use-item", "Could not use " + material.getName() + " on the crucible.");
+            setError("Could not use " + material.getName() + " on the crucible.");
             return false;
         }
         if (!sleepUntil(() -> Rs2Widget.findWidget("How many would you like to add?", null) != null, 5000))
         {
-            setTransient("crucible-quantity", "Recycled-item quantity prompt did not appear.");
+            setError("Recycled-item quantity prompt did not appear.");
             return false;
         }
         Rs2Keyboard.keyPress('3');
@@ -815,7 +769,7 @@ public class GiantsFoundryScript extends Script
         }
         if (!Microbot.getRs2TileObjectCache().query().interact(CRUCIBLE, "Pour"))
         {
-            setTransient("crucible-pour", "Could not pour the crucible.");
+            setError("Could not pour the crucible.");
             return;
         }
         markAction();
@@ -835,9 +789,11 @@ public class GiantsFoundryScript extends Script
     private void pickupPreform()
     {
         setState(State.PICKING_UP_PREFORM, "Collecting the preform");
-        if (needsBucketOfWater())
+        if (config.coolingMethod() == CoolingMethod.BUCKET_OF_WATER
+                && !Rs2Equipment.isWearing(ItemID.SMITHS_GLOVES_I)
+                && !Rs2Inventory.hasItem(ItemID.BUCKET_OF_WATER))
         {
-            withdrawBucketOfWater();
+            setError("A bucket of water is required to collect the preform.");
             return;
         }
         if (!actionReady())
@@ -846,46 +802,11 @@ public class GiantsFoundryScript extends Script
         }
         if (!Microbot.getRs2TileObjectCache().query().interact(MOULD_JIG, "Pick-up"))
         {
-            setTransient("pickup-preform", "Could not collect the poured preform.");
+            setError("Could not collect the poured preform.");
             return;
         }
         markAction();
         sleepUntil(() -> isPreform(get(EquipmentInventorySlot.WEAPON)), 5000);
-    }
-
-    private boolean needsBucketOfWater()
-    {
-        return config.coolingMethod() == CoolingMethod.BUCKET_OF_WATER
-                && !Rs2Equipment.isWearing(ItemID.SMITHS_GLOVES_I)
-                && !Rs2Equipment.isWearing(ItemID.ICE_GLOVES)
-                && !Rs2Inventory.hasItem(ItemID.BUCKET_OF_WATER);
-    }
-
-    /**
-     * The bucket cannot be withdrawn together with a 28-bar plan (29 slots), so it is
-     * fetched in a short bank trip after the crucible is filled, just before pickup.
-     */
-    private void withdrawBucketOfWater()
-    {
-        setState(State.PICKING_UP_PREFORM, "Withdrawing a bucket of water");
-        if (!actionReady())
-        {
-            return;
-        }
-        if (!Rs2Bank.openBank())
-        {
-            setTransient("bank-open", "Could not open the Foundry bank chest.");
-            return;
-        }
-        markAction();
-        if (!Rs2Bank.withdrawDeficit(ItemID.BUCKET_OF_WATER, 1)
-                || !sleepUntil(() -> Rs2Inventory.hasItem(ItemID.BUCKET_OF_WATER), 3000))
-        {
-            Rs2Bank.closeBank();
-            setError("No bucket of water is available in the bank.");
-            return;
-        }
-        Rs2Bank.closeBank();
     }
 
     private void adjustTemperature(boolean heating, int change)
@@ -908,7 +829,7 @@ public class GiantsFoundryScript extends Script
         int actionsLeft = GiantsFoundryState.getActionsLeftInStage();
         if (!Microbot.getRs2TileObjectCache().query().interact(objectId, action))
         {
-            setTransient("temperature-start", "Could not start " + action + ".");
+            setError("Could not start " + action + ".");
             return;
         }
         markAction();
@@ -930,18 +851,9 @@ public class GiantsFoundryScript extends Script
                 GiantsFoundryState.heatingCoolingState.isOverShooting(),
                 Rs2Player.isAnimating());
 
-        monitorTemperatureAction(action, startHeat, startQuality);
-    }
-
-    private void monitorTemperatureAction(String action, int startHeat, int startQuality)
-    {
         boolean completed = sleepUntil(
                 () -> GiantsFoundryState.heatingCoolingState.getRemainingDuration() <= 1,
                 TEMPERATURE_ACTION_TIMEOUT_MS);
-        // settle pause: 1-2 in-flight heat ticks still land after the stop decision, so
-        // the action cooldown keeps the next correction from firing against a heat
-        // reading that is about to change (the observed double waterfall sips)
-        markAction();
         log.info("Giants' Foundry action result: temperature action={} completed={} remainingTicks={} heat={}->{} "
                         + "quality={}->{} heatChangeNeeded={}",
                 action,
@@ -954,7 +866,7 @@ public class GiantsFoundryScript extends Script
                 GiantsFoundryState.getHeatChangeNeeded());
         if (!completed)
         {
-            setTransient("temperature-stall", action + " did not reach its calculated stop point.");
+            setError(action + " did not reach its calculated stop point.");
         }
     }
 
@@ -983,7 +895,7 @@ public class GiantsFoundryScript extends Script
                 return;
             }
         }
-        else if (Rs2Player.isAnimating(1200) && !temperatureActionInProgress && !interruptForStageChange)
+        else if (Rs2Player.isAnimating(1200) && !temperatureActionInProgress)
         {
             return;
         }
@@ -994,7 +906,7 @@ public class GiantsFoundryScript extends Script
                 stage, beforeProgress, beforeQuality);
         if (object == null || !object.click())
         {
-            setTransient("station-start", "Could not interact with the " + stage.getName().toLowerCase() + " station.");
+            setError("Could not interact with the " + stage.getName().toLowerCase() + " station.");
             return;
         }
         if (bonusActive)
@@ -1016,28 +928,22 @@ public class GiantsFoundryScript extends Script
                 GiantsFoundryState.getPreformQuality());
         if (!confirmed)
         {
-            setTransient("station-confirm", "Could not confirm starting the " + stage.getName().toLowerCase() + " station.");
+            setError("Could not confirm starting the " + stage.getName().toLowerCase() + " station.");
         }
     }
 
     private void handIn(FoundrySnapshot snapshot)
     {
         boolean damaged = snapshot.hasPreform && snapshot.preformQuality <= 0;
-        if (!damaged && snapshot.progress >= MAX_PROGRESS && pendingHandIn == null)
-        {
-            pendingHandIn = snapshot;
-            log.info("Giants' Foundry: completed sword observed at quality {}/{}; retaining the snapshot until the hand-in is confirmed",
-                    snapshot.preformQuality, snapshot.preformStartQuality);
-        }
         setState(State.HANDING_IN, damaged ? "Returning damaged sword to Kovac" : "Handing the sword to Kovac");
         if (Rs2Dialogue.hasContinue())
         {
             Rs2Dialogue.clickContinue();
             sleep(400, 700);
-            completeHandInIfAcknowledged(damaged);
+            completeHandInIfAcknowledged(snapshot, damaged);
             return;
         }
-        if (!damaged && snapshot.progress < MAX_PROGRESS && pendingHandIn == null)
+        if (!damaged && snapshot.progress < MAX_PROGRESS)
         {
             GiantsFoundryState.reset();
             resetCycle();
@@ -1050,7 +956,7 @@ public class GiantsFoundryScript extends Script
         var kovac = Microbot.getRs2NpcCache().query().withName("kovac").nearestOnClientThread();
         if (kovac == null || !kovac.click("Hand-in"))
         {
-            setTransient("hand-in", "Could not hand the completed sword to Kovac.");
+            setError("Could not hand the completed sword to Kovac.");
             return;
         }
         markAction();
@@ -1059,16 +965,17 @@ public class GiantsFoundryScript extends Script
                 || (!damaged && GiantsFoundryState.getProgressAmount() < MAX_PROGRESS), 5000);
         if (!acknowledged)
         {
-            setTransient("hand-in-ack", "Kovac did not acknowledge the completed sword.");
+            setError("Kovac did not acknowledge the completed sword.");
             return;
         }
-        completeHandInIfAcknowledged(damaged);
+        completeHandInIfAcknowledged(snapshot, damaged);
     }
 
-    private boolean completeHandInIfAcknowledged(boolean damaged)
+    private boolean completeHandInIfAcknowledged(FoundrySnapshot snapshot, boolean damaged)
     {
         boolean preformRemoved = !isPreform(get(EquipmentInventorySlot.WEAPON));
-        boolean progressReset = pendingHandIn != null
+        boolean progressReset = !damaged
+                && snapshot.progress >= MAX_PROGRESS
                 && GiantsFoundryState.getProgressAmount() < MAX_PROGRESS;
         if (!preformRemoved && !progressReset)
         {
@@ -1077,34 +984,25 @@ public class GiantsFoundryScript extends Script
 
         log.info("Giants' Foundry hand-in acknowledged: preformRemoved={} progressReset={}",
                 preformRemoved, progressReset);
-        finalizeCompletedHandIn(damaged);
+        recordCompletedCraft(snapshot, damaged);
+        GiantsFoundryState.reset();
+        resetCycle();
         return true;
     }
 
-    private void finalizeCompletedHandIn(boolean damaged)
+    private void recordCompletedCraft(FoundrySnapshot snapshot, boolean damaged)
     {
-        if (!damaged && pendingHandIn != null)
-        {
-            recordCompletedCraft(pendingHandIn);
-        }
-        pendingHandIn = null;
-        GiantsFoundryState.reset();
-        resetCycle();
-    }
-
-    private void recordCompletedCraft(FoundrySnapshot completed)
-    {
-        if (cycleCompletionRecorded || completed.progress < MAX_PROGRESS)
+        if (cycleCompletionRecorded || damaged || snapshot.progress < MAX_PROGRESS)
         {
             return;
         }
         cycleCompletionRecorded = true;
         successfulCrafts++;
-        reputationEarned += Math.max(0, completed.preformQuality);
+        reputationEarned += Math.max(0, snapshot.preformQuality);
         log.info("Giants' Foundry craft complete: sessionCraft={} quality={}/{} xpGained={} materialCost={} netGp={}",
                 successfulCrafts,
-                completed.preformQuality,
-                completed.preformStartQuality,
+                snapshot.preformQuality,
+                snapshot.preformStartQuality,
                 smithingXpGained,
                 materialCost,
                 getNetGp());
@@ -1132,11 +1030,6 @@ public class GiantsFoundryScript extends Script
         Stage currentStage = GiantsFoundryState.getCurrentStage(progress);
         int[] currentHeatRange = GiantsFoundryState.getHeatRange(currentStage);
         int[] oreCounts = GiantsFoundryState.getOreCounts();
-        int heatChange = GiantsFoundryState.calculateHeatChangeNeeded(currentStage, heat, currentHeatRange);
-        if (suppressHeatTopUp(heatChange, currentStage, heat, currentHeatRange))
-        {
-            heatChange = 0;
-        }
         return new FoundrySnapshot(
                 progress,
                 heat,
@@ -1149,7 +1042,7 @@ public class GiantsFoundryScript extends Script
                 hasCommission(),
                 hasSelectedMould(),
                 currentStage,
-                heatChange,
+                GiantsFoundryState.calculateHeatChangeNeeded(currentStage, heat, currentHeatRange),
                 oreCounts,
                 GiantsFoundryState.totalOreCount(oreCounts),
                 Rs2Inventory.count(materialPlan.getFirst().getName()),
@@ -1157,30 +1050,6 @@ public class GiantsFoundryScript extends Script
                 Rs2Player.isMoving(),
                 Rs2Player.isAnimating(),
                 String.valueOf(Rs2Player.getWorldLocation()));
-    }
-
-    /**
-     * Skips a proactive in-band correction when the current heat already supports
-     * enough station actions to keep working. Kills the second "top-up" sip at the
-     * waterfall/lava after a temperature action lands slightly inside its margin.
-     */
-    private boolean suppressHeatTopUp(int heatChange, Stage stage, int heat, int[] range)
-    {
-        if (heatChange == 0 || stage == null || range == null || range.length < 2)
-        {
-            return false;
-        }
-        if (heat <= range[0] || heat >= range[1])
-        {
-            return false;
-        }
-        int actionsLeft = GiantsFoundryState.getActionsLeftInStage();
-        if (actionsLeft <= 0)
-        {
-            return false;
-        }
-        return GiantsFoundryState.countActionsAvailable(heat, range, stage)
-                >= Math.min(actionsLeft, 3);
     }
 
     private void logSnapshot(State calculatedState, FoundrySnapshot snapshot)
@@ -1227,27 +1096,6 @@ public class GiantsFoundryScript extends Script
     private void markAction()
     {
         lastActionAt = System.currentTimeMillis();
-        interruptForStageChange = false;
-    }
-
-    /**
-     * Wrong-stage station hits cost quality, so a stage transition clears the action
-     * cooldown and the animation guard to let the interrupting click fire immediately.
-     */
-    private void detectStageChange(FoundrySnapshot snapshot)
-    {
-        if (snapshot.stage == null)
-        {
-            return;
-        }
-        if (lastObservedStage != null && snapshot.stage != lastObservedStage)
-        {
-            log.info("Giants' Foundry: stage changed {} -> {}; interrupting the previous station immediately",
-                    lastObservedStage, snapshot.stage);
-            lastActionAt = 0;
-            interruptForStageChange = true;
-        }
-        lastObservedStage = snapshot.stage;
     }
 
     private void initializeSessionMetrics(int level)
@@ -1292,26 +1140,21 @@ public class GiantsFoundryScript extends Script
         return Character.toUpperCase(value.charAt(0)) + value.substring(1);
     }
 
-    private void recordMaterialCost(int firstQuantity, int secondQuantity)
+    private void recordCycleMaterialCost()
     {
         if (cycleCostRecorded || materialPlan == null)
         {
             return;
         }
-        long cost = materialValue(materialPlan.getFirst(), firstQuantity)
-                + materialValue(materialPlan.getSecond(), secondQuantity);
+        long cost = materialValue(materialPlan.getFirst()) + materialValue(materialPlan.getSecond());
         materialCost += Math.max(0, cost);
         cycleCostRecorded = true;
         log.info("Giants' Foundry material accounting: planLevel={} plan={} cycleCost={} totalCost={}",
                 cyclePlanLevel, materialDescription, cost, materialCost);
     }
 
-    private long materialValue(FoundryMaterialPlan.Material material, int quantity)
+    private long materialValue(FoundryMaterialPlan.Material material)
     {
-        if (quantity <= 0)
-        {
-            return 0;
-        }
         int itemId = Rs2ItemManager.getItemIdByName(material.getName(), false);
         if (itemId <= 0)
         {
@@ -1319,7 +1162,7 @@ public class GiantsFoundryScript extends Script
         }
         int price = Microbot.getClientThread().runOnClientThreadOptional(
                 () -> Microbot.getItemManager().getItemPrice(itemId)).orElse(0);
-        return (long) Math.max(0, price) * quantity;
+        return (long) Math.max(0, price) * material.getQuantity();
     }
 
     private void stopForSupplies(String message)
@@ -1352,7 +1195,7 @@ public class GiantsFoundryScript extends Script
         currentStartQuality = 0;
         currentCraftDescription = "No active commission";
         supplyDescription = "Checking at the Foundry bank";
-        setShopTarget(null);
+        nextShopPurchase = "None";
         supplySnapshotKnown = false;
         sessionStartedAt = System.currentTimeMillis();
     }
@@ -1372,9 +1215,6 @@ public class GiantsFoundryScript extends Script
         cycleCostRecorded = false;
         cycleCompletionRecorded = false;
         materialsCompleteAt = 0;
-        pendingHandIn = null;
-        lastObservedStage = null;
-        interruptForStageChange = false;
     }
 
     private void setState(State nextState, String nextStatus)
@@ -1401,40 +1241,10 @@ public class GiantsFoundryScript extends Script
         markAction();
     }
 
-    /**
-     * Interaction and confirmation failures are usually one-off (lag, a missed click,
-     * a slow widget). They are retried with a cooldown and only latch into a fatal
-     * error after {@link #TRANSIENT_FAILURE_LIMIT} consecutive failures of the same
-     * action. The counter resets whenever the calculated state changes.
-     */
-    private void setTransient(String key, String message)
-    {
-        if (key.equals(lastFailureKey))
-        {
-            consecutiveFailures++;
-        }
-        else
-        {
-            lastFailureKey = key;
-            consecutiveFailures = 1;
-        }
-        if (consecutiveFailures >= TRANSIENT_FAILURE_LIMIT)
-        {
-            setError(message + " (" + consecutiveFailures + " consecutive attempts)");
-            return;
-        }
-        status = message + " (retry " + consecutiveFailures + "/" + TRANSIENT_FAILURE_LIMIT + ")";
-        log.warn("Giants' Foundry transient failure {}/{} [{}]: {}",
-                consecutiveFailures, TRANSIENT_FAILURE_LIMIT, key, message);
-        markAction();
-    }
-
     private void clearError()
     {
         error = "";
         errorLatched = false;
-        lastFailureKey = null;
-        consecutiveFailures = 0;
     }
 
     private static String safeMessage(Throwable throwable)
@@ -1467,14 +1277,9 @@ public class GiantsFoundryScript extends Script
         return currentCraftDescription;
     }
 
-    public static String getNextShopPurchaseName()
+    public static String getNextShopPurchase()
     {
-        return nextShopPurchaseName;
-    }
-
-    public static int getNextShopPurchaseCost()
-    {
-        return nextShopPurchaseCost;
+        return nextShopPurchase;
     }
 
     public static int getCurrentProgress()

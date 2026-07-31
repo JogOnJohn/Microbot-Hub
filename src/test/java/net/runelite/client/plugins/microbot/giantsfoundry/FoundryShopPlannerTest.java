@@ -53,43 +53,6 @@ class FoundryShopPlannerTest
     }
 
     @Test
-    void prefersOutfitOnceCoreMouldsAreUnlocked()
-    {
-        Set<Integer> unlocked = new HashSet<>();
-        unlocked.add(13921); // Flamberge Blade
-        unlocked.add(13916); // Stiletto Forte
-        unlocked.add(13922); // Serpent Blade
-        unlocked.add(13917); // Defender Base
-        unlocked.add(13927); // Defenders Tip
-        unlocked.add(13923); // Claymore Blade
-        Set<Integer> owned = new HashSet<>();
-
-        // Serrated Tip (60) and Juggernaut Forte (61) are eligible, but with six core
-        // moulds unlocked the outfit takes priority per the wiki strategy guide.
-        assertEquals("Smiths boots", next(61, FoundryShopStrategy.MOULDS_THEN_OUTFIT, unlocked, owned).getName());
-
-        owned.add(ItemID.SMITHS_BOOTS);
-        owned.add(ItemID.SMITHS_GLOVES);
-        owned.add(ItemID.SMITHS_TUNIC);
-        owned.add(ItemID.SMITHS_TROUSERS);
-        assertEquals("Serrated Tip", next(61, FoundryShopStrategy.MOULDS_THEN_OUTFIT, unlocked, owned).getName());
-    }
-
-    @Test
-    void mouldOnlyModeIgnoresTheOutfitPriority()
-    {
-        Set<Integer> unlocked = new HashSet<>();
-        unlocked.add(13921);
-        unlocked.add(13916);
-        unlocked.add(13922);
-        unlocked.add(13917);
-        unlocked.add(13927);
-        unlocked.add(13923);
-
-        assertEquals("Serrated Tip", next(61, FoundryShopStrategy.MOULDS_ONLY, unlocked, new HashSet<>()).getName());
-    }
-
-    @Test
     void disablesAllPurchases()
     {
         assertNull(next(99, FoundryShopStrategy.DISABLED, new HashSet<>(), new HashSet<>()));

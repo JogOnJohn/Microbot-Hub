@@ -36,14 +36,14 @@ public class GiantsFoundryOverlay extends OverlayPanel
         addLine("Current craft", GiantsFoundryScript.getCurrentCraftDescription());
         addLine("Materials", GiantsFoundryScript.getMaterialDescription());
         addLine("Supplies", GiantsFoundryScript.getSupplyDescription());
-        addNextPurchaseLine();
+        addLine("Next purchase", GiantsFoundryScript.getNextShopPurchase());
 
         addLine("Crafts completed", Integer.toString(GiantsFoundryScript.getSuccessfulCrafts()));
         addLine("Smithing",
                 GiantsFoundryScript.getCurrentSmithingLevel()
                         + " (+" + GiantsFoundryScript.getSmithingLevelsGained() + ")");
         addLine("XP gained", formatNumber(GiantsFoundryScript.getSmithingXpGained()));
-        addLine("Points",
+        addLine("Reputation",
                 formatNumber(GiantsFoundryScript.getCurrentReputation())
                         + " (+" + formatNumber(GiantsFoundryScript.getReputationEarned())
                         + ", -" + formatNumber(GiantsFoundryScript.getReputationSpent()) + ")");
@@ -73,27 +73,6 @@ public class GiantsFoundryOverlay extends OverlayPanel
         addLine("Progress", GiantsFoundryScript.getCurrentProgress() + "/1000");
         addLine("Crucible", snapshot.oreCount);
         return super.render(graphics);
-    }
-
-    /**
-     * Shows the live points balance against the next automatic purchase, e.g.
-     * "Serrated Tip (214/350 rep)", turning green once it is affordable.
-     */
-    private void addNextPurchaseLine()
-    {
-        String name = GiantsFoundryScript.getNextShopPurchaseName();
-        int cost = GiantsFoundryScript.getNextShopPurchaseCost();
-        if (cost <= 0)
-        {
-            addLine("Next purchase", name);
-            return;
-        }
-        int points = GiantsFoundryScript.getCurrentReputation();
-        addColoredLine("Next purchase",
-                name + " (" + formatNumber(points) + "/" + formatNumber(cost) + " rep)",
-                points >= cost
-                        ? ColorScheme.PROGRESS_COMPLETE_COLOR
-                        : ColorScheme.LIGHT_GRAY_COLOR);
     }
 
     private void addLine(String left, String right)

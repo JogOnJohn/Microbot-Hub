@@ -178,16 +178,6 @@ class FoundryMaterialPlannerTest
         assertEquals(null, plan.getSupplyShortage(14, 14));
     }
 
-    @Test
-    void reportsShortagesAgainstAPartialRemainder()
-    {
-        FoundryMaterialPlan plan = FoundryMaterialPlanner.create(config(AlloyStrategy.AUTO_BEST), 50).getPlan();
-
-        // resuming a partially filled crucible only needs the remaining quantities
-        assertEquals(null, plan.getSupplyShortage(0, 5, 0, 5));
-        assertEquals("missing 3 Mithril bar", plan.getSupplyShortage(20, 2, 0, 5));
-    }
-
     private static void assertAutoPlan(int level, SmithableBars first, int firstAmount, SmithableBars second, int secondAmount)
     {
         FoundryMaterialPlanner.PlanResult result = FoundryMaterialPlanner.create(config(AlloyStrategy.AUTO_BEST), level);
