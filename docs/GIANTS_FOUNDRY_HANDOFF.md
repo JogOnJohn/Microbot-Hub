@@ -6,15 +6,44 @@ Read this before continuing work on the Giants' Foundry plugin.
 
 - Branch: `feat/upgrade-foundry-plugin`
 - Base: `origin/main` at `551da81`
-- Latest code commit: `10787c4` (`fix(giants-foundry): reset materials after hand-in`)
-- Plugin version: `1.2.0`
+- Rollback commit: `0cc07d6` (`revert(giants-foundry): restore 7866f97 checkpoint`)
+- Source plugin version: `1.2.1` (**implemented and unit-tested, not built or installed**)
 - Validated VM: `Bizza 12345` (`clanker\vmadmin2`)
 - Authoritative guest worktree: `C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade`
 - Host context worktree: `F:\vmware boxs\MBOT\repos\Microbot-Hub-giants-foundry`
 - Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\GiantsFoundryPlugin.jar`
 - Installed JAR SHA256: `BE74F9F8E53514E39D9110A8A69CF5DD4455E4DD5EF84B2D2277073B56289FFC`
 
-The installed JAR is the current known-good checkpoint. The client was left running. At the last passive check on 2026-07-30, it was logged in, Giants Foundry was active and unpaused, and the player was animating inside the Foundry at Smithing 53 (146,372 XP).
+The installed `1.2.0` JAR remains the current known-good runtime checkpoint. The client and plugin
+were left running and were not restarted for the pending `1.2.1` source work.
+
+## Pending 1.2.1: passive cooling route decision
+
+The 2026-07-31 rollback smoke observed two complete clean-start swords:
+
+- `93/93`, with one temporary five-quality transition loss later recovered by a sweet spot.
+- `105/115`, with two five-quality transition losses.
+- Both hand-ins counted; there were no transient failures, temperature stalls, or script errors.
+- Across the two cycles there were 37 temperature actions, including 10 zero-tick actions.
+
+Version 1.2.1 adds a bounded wait-versus-waterfall decision for small cooling corrections after a
+temperature-tool action:
+
+- Costs are compared in game ticks using the live player/waterfall positions, the stage's existing
+  waterfall distance, run state, passive decay of one heat per two ticks, and a two-tick waterfall
+  interaction allowance.
+- Waiting is capped at 16 game ticks and must save at least two ticks over travelling to the
+  waterfall and then to the workstation.
+- The decision is re-evaluated by the normal scheduler and times out to the waterfall path if
+  passive decay does not reach the expected range.
+- Waiting is allowed only after a temperature-tool action. It never waits while a workstation
+  animation may still be changing heat.
+- Sweet-spot bonuses, fast cooling, movement, missing scene data, and invalid inputs all retain the
+  existing waterfall behavior.
+
+Focused and full Foundry unit-test selections pass in the Bizza VM. No
+`GiantsFoundryPluginJar` task was run for this change, and the installed JAR hash remains:
+`BE74F9F8E53514E39D9110A8A69CF5DD4455E4DD5EF84B2D2277073B56289FFC`.
 
 ## Branch commits
 

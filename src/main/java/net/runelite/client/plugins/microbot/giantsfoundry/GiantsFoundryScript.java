@@ -7,6 +7,7 @@ import net.runelite.api.ObjectComposition;
 import net.runelite.api.Quest;
 import net.runelite.api.QuestState;
 import net.runelite.api.Skill;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
@@ -48,6 +49,8 @@ public class GiantsFoundryScript extends Script
     private static final long SNAPSHOT_LOG_INTERVAL_MS = 5000;
     private static final long FULL_CRUCIBLE_GRACE_MS = 5000;
     private static final int TEMPERATURE_ACTION_TIMEOUT_MS = 45000;
+    private static final long GAME_TICK_MS = 600;
+    private static final int PASSIVE_COOLING_TIMEOUT_GRACE_TICKS = 4;
     private static final int VARP_FOUNDRY_REPUTATION = 3436;
 
     public static volatile State state = State.VALIDATING;
@@ -89,6 +92,12 @@ public class GiantsFoundryScript extends Script
     private long lastSnapshotLogAt;
     private long materialsCompleteAt;
     private State lastCalculatedState;
+    private boolean passiveCoolingWaitActive;
+    private boolean passiveCoolingWaitTimedOut;
+    private int passiveCoolingStartHeat;
+    private long passiveCoolingWaitStartedAt;
+    private long passiveCoolingWaitDeadlineAt;
+    private Stage passiveCoolingWaitStage;
 
     public boolean run(GiantsFoundryConfig config)
     {
@@ -144,6 +153,11 @@ public class GiantsFoundryScript extends Script
         }
         State calculatedState = FoundryStateResolver.calculate(snapshot.toFacts());
         logSnapshot(calculatedState, snapshot);
+        if (calculatedState != State.COOLING_DOWN)
+        {
+            finishPassiveCoolingWait(snapshot.heat, "temperature entered the working range");
+            resetPassiveCoolingWait();
+        }
 
         switch (calculatedState)
         {
@@ -151,10 +165,10 @@ public class GiantsFoundryScript extends Script
                 handIn(snapshot);
                 break;
             case HEATING:
-                adjustTemperature(true, snapshot.heatChange);
+                adjustTemperature(true, snapshot.heatChange, snapshot.stage);
                 break;
             case COOLING_DOWN:
-                adjustTemperature(false, -snapshot.heatChange);
+                adjustTemperature(false, -snapshot.heatChange, snapshot.stage);
                 break;
             case CRAFTING_WEAPON:
                 craftWeapon(snapshot.stage);
@@ -809,7 +823,7 @@ public class GiantsFoundryScript extends Script
         sleepUntil(() -> isPreform(get(EquipmentInventorySlot.WEAPON)), 5000);
     }
 
-    private void adjustTemperature(boolean heating, int change)
+    private void adjustTemperature(boolean heating, int change, Stage stage)
     {
         boolean fast = change >= FAST_HEAT_THRESHOLD;
         String action = heating
@@ -817,11 +831,20 @@ public class GiantsFoundryScript extends Script
                 : (fast ? "Quench-preform" : "Cool-preform");
         setState(heating ? State.HEATING : State.COOLING_DOWN,
                 (fast ? "Fast " : "Fine ") + (heating ? "heating" : "cooling") + " (" + change + ")");
+        if (heating)
+        {
+            resetPassiveCoolingWait();
+        }
+        else if (shouldWaitForPassiveCooling(change, stage))
+        {
+            return;
+        }
         if (!actionReady() || Rs2Player.isMoving())
         {
             return;
         }
 
+        finishPassiveCoolingWait(GiantsFoundryState.getHeatAmount(), "waterfall route became faster");
         int objectId = heating ? LAVA_POOL : WATERFALL;
         int startHeat = GiantsFoundryState.getHeatAmount();
         int startQuality = GiantsFoundryState.getPreformQuality();
@@ -868,6 +891,109 @@ public class GiantsFoundryScript extends Script
         {
             setError(action + " did not reach its calculated stop point.");
         }
+    }
+
+    private boolean shouldWaitForPassiveCooling(int change, Stage stage)
+    {
+        // Waiting is only safe after a temperature-tool action. At a workstation,
+        // the current animation may keep changing heat until another interaction interrupts it.
+        if (!temperatureActionInProgress
+                || stage == null
+                || change >= FAST_HEAT_THRESHOLD
+                || BonusWidget.isActive()
+                || Rs2Player.isMoving())
+        {
+            return false;
+        }
+        if (passiveCoolingWaitStage != null && passiveCoolingWaitStage != stage)
+        {
+            resetPassiveCoolingWait();
+        }
+        if (passiveCoolingWaitTimedOut)
+        {
+            return false;
+        }
+
+        WorldPoint playerLocation = Rs2Player.getWorldLocation();
+        Rs2TileObjectModel waterfall = Microbot.getRs2TileObjectCache().query()
+                .withId(WATERFALL)
+                .nearestOnClientThread();
+        if (playerLocation == null || waterfall == null || waterfall.getWorldLocation() == null)
+        {
+            return false;
+        }
+
+        PassiveCoolingPlanner.Decision decision = PassiveCoolingPlanner.decide(
+                change,
+                playerLocation.distanceTo(waterfall.getWorldLocation()),
+                stage.getDistanceToWaterfall(),
+                playerLocation.distanceTo(stage.getLocation()),
+                GiantsFoundryState.isPlayerRunning());
+        if (!decision.isWait())
+        {
+            return false;
+        }
+
+        long now = System.currentTimeMillis();
+        if (passiveCoolingWaitActive && now >= passiveCoolingWaitDeadlineAt)
+        {
+            log.info("Giants' Foundry action: passive cooling timed out stage={} heat={}->{} elapsedMs={}; "
+                            + "using the waterfall",
+                    stage,
+                    passiveCoolingStartHeat,
+                    GiantsFoundryState.getHeatAmount(),
+                    now - passiveCoolingWaitStartedAt);
+            passiveCoolingWaitActive = false;
+            passiveCoolingWaitTimedOut = true;
+            return false;
+        }
+
+        if (!passiveCoolingWaitActive)
+        {
+            passiveCoolingWaitActive = true;
+            passiveCoolingWaitStage = stage;
+            passiveCoolingStartHeat = GiantsFoundryState.getHeatAmount();
+            passiveCoolingWaitStartedAt = now;
+            passiveCoolingWaitDeadlineAt = now
+                    + (decision.getPassiveWaitTicks() + PASSIVE_COOLING_TIMEOUT_GRACE_TICKS) * GAME_TICK_MS;
+            log.info("Giants' Foundry action: passive cooling stage={} heat={} change={} waitTicks={} "
+                            + "passiveRouteTicks={} waterfallRouteTicks={} savedTicks={} position={}",
+                    stage,
+                    passiveCoolingStartHeat,
+                    change,
+                    decision.getPassiveWaitTicks(),
+                    decision.getPassiveRouteTicks(),
+                    decision.getWaterfallRouteTicks(),
+                    decision.getSavedTicks(),
+                    playerLocation);
+        }
+        setState(State.COOLING_DOWN,
+                "Waiting for passive cooling (" + decision.getPassiveWaitTicks() + " ticks)");
+        return true;
+    }
+
+    private void finishPassiveCoolingWait(int heat, String reason)
+    {
+        if (!passiveCoolingWaitActive)
+        {
+            return;
+        }
+        log.info("Giants' Foundry action result: passive cooling heat={}->{} elapsedMs={} reason={}",
+                passiveCoolingStartHeat,
+                heat,
+                System.currentTimeMillis() - passiveCoolingWaitStartedAt,
+                reason);
+        passiveCoolingWaitActive = false;
+    }
+
+    private void resetPassiveCoolingWait()
+    {
+        passiveCoolingWaitActive = false;
+        passiveCoolingWaitTimedOut = false;
+        passiveCoolingStartHeat = 0;
+        passiveCoolingWaitStartedAt = 0;
+        passiveCoolingWaitDeadlineAt = 0;
+        passiveCoolingWaitStage = null;
     }
 
     private void craftWeapon(Stage stage)
@@ -1357,6 +1483,7 @@ public class GiantsFoundryScript extends Script
     {
         GiantsFoundryState.reset();
         GiantsFoundryState.heatingCoolingState.stop();
+        resetPassiveCoolingWait();
         resetCycle();
         clearError();
         super.shutdown();
