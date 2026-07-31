@@ -20,11 +20,10 @@ stopped and restarted workstations near stage boundaries was rejected because it
 station use, disabled run through its movement call, and materially slowed crafts. That experiment
 is not present in the installed source or JAR.
 
-The final requested one-sword smoke of this exact streamlined JAR was blocked before gameplay:
-the relaunched client remained at `LOGIN_SCREEN` because RuneScape's authentication REST request
-repeatedly returned HTTP 400 with `Remote host terminated the handshake`. The client was left open
-with Giants' Foundry disabled for manual takeover. See the 1.2.3 section for the live evidence
-collected before the authentication failure.
+The exact installed JAR completed a clean-start sword at `119/119` quality on 2026-07-31. It
+withdrew from an already-open bank, completed every stage transition without quality loss, handed
+the sword in, and acknowledged the reward. No Foundry error, client-thread timeout, repeated-click
+loop, or run-toggle regression occurred. This is the current known-good checkpoint.
 
 The rejected controlled-final experimental JAR is retained at:
 `C:\Users\VMAdmin2\operator-work\output\archive\giants-foundry-plugin-backups\GiantsFoundryPlugin-controlled-final-experiment-20260731-195539.jar`.
@@ -78,8 +77,18 @@ Live evidence collected while tuning 1.2.3:
   progress tick, confirming that its pursuit of perfect quality was too costly.
 - After hand-in, the prior build reproduced a false `Could not open the Foundry bank chest`
   report while the bank was visibly open. The widget-aware bank guard was added afterward.
-- The exact final streamlined build passed tests, built, installed, and launched. Its requested
-  one-sword smoke could not begin because login authentication failed as described above.
+- The exact final streamlined build passed tests, built, installed, and completed a clean-start
+  14 steel/14 mithril sword at `119/119`. Material preparation recognized the already-open bank;
+  all event-assisted stage transitions and temperature handoffs preserved quality; hand-in logged
+  `preformRemoved=true` and `progressReset=true`; and the craft-complete record reported session
+  craft 1 with no Foundry errors or client-thread timeouts.
+- The only observed inefficiency was the trip-hammer-to-polishing transition. The first quench
+  handoff arrived at heat 329 and required one additional fine-cooling pass to enter the polishing
+  band at heat 286. It cost time but no quality and did not produce a repeated-action loop.
+- The smoke ran from material preparation at 20:08:01 AEST to reward acknowledgement at 20:12:49
+  AEST. The plugin was stopped after reward for manual play. Before the stop landed, it accepted
+  the next commission and poured another 14 steel/14 mithril preform, which was left ready to
+  collect manually.
 
 ## Version 1.2.2: quality-control experiment
 
@@ -268,8 +277,9 @@ The full hand-in, shop purchase, next commission, bank withdrawal, and crucible-
 - Enabling the plugin before login can briefly show the Sleeping Giants requirement. Start it after login if this latch appears.
 - A client relaunch produced two transient `SSLHandshakeException`/HTTP 400 authentication attempts before BreakHandler recovered automatically. No evidence connected this to Foundry logic.
 - The 1.2.3 relaunch on 2026-07-31 repeatedly failed the same authentication REST request with
-  HTTP 400 and `Remote host terminated the handshake`; unlike the earlier occurrence, it did not
-  recover during the bounded smoke window. The final one-sword smoke remains pending.
+  HTTP 400 and `Remote host terminated the handshake`. Login later succeeded and the final
+  one-sword smoke completed perfectly; retain the authentication failure as an environmental
+  incident, not a Foundry defect.
 
 ## Continue on the laptop
 
