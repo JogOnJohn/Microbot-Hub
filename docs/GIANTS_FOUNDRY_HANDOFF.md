@@ -6,20 +6,18 @@ Read this before continuing work on the Giants' Foundry plugin.
 
 - Branch: `feat/upgrade-foundry-plugin`
 - Base: `origin/main` at `551da81`
-- Latest code commit: `d9b111d` (`fix(giants-foundry): same-tick stage interrupts and heat momentum control`)
-- Plugin version: `1.4.0` (**not yet live-validated**; `1.3.0` was live-smoked on the laptop on 2026-07-30 — see "Laptop live smoke" below)
+- Previous code commit: `d9b111d` (`fix(giants-foundry): same-tick stage interrupts and heat momentum control`)
+- Plugin version: `1.4.1` (**live-validated on 2026-07-31**; see "1.4.0 regression and 1.4.1 recovery" below)
 - Validated VM: `Bizza 12345` (`clanker\vmadmin2`)
 - Authoritative guest worktree: `C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade`
 - Host context worktree: `F:\vmware boxs\MBOT\repos\Microbot-Hub-giants-foundry`
-- Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\GiantsFoundryPlugin.jar` (still the `1.2.0` build)
-- Installed 1.2.0 JAR SHA256: `BE74F9F8E53514E39D9110A8A69CF5DD4455E4DD5EF84B2D2277073B56289FFC`
+- Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\GiantsFoundryPlugin.jar` (`1.4.1`)
+- Installed 1.4.1 JAR SHA256: `720578ABC83915F1320AB681A76F2B6D30DB8CAEDA5335EA8D2B0D5DA301DAB4`
 
-The installed VM JAR is the last **live-validated** checkpoint (`1.2.0`, commit `10787c4`). Commit
-`f2ab87a` (version `1.3.0`) has full unit coverage and a clean local
-`test GiantsFoundryPluginJar` run but has **not** run against a live client; the VM still has the
-1.2.0 JAR installed. The client was intentionally closed immediately after the final 1.2.0 smoke
-hand-in on 2026-07-30, and the Bizza VM was shut down after the 1.2.0 handoff was pushed. The last
-authenticated check before that smoke showed Smithing 53 (146,372 XP).
+The installed VM JAR is the current **live-validated** checkpoint. The 2026-07-31 smoke completed
+and handed in one sword after the unsafe 1.4.0 same-tick stage handler was removed. The client was
+left open and logged in on world 330, but the Giants' Foundry plugin was stopped after the hand-in
+to avoid consuming another cycle while the residual quality losses are reviewed.
 
 ## Branch commits
 
@@ -137,32 +135,53 @@ Those three findings are what `d9b111d` (1.4.0) addresses:
    `suppressHeatTopUp` skips proactive in-band corrections while current heat still supports
    `min(actionsLeftInStage, 3)` station actions.
 
-### Testing notes for the next session (1.4.0)
+## 1.4.0 regression and 1.4.1 recovery: 2026-07-31
 
-1. Rebuild and install: `gradlew --no-daemon test GiantsFoundryPluginJar -PpluginList=GiantsFoundryPlugin`,
-   copy `build/libs/GiantsFoundryPlugin-1.4.0.jar` to `~/.runelite/microbot-plugins/GiantsFoundryPlugin.jar`
-   while the client is closed, then full client restart (overlay title must read v1.4.0).
-2. Watch grindstone exits specifically: expect `same-tick stage-flip interrupt` log lines and no
-   -5 quality in the temperature window after `GRINDSTONE -> TRIP_HAMMER` / `GRINDSTONE ->
-   POLISHING_WHEEL`. The polled `stage changed ... interrupting` line should now be rare
-   (it fires only if the event path missed).
-3. Watch hammer entries: the long fine heat should stop ~2 ticks earlier and post-interrupt heat
-   should peak well below 990 (was 997-998 on every hammer entry in the 1.3.0 smoke), with no
-   immediate double-cool afterwards.
-4. Confirm temperature actions are followed by a ~1.2s pause and that back-to-back same-direction
-   sips (two cools or two heats within ~10s) have mostly disappeared.
-5. Watch for regressions the event interrupt could introduce: a spurious temperature click right
-   after hand-in (progress reset) or at the first stage of a new sword. Guards exist (progress<=0,
-   script-state check, first-observation check) but they are unit-tested only.
-6. If the event interrupt ever misbehaves, it fails safe: `onStageFlip` catches all exceptions and
-   the polled path still runs. Worst case matches 1.3.0 behavior.
-7. Longer soak: Claymore Blade should be bought at Smithing 59, and once six shop moulds are
-   unlocked the next purchase target should switch to Smiths boots (outfit priority).
+The first live 1.4.0 sword failed at progress 400. At the
+`POLISHING_WHEEL -> TRIP_HAMMER` boundary, the progress-varbit event set the new stage and clicked
+`Dunk-preform`, but the 300 ms worker had already captured the previous polishing snapshot. The
+worker resumed, treated that stale snapshot as a reverse `TRIP_HAMMER -> POLISHING_WHEEL`
+transition, and clicked the polishing wheel. That cancelled the lava action while
+`heatingCoolingState` remained active. The next worker tick monitored a temperature action that
+was no longer happening for about 45 seconds, until heat and quality both reached zero. The
+damaged sword was returned to Kovac.
+
+This was not fail-safe exception handling; it was a cross-thread state/action race. Version 1.4.1
+removes only the progress-varbit same-tick action path and the scheduler branch that monitored an
+event-started temperature action. The authoritative polled stage transition is restored. The 1.4
+heat-momentum guard, settle cooldown, top-up suppression, and all earlier Foundry improvements
+remain.
+
+Validation:
+
+- Guest build: JDK 11, `test GiantsFoundryPluginJar -PpluginList=GiantsFoundryPlugin`.
+- Tests: 33 passed, zero failures/errors.
+- Built and installed JAR SHA256:
+  `720578ABC83915F1320AB681A76F2B6D30DB8CAEDA5335EA8D2B0D5DA301DAB4`.
+- Interactive client launch; visible-session Java process and authenticated Agent Server on
+  `127.0.0.1:8081` confirmed separately.
+- One full sword ran from progress 0 to hand-in without a reverse-stage transition, temperature
+  stall, damaged-sword path, scheduler exception, or zero-quality collapse.
+- Hand-in at 13:34:04 AEST: `sessionCraft=1`, quality `88/113`, Smithing XP gained `7422`.
+- The next cycle had two transient `bank-open` failures and then recovered on the third attempt.
+
+Residual issues:
+
+- Polled transitions still lose five quality on some boundaries. The recovery sword fell from
+  113 to 88, with losses around grindstone/hammer/polish transitions. This is a performance and
+  reward issue, not a completion failure.
+- Several fine heat/cool corrections fired within a stage. The heat solver avoided the previous
+  997-998 hammer-entry peak, but temperature chatter is not fully eliminated.
+- Any future same-tick optimization must pass a stage generation/snapshot token into the worker
+  and prevent stale worker actions after an event. Do not restore the 1.4.0 shared-state mutation
+  or event-started action monitor.
+- Longer soak: Claymore Blade should be bought at Smithing 59, and once six shop moulds are
+  unlocked the next purchase target should switch to Smiths boots (outfit priority).
 
 ## Known limits and remaining tests
 
-- **Everything in 1.4.0 (`d9b111d`) is unit-tested but not live-validated** — see the testing notes
-  above. From 1.3.0, the following remain unexercised live: bucket-of-water mode end to end, a
+- **1.4.1 is the current live-validated completion checkpoint**, but only one recovery sword was
+  observed. The following remain unexercised live: bucket-of-water mode end to end, a
   mid-fill restart with an empty inventory, a genuine transient-failure retry, and a
   multi-purchase shop visit (two items affordable at once).
 - Graceful supply exhaustion is covered by planner/state tests but has not been deliberately tested against a depleted live bank.
@@ -194,18 +213,18 @@ cd 'F:\vmware boxs\Bizza 12345 MBOT'
 
 Use the host checkout for fast reading, but build and validate in the Bizza VM. Source changes do not affect the running client until the plugin JAR is rebuilt and installed. Never launch a visible RuneLite client through non-interactive SSH.
 
-The guest worktree still holds the 1.2.0 build; after pulling `f2ab87a` a rebuild produces:
+The guest worktree currently builds:
 
 ```text
-C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade\build\libs\GiantsFoundryPlugin-1.3.0.jar
+C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade\build\libs\GiantsFoundryPlugin-1.4.1.jar
 ```
 
 The last interactive launch helper is:
 
 ```text
-Host:  F:\vmware boxs\MBOT\operator-work\temp\launch-bizza-giants-foundry-1.2.0.ps1
-Guest: C:\Users\VMAdmin2\operator-work\temp\launch-bizza-giants-foundry-1.2.0.ps1
-Log:   C:\Users\VMAdmin2\operator-work\output\logs\microbot-client-launch-giants-foundry-1.2.0.log
+Host:  F:\vmware boxs\MBOT\operator-work\temp\launch-bizza-giants-foundry-1.4.1.ps1
+Guest: C:\Users\VMAdmin2\operator-work\temp\launch-bizza-giants-foundry-1.4.1.ps1
+Log:   C:\Users\VMAdmin2\operator-work\output\logs\microbot-client-launch-giants-foundry-1.4.1.log
 ```
 
 The Agent Server is guest-local on port 8081 and requires the configured `X-Agent-Token`. Prefer the guest `microbot-cli` wrapper so the token is never printed or copied into documentation. Useful passive checks are:
@@ -219,9 +238,11 @@ Set-Location C:\Users\VMAdmin2\IdeaProjects\Microbot
 
 ## Recommended next sequence
 
-1. Fetch this branch and confirm `f2ab87a` or later before making changes.
-2. Rebuild with JDK 11 in the guest worktree, replace the installed JAR only while the client is closed, launch interactively, and verify both the visible window and Agent Server state. The installed VM JAR is still 1.2.0 until this is done.
-3. Smoke several full hand-in/rebank cycles on 1.3.0. Confirm every completed sword is counted (no missing `craft complete` lines), that stage boundaries no longer cost quality, and that heat control does not chatter or overshoot with the two-tick floor.
+1. Fetch this branch and confirm version 1.4.1 or later before making changes.
+2. Treat 1.4.1 as the completion-safe baseline. Do not restore the 1.4.0 same-tick event action
+   without explicit stale-snapshot/action arbitration.
+3. Smoke several full hand-in/rebank cycles on 1.4.1 and quantify quality losses and redundant
+   temperature corrections before designing the next stage-interrupt optimization.
 4. Deliberately stop the plugin mid-crucible-fill with an empty inventory and restart; it should bank for the remainder instead of latching an error.
 5. Run at least one full sword in bucket-of-water mode; the bucket should be fetched in a separate bank trip just before pickup.
 6. Test a controlled supply shortage when interrupting the existing progression is acceptable.
