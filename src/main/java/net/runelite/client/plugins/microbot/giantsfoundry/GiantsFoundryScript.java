@@ -28,9 +28,14 @@ import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.item.Rs2ItemManager;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
+import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
+import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.awt.event.KeyEvent;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment.get;
@@ -49,6 +54,7 @@ public class GiantsFoundryScript extends Script
     private static final long SNAPSHOT_LOG_INTERVAL_MS = 5000;
     private static final long FULL_CRUCIBLE_GRACE_MS = 5000;
     private static final int TEMPERATURE_ACTION_TIMEOUT_MS = 45000;
+    private static final int TEMPERATURE_STALL_TIMEOUT_MS = 6000;
     private static final long GAME_TICK_MS = 600;
     private static final int PASSIVE_COOLING_TIMEOUT_GRACE_TICKS = 4;
     private static final int VARP_FOUNDRY_REPUTATION = 3436;
@@ -92,8 +98,26 @@ public class GiantsFoundryScript extends Script
     private long lastSnapshotLogAt;
     private long materialsCompleteAt;
     private State lastCalculatedState;
-    private Stage lastObservedStage;
+    private final StageTransitionCoordinator stageTransitions = new StageTransitionCoordinator();
     private boolean interruptForStageChange;
+    private boolean stageTransitionCancelPending;
+    private long continuousActionResumeAt;
+    private boolean temperatureActionHeating;
+    private boolean temperatureActionFast;
+    private boolean temperatureActionDownshifted;
+    private boolean temperatureHandoffCancelIssued;
+    private long temperatureActionGeneration;
+    private long temperatureActionDeadlineAt;
+    private long temperatureLastChangedAt;
+    private int temperatureStartHeat;
+    private int temperatureStartQuality;
+    private int temperatureLastHeat;
+    private int temperatureObservedStep;
+    private int temperatureLastEventSequence;
+    private String temperatureActionName;
+    private volatile int eventHeat;
+    private volatile int eventHeatSequence;
+    private ScheduledExecutorService interactionExecutor;
     private boolean passiveCoolingWaitActive;
     private boolean passiveCoolingWaitTimedOut;
     private int passiveCoolingStartHeat;
@@ -110,7 +134,15 @@ public class GiantsFoundryScript extends Script
         Rs2Antiban.setActivityIntensity(ActivityIntensity.MODERATE);
         log.info("Giants' Foundry: mouse activity intensity set to MODERATE");
         setState(State.VALIDATING, "Validating configuration");
-        mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
+        if (interactionExecutor == null || interactionExecutor.isShutdown())
+        {
+            interactionExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "GiantsFoundryInteraction");
+                thread.setDaemon(true);
+                return thread;
+            });
+        }
+        mainScheduledFuture = interactionExecutor.scheduleWithFixedDelay(() -> {
             try
             {
                 if (!super.run() || !Microbot.isLoggedIn())
@@ -136,6 +168,40 @@ public class GiantsFoundryScript extends Script
         return true;
     }
 
+    /**
+     * RuneLite event callbacks only publish observations. The script scheduler
+     * remains the sole owner of game interactions.
+     */
+    void onProgressChanged(int progress)
+    {
+        stageTransitions.publishProgress(progress);
+        ScheduledExecutorService executor = interactionExecutor;
+        if (executor == null || executor.isShutdown()
+                || mainScheduledFuture == null || mainScheduledFuture.isDone())
+        {
+            return;
+        }
+        try
+        {
+            executor.execute(() -> {
+                if (!errorLatched && Microbot.isLoggedIn() && super.run())
+                {
+                    tick();
+                }
+            });
+        }
+        catch (RejectedExecutionException ignored)
+        {
+            // Plugin shutdown raced the varbit event.
+        }
+    }
+
+    void onHeatChanged(int heat)
+    {
+        eventHeat = heat;
+        eventHeatSequence++;
+    }
+
     private void tick()
     {
         if (errorLatched)
@@ -149,13 +215,43 @@ public class GiantsFoundryScript extends Script
 
         FoundrySnapshot snapshot = captureSnapshot();
         updateLiveMetrics(snapshot);
-        detectStageChange(snapshot);
+        StageTransitionCoordinator.Transition observedTransition =
+                stageTransitions.observe(snapshot.progress, snapshot.stage);
+        long generation = stageTransitions.getGeneration();
+        StageTransitionCoordinator.Transition pendingTransition =
+                stageTransitions.getPending(generation);
+        if (pendingTransition != null)
+        {
+            handleStageTransition(pendingTransition);
+            generation = stageTransitions.getGeneration();
+        }
+        else if (observedTransition != null)
+        {
+            generation = observedTransition.getGeneration();
+        }
+        if (!stageTransitions.isCurrent(generation))
+        {
+            return;
+        }
+        if (System.currentTimeMillis() < continuousActionResumeAt)
+        {
+            return;
+        }
+        if (temperatureActionInProgress
+                && controlTemperature(snapshot.stage, generation))
+        {
+            return;
+        }
         if (snapshot.oreCount > 0)
         {
             recordCycleMaterialCost();
         }
         State calculatedState = FoundryStateResolver.calculate(snapshot.toFacts());
         logSnapshot(calculatedState, snapshot);
+        if (cancelStaleContinuousAction(calculatedState, snapshot.stage))
+        {
+            return;
+        }
         if (calculatedState != State.COOLING_DOWN)
         {
             finishPassiveCoolingWait(snapshot.heat, "temperature entered the working range");
@@ -168,13 +264,13 @@ public class GiantsFoundryScript extends Script
                 handIn(snapshot);
                 break;
             case HEATING:
-                adjustTemperature(true, snapshot.heatChange, snapshot.stage);
+                adjustTemperature(true, snapshot.heatChange, snapshot.stage, generation);
                 break;
             case COOLING_DOWN:
-                adjustTemperature(false, -snapshot.heatChange, snapshot.stage);
+                adjustTemperature(false, -snapshot.heatChange, snapshot.stage, generation);
                 break;
             case CRAFTING_WEAPON:
-                craftWeapon(snapshot.stage);
+                craftWeapon(snapshot.stage, generation);
                 break;
             case WAITING:
                 setState(State.WAITING, "Waiting for the Foundry HUD");
@@ -201,6 +297,88 @@ public class GiantsFoundryScript extends Script
                 setError("No action is available for calculated state " + calculatedState + ".");
                 break;
         }
+    }
+
+    private void handleStageTransition(StageTransitionCoordinator.Transition transition)
+    {
+        if (transition == null
+                || stageTransitions.getPending(transition.getGeneration()) == null)
+        {
+            return;
+        }
+        log.info("Giants' Foundry: stage event {} -> {} progress={} generation={}; "
+                        + "invalidating previous action",
+                transition.getPreviousStage(),
+                transition.getNextStage(),
+                transition.getProgress(),
+                transition.getGeneration());
+        clearTemperatureAction("stage event");
+        resetPassiveCoolingWait();
+        lastActionAt = 0;
+        interruptForStageChange = true;
+        stageTransitionCancelPending = true;
+        stageTransitions.acknowledge(transition.getGeneration());
+    }
+
+    private boolean cancelStaleContinuousAction(State calculatedState, Stage stage)
+    {
+        if (!stageTransitionCancelPending)
+        {
+            return false;
+        }
+        WorldPoint destination = getActionDestination(calculatedState, stage);
+        boolean clicked = interruptContinuousAction(destination, "stage transition");
+        stageTransitionCancelPending = false;
+        return clicked;
+    }
+
+    private WorldPoint getActionDestination(State actionState, Stage stage)
+    {
+        if (actionState == State.HEATING)
+        {
+            Rs2TileObjectModel lava = Microbot.getRs2TileObjectCache().query().withId(LAVA_POOL).nearest();
+            return lava == null ? null : lava.getWorldLocation();
+        }
+        if (actionState == State.COOLING_DOWN)
+        {
+            Rs2TileObjectModel waterfall = Microbot.getRs2TileObjectCache().query().withId(WATERFALL).nearest();
+            return waterfall == null ? null : waterfall.getWorldLocation();
+        }
+        return stage == null ? null : stage.getLocation();
+    }
+
+    private boolean interruptContinuousAction(WorldPoint destination, String reason)
+    {
+        WorldPoint player = Rs2Player.getWorldLocation();
+        if (player == null || destination == null)
+        {
+            return false;
+        }
+
+        int dx = Integer.compare(destination.getX(), player.getX());
+        int dy = Integer.compare(destination.getY(), player.getY());
+        WorldPoint step = new WorldPoint(
+                player.getX() + dx,
+                player.getY() + dy,
+                player.getPlane());
+        if (step.equals(player) || !Rs2Tile.isWalkable(step))
+        {
+            step = Rs2Tile.getNearestWalkableTile(destination);
+        }
+        if (step == null || step.equals(player))
+        {
+            return false;
+        }
+
+        boolean clicked = Rs2Walker.walkFastCanvas(step, true);
+        log.info("Giants' Foundry action: interrupt={} from={} step={} destination={} clicked={}",
+                reason, player, step, destination, clicked);
+        if (clicked)
+        {
+            lastActionAt = 0;
+            continuousActionResumeAt = System.currentTimeMillis() + GAME_TICK_MS + 100;
+        }
+        return clicked;
     }
 
     private boolean validateRuntime()
@@ -612,7 +790,7 @@ public class GiantsFoundryScript extends Script
         {
             return false;
         }
-        if (!Rs2Bank.openBank())
+        if (!ensureFoundryBankOpen())
         {
             setError("Could not open the Foundry bank chest.");
             return false;
@@ -668,7 +846,7 @@ public class GiantsFoundryScript extends Script
 
     private void refreshSupplySnapshot(boolean depositInventory)
     {
-        if (!Rs2Bank.openBank())
+        if (!ensureFoundryBankOpen())
         {
             return;
         }
@@ -680,6 +858,17 @@ public class GiantsFoundryScript extends Script
                 availableSupply(materialPlan.getFirst()),
                 availableSupply(materialPlan.getSecond()));
         Rs2Bank.closeBank();
+    }
+
+    private boolean ensureFoundryBankOpen()
+    {
+        if (Rs2Bank.isOpen())
+        {
+            return true;
+        }
+        Rs2Bank.openBank();
+        return Rs2Bank.isOpen()
+                || sleepUntil(Rs2Bank::isOpen, 3000);
     }
 
     private void updateSupplySnapshot(int firstSupply, int secondSupply)
@@ -826,14 +1015,12 @@ public class GiantsFoundryScript extends Script
         sleepUntil(() -> isPreform(get(EquipmentInventorySlot.WEAPON)), 5000);
     }
 
-    private void adjustTemperature(boolean heating, int change, Stage stage)
+    private void adjustTemperature(boolean heating, int change, Stage stage, long generation)
     {
-        boolean fast = change >= FAST_HEAT_THRESHOLD;
-        String action = heating
-                ? (fast ? "Dunk-preform" : "Heat-preform")
-                : (fast ? "Quench-preform" : "Cool-preform");
-        setState(heating ? State.HEATING : State.COOLING_DOWN,
-                (fast ? "Fast " : "Fine ") + (heating ? "heating" : "cooling") + " (" + change + ")");
+        if (stage == null || !stageTransitions.isCurrent(generation))
+        {
+            return;
+        }
         if (heating)
         {
             resetPassiveCoolingWait();
@@ -851,8 +1038,35 @@ public class GiantsFoundryScript extends Script
         int objectId = heating ? LAVA_POOL : WATERFALL;
         int startHeat = GiantsFoundryState.getHeatAmount();
         int startQuality = GiantsFoundryState.getPreformQuality();
-        int[] heatRange = GiantsFoundryState.getCurrentHeatRange();
-        int actionsLeft = GiantsFoundryState.getActionsLeftInStage();
+        int[] heatRange = GiantsFoundryState.getHeatRange(stage);
+        int actionsLeft = getActionsLeft(stage);
+        WorldPoint playerLocation = Rs2Player.getWorldLocation();
+        int distanceToStage = playerLocation == null
+                ? (heating ? stage.getDistanceToLava() : stage.getDistanceToWaterfall())
+                : playerLocation.distanceTo(stage.getLocation());
+        TemperatureControlPlanner.Plan initialPlan = TemperatureControlPlanner.plan(
+                stage,
+                heatRange,
+                actionsLeft,
+                startHeat,
+                distanceToStage,
+                GiantsFoundryState.isPlayerRunning(),
+                0,
+                heating,
+                false);
+        int targetChange = Math.abs(initialPlan.getDesiredDepartureHeat() - startHeat);
+        boolean fast = targetChange >= FAST_HEAT_THRESHOLD;
+        String action = heating
+                ? (fast ? "Dunk-preform" : "Heat-preform")
+                : (fast ? "Quench-preform" : "Cool-preform");
+        setState(heating ? State.HEATING : State.COOLING_DOWN,
+                (fast ? "Fast " : "Fine ") + (heating ? "heating" : "cooling")
+                        + " to " + initialPlan.getDesiredDepartureHeat());
+        if (!stageTransitions.isCurrent(generation)
+                || GiantsFoundryState.getCurrentStage() != stage)
+        {
+            return;
+        }
         if (!Microbot.getRs2TileObjectCache().query().interact(objectId, action))
         {
             setError("Could not start " + action + ".");
@@ -863,11 +1077,26 @@ public class GiantsFoundryScript extends Script
         GiantsFoundryState.heatingCoolingState.stop();
         GiantsFoundryState.heatingCoolingState.setup(fast, heating, action);
         GiantsFoundryState.heatingCoolingState.start(startHeat);
-        log.info("Giants' Foundry action: temperature action={} heat={} change={} range={}-{} actionsLeft={} "
+        temperatureActionHeating = heating;
+        temperatureActionFast = fast;
+        temperatureActionDownshifted = false;
+        temperatureActionGeneration = generation;
+        temperatureActionDeadlineAt = System.currentTimeMillis() + TEMPERATURE_ACTION_TIMEOUT_MS;
+        temperatureLastChangedAt = System.currentTimeMillis();
+        temperatureStartHeat = startHeat;
+        temperatureStartQuality = startQuality;
+        temperatureLastHeat = startHeat;
+        temperatureObservedStep = 0;
+        temperatureLastEventSequence = eventHeatSequence;
+        temperatureActionName = action;
+        log.info("Giants' Foundry action: temperature action={} heat={} change={} targetChange={} target={} "
+                        + "range={}-{} actionsLeft={} "
                         + "plannedTicks={} predictedHeat={} goalInRange={} overshooting={} interruptingAnimation={}",
                 action,
                 startHeat,
                 change,
+                targetChange,
+                initialPlan.getDesiredDepartureHeat(),
                 heatRange[0],
                 heatRange[1],
                 actionsLeft,
@@ -876,26 +1105,233 @@ public class GiantsFoundryScript extends Script
                 GiantsFoundryState.heatingCoolingState.isGoalInRange(),
                 GiantsFoundryState.heatingCoolingState.isOverShooting(),
                 Rs2Player.isAnimating());
+    }
 
-        boolean completed = sleepUntil(
-                () -> GiantsFoundryState.heatingCoolingState.getRemainingDuration() <= 1,
-                TEMPERATURE_ACTION_TIMEOUT_MS);
-        // Let residual temperature momentum settle before the next decision.
-        markAction();
-        log.info("Giants' Foundry action result: temperature action={} completed={} remainingTicks={} heat={}->{} "
-                        + "quality={}->{} heatChangeNeeded={}",
-                action,
-                completed,
-                GiantsFoundryState.heatingCoolingState.getRemainingDuration(),
-                startHeat,
-                GiantsFoundryState.getHeatAmount(),
-                startQuality,
-                GiantsFoundryState.getPreformQuality(),
-                GiantsFoundryState.getHeatChangeNeeded());
-        if (!completed)
+    /**
+     * Re-evaluates the live heat after every varbit update. Returning true means
+     * this loop iteration has already issued or is waiting on the temperature
+     * action, so the ordinary state resolver must not issue another interaction.
+     */
+    private boolean controlTemperature(Stage stage, long generation)
+    {
+        if (!temperatureActionInProgress)
         {
-            setError(action + " did not reach its calculated stop point.");
+            return false;
         }
+        if (stage == null
+                || generation != temperatureActionGeneration
+                || !stageTransitions.isCurrent(generation))
+        {
+            clearTemperatureAction("stage generation changed");
+            return false;
+        }
+
+        int heat = GiantsFoundryState.getHeatAmount();
+        int currentEventSequence = eventHeatSequence;
+        if (currentEventSequence != temperatureLastEventSequence)
+        {
+            int eventValue = eventHeat;
+            int delta = eventValue - temperatureLastHeat;
+            temperatureLastEventSequence = currentEventSequence;
+            temperatureLastHeat = eventValue;
+            if (delta != 0)
+            {
+                temperatureLastChangedAt = System.currentTimeMillis();
+                if (delta != -1)
+                {
+                    temperatureObservedStep = Math.abs(delta);
+                }
+            }
+            heat = eventValue;
+        }
+        else if (heat != temperatureLastHeat)
+        {
+            int delta = heat - temperatureLastHeat;
+            temperatureLastHeat = heat;
+            temperatureLastChangedAt = System.currentTimeMillis();
+            if (delta != -1)
+            {
+                temperatureObservedStep = Math.abs(delta);
+            }
+        }
+
+        WorldPoint playerLocation = Rs2Player.getWorldLocation();
+        int distanceToStage = playerLocation == null
+                ? (temperatureActionHeating ? stage.getDistanceToLava() : stage.getDistanceToWaterfall())
+                : playerLocation.distanceTo(stage.getLocation());
+        TemperatureControlPlanner.Plan plan = TemperatureControlPlanner.plan(
+                stage,
+                GiantsFoundryState.getHeatRange(stage),
+                getActionsLeft(stage),
+                heat,
+                distanceToStage,
+                GiantsFoundryState.isPlayerRunning(),
+                temperatureObservedStep,
+                temperatureActionHeating,
+                temperatureActionFast);
+
+        if (plan.isHandoff())
+        {
+            if (!temperatureHandoffCancelIssued
+                    && Rs2Player.isAnimating()
+                    && interruptContinuousAction(stage.getLocation(), "temperature handoff"))
+            {
+                temperatureHandoffCancelIssued = true;
+                return true;
+            }
+            return handoffTemperatureAction(stage, generation, heat, plan);
+        }
+
+        if (temperatureHandoffCancelIssued)
+        {
+            log.info("Giants' Foundry temperature controller: heat changed after stopping at {}; "
+                    + "recalculating before workstation handoff", heat);
+            clearTemperatureAction("handoff temperature changed");
+            lastActionAt = 0;
+            return false;
+        }
+
+        if (plan.isPassedSafeBand())
+        {
+            log.info("Giants' Foundry temperature controller: action={} heat={} predictedArrival={} "
+                            + "safeRange={}-{}; reversing correction",
+                    temperatureActionName,
+                    heat,
+                    plan.getPredictedArrivalHeat(),
+                    plan.getSafeMinimum(),
+                    plan.getSafeMaximum());
+            clearTemperatureAction("predicted arrival passed safe band");
+            lastActionAt = 0;
+            return false;
+        }
+
+        if (plan.isDownshift() && !temperatureActionDownshifted)
+        {
+            String slowAction = temperatureActionHeating ? "Heat-preform" : "Cool-preform";
+            int objectId = temperatureActionHeating ? LAVA_POOL : WATERFALL;
+            if (!stageTransitions.isCurrent(generation))
+            {
+                return true;
+            }
+            if (!Microbot.getRs2TileObjectCache().query().interact(objectId, slowAction))
+            {
+                setError("Could not downshift to " + slowAction + ".");
+                return true;
+            }
+            markAction();
+            temperatureActionFast = false;
+            temperatureActionDownshifted = true;
+            temperatureActionName = slowAction;
+            temperatureObservedStep = 0;
+            temperatureLastChangedAt = System.currentTimeMillis();
+            GiantsFoundryState.heatingCoolingState.stop();
+            GiantsFoundryState.heatingCoolingState.setup(false, temperatureActionHeating, slowAction);
+            GiantsFoundryState.heatingCoolingState.start(heat);
+            log.info("Giants' Foundry temperature controller: downshift={} heat={} desiredDeparture={} "
+                            + "predictedArrival={} brakeDistance={} distanceToStage={}",
+                    slowAction,
+                    heat,
+                    plan.getDesiredDepartureHeat(),
+                    plan.getPredictedArrivalHeat(),
+                    plan.getBrakeDistance(),
+                    distanceToStage);
+            return true;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now >= temperatureActionDeadlineAt)
+        {
+            String action = temperatureActionName;
+            clearTemperatureAction("controller timeout");
+            setError(action + " did not reach a safe workstation handoff.");
+            return true;
+        }
+        if (!Rs2Player.isMoving()
+                && now - temperatureLastChangedAt >= TEMPERATURE_STALL_TIMEOUT_MS)
+        {
+            log.warn("Giants' Foundry temperature controller: action={} stalled at heat={}; recalculating",
+                    temperatureActionName, heat);
+            clearTemperatureAction("no observed heat movement");
+            lastActionAt = 0;
+            return false;
+        }
+
+        setState(temperatureActionHeating ? State.HEATING : State.COOLING_DOWN,
+                (temperatureActionFast ? "Fast " : "Fine ")
+                        + (temperatureActionHeating ? "heating" : "cooling")
+                        + " to " + plan.getDesiredDepartureHeat());
+        return true;
+    }
+
+    private boolean handoffTemperatureAction(
+            Stage stage,
+            long generation,
+            int heat,
+            TemperatureControlPlanner.Plan plan)
+    {
+        if (!stageTransitions.isCurrent(generation)
+                || GiantsFoundryState.getCurrentStage() != stage)
+        {
+            return true;
+        }
+        Rs2TileObjectModel object = GiantsFoundryState.getStageObject(stage);
+        int beforeQuality = GiantsFoundryState.getPreformQuality();
+        if (object == null || !object.click())
+        {
+            setError("Could not hand off to the " + stage.getName().toLowerCase() + " station.");
+            return true;
+        }
+        markAction();
+        log.info("Giants' Foundry temperature controller: handoff={} heat={} predictedArrival={} "
+                        + "target={} safeRange={}-{} travelTicks={} action={} startHeat={} quality={}->{}",
+                stage,
+                heat,
+                plan.getPredictedArrivalHeat(),
+                plan.getDesiredArrivalHeat(),
+                plan.getSafeMinimum(),
+                plan.getSafeMaximum(),
+                plan.getTravelTicks(),
+                temperatureActionName,
+                temperatureStartHeat,
+                temperatureStartQuality,
+                beforeQuality);
+        clearTemperatureAction("workstation handoff");
+        setState(State.CRAFTING_WEAPON, stage.getName() + " preform");
+        return true;
+    }
+
+    private int getActionsLeft(Stage stage)
+    {
+        double progressPerStage = GiantsFoundryState.getProgressPerStage();
+        if (stage == null || progressPerStage <= 0)
+        {
+            return 0;
+        }
+        double progressInStage = GiantsFoundryState.getProgressAmount() % progressPerStage;
+        return (int) Math.ceil((progressPerStage - progressInStage) / stage.getProgressPerAction());
+    }
+
+    private void clearTemperatureAction(String reason)
+    {
+        if (temperatureActionInProgress)
+        {
+            log.debug("Giants' Foundry temperature controller stopped: {}", reason);
+        }
+        temperatureActionInProgress = false;
+        temperatureActionHeating = false;
+        temperatureActionFast = false;
+        temperatureActionDownshifted = false;
+        temperatureHandoffCancelIssued = false;
+        temperatureActionGeneration = 0;
+        temperatureActionDeadlineAt = 0;
+        temperatureLastChangedAt = 0;
+        temperatureStartHeat = 0;
+        temperatureStartQuality = 0;
+        temperatureLastHeat = 0;
+        temperatureObservedStep = 0;
+        temperatureLastEventSequence = eventHeatSequence;
+        temperatureActionName = null;
+        GiantsFoundryState.heatingCoolingState.stop();
     }
 
     private boolean shouldWaitForPassiveCooling(int change, Stage stage)
@@ -1002,8 +1438,12 @@ public class GiantsFoundryScript extends Script
         passiveCoolingWaitStage = null;
     }
 
-    private void craftWeapon(Stage stage)
+    private void craftWeapon(Stage stage, long generation)
     {
+        if (stage == null || !stageTransitions.isCurrent(generation))
+        {
+            return;
+        }
         setState(State.CRAFTING_WEAPON, stage.getName() + " preform");
         boolean bonusActive = BonusWidget.isActive();
         if (!bonusActive)
@@ -1038,6 +1478,11 @@ public class GiantsFoundryScript extends Script
         int beforeQuality = GiantsFoundryState.getPreformQuality();
         log.info("Giants' Foundry action: station={} progress={} quality={}",
                 stage, beforeProgress, beforeQuality);
+        if (!stageTransitions.isCurrent(generation)
+                || GiantsFoundryState.getCurrentStage() != stage)
+        {
+            return;
+        }
         if (object == null || !object.click())
         {
             setError("Could not interact with the " + stage.getName().toLowerCase() + " station.");
@@ -1060,7 +1505,7 @@ public class GiantsFoundryScript extends Script
                 GiantsFoundryState.getProgressAmount(),
                 beforeQuality,
                 GiantsFoundryState.getPreformQuality());
-        if (!confirmed)
+        if (!confirmed && stageTransitions.isCurrent(generation))
         {
             setError("Could not confirm starting the " + stage.getName().toLowerCase() + " station.");
         }
@@ -1259,33 +1704,9 @@ public class GiantsFoundryScript extends Script
     private void markAction()
     {
         lastActionAt = System.currentTimeMillis();
+        continuousActionResumeAt = 0;
         interruptForStageChange = false;
-    }
-
-    /**
-     * A stage flip invalidates the previous workstation immediately. The scheduler
-     * retains sole ownership of interactions, but bypasses movement and cooldown
-     * guards once so it can redirect before another wrong-stage action lands.
-     */
-    private void detectStageChange(FoundrySnapshot snapshot)
-    {
-        if (snapshot.stage == null)
-        {
-            if (snapshot.progress <= 0)
-            {
-                lastObservedStage = null;
-                interruptForStageChange = false;
-            }
-            return;
-        }
-        if (lastObservedStage != null && snapshot.stage != lastObservedStage)
-        {
-            log.info("Giants' Foundry: stage changed {} -> {}; scheduling immediate workstation interrupt",
-                    lastObservedStage, snapshot.stage);
-            lastActionAt = 0;
-            interruptForStageChange = true;
-        }
-        lastObservedStage = snapshot.stage;
+        stageTransitionCancelPending = false;
     }
 
     private void initializeSessionMetrics(int level)
@@ -1392,6 +1813,8 @@ public class GiantsFoundryScript extends Script
 
     private void resetCycle()
     {
+        clearTemperatureAction("cycle reset");
+        stageTransitions.reset();
         materialPlan = null;
         materialDescription = "Resolving current level strategy";
         supplySnapshotKnown = false;
@@ -1401,12 +1824,12 @@ public class GiantsFoundryScript extends Script
         secondMaterialAdded = false;
         bonusClickConsumed = false;
         lastBonusActive = false;
-        temperatureActionInProgress = false;
         cycleCostRecorded = false;
         cycleCompletionRecorded = false;
         materialsCompleteAt = 0;
-        lastObservedStage = null;
         interruptForStageChange = false;
+        stageTransitionCancelPending = false;
+        continuousActionResumeAt = 0;
     }
 
     private void setState(State nextState, String nextStatus)
@@ -1553,6 +1976,11 @@ public class GiantsFoundryScript extends Script
         resetCycle();
         clearError();
         super.shutdown();
+        if (interactionExecutor != null)
+        {
+            interactionExecutor.shutdownNow();
+            interactionExecutor = null;
+        }
     }
 
     private static final class FoundrySnapshot

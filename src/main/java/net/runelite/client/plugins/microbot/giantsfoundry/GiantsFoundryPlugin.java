@@ -28,7 +28,7 @@ import java.awt.*;
 @Slf4j
 public class GiantsFoundryPlugin extends Plugin {
 
-    public static final String version = "1.2.2";
+    public static final String version = "1.2.3";
 
     @Inject
     private GiantsFoundryConfig config;
@@ -57,26 +57,28 @@ public class GiantsFoundryPlugin extends Plugin {
     // previous heat varbit value, used to filter out passive heat decay.
     private int previousHeat = 0;
     private static final int VARBIT_HEAT = 13948;
+    private static final int VARBIT_PROGRESS = 13949;
+
     @Subscribe
     public void onVarbitChanged(VarbitChanged event)
     {
-
-
         // start the heating state-machine when the varbit updates
         // if heat varbit updated and the user clicked, start the state-machine
         if (event.getVarbitId() == VARBIT_HEAT)
         {
+            giantsFoundryScript.onHeatChanged(event.getValue());
             // ignore passive heat decay, one heat per two ticks
             if (event.getValue() - previousHeat != -1)
             {
-
                 GiantsFoundryState.heatingCoolingState.onTick();
             }
             previousHeat = event.getValue();
         }
+        else if (event.getVarbitId() == VARBIT_PROGRESS)
+        {
+            giantsFoundryScript.onProgressChanged(event.getValue());
+        }
     }
-
-
 
     protected void shutDown() {
         giantsFoundryScript.shutdown();

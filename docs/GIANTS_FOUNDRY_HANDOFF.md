@@ -7,21 +7,79 @@ Read this before continuing work on the Giants' Foundry plugin.
 - Branch: `feat/upgrade-foundry-plugin`
 - Base: `origin/main` at `551da81`
 - Rollback commit: `0cc07d6` (`revert(giants-foundry): restore 7866f97 checkpoint`)
-- Source plugin version: `1.2.2` (**built, installed, and live-smoked**)
+- Source plugin version: `1.2.3` (**built, tested, and installed**)
 - Validated VM: `Bizza 12345` (`clanker\vmadmin2`)
 - Authoritative guest worktree: `C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade`
 - Host context worktree: `F:\vmware boxs\MBOT\repos\Microbot-Hub-giants-foundry`
 - Installed JAR: `C:\Users\VMAdmin2\.runelite\microbot-plugins\GiantsFoundryPlugin.jar`
-- Installed JAR SHA256: `D489D84C7E5661A1E4EE5CBFF020A2950A89D7C22127E9570C132221C65C5272`
+- Installed JAR SHA256: `CD545C4878CB0D6AEE81E81EB43A294CABE38F4CCEF954F04576CEF67710D313`
 
-The installed `1.2.2` JAR is the current experimental quality-control build. It completed two
-clean-start swords, but it is not yet a perfect-quality checkpoint; see the 1.2.2 smoke below.
+The installed `1.2.3` JAR is the streamlined event-assisted temperature-control checkpoint.
+It keeps run enabled and continuous workstation use. A controlled-final-action experiment that
+stopped and restarted workstations near stage boundaries was rejected because it caused repeated
+station use, disabled run through its movement call, and materially slowed crafts. That experiment
+is not present in the installed source or JAR.
+
+The final requested one-sword smoke of this exact streamlined JAR was blocked before gameplay:
+the relaunched client remained at `LOGIN_SCREEN` because RuneScape's authentication REST request
+repeatedly returned HTTP 400 with `Remote host terminated the handshake`. The client was left open
+with Giants' Foundry disabled for manual takeover. See the 1.2.3 section for the live evidence
+collected before the authentication failure.
+
+The rejected controlled-final experimental JAR is retained at:
+`C:\Users\VMAdmin2\operator-work\output\archive\giants-foundry-plugin-backups\GiantsFoundryPlugin-controlled-final-experiment-20260731-195539.jar`.
 The previous `1.2.1` JAR is retained at:
 `C:\Users\VMAdmin2\operator-work\output\archive\giants-foundry-plugin-backups\GiantsFoundryPlugin-before-1.2.2-20260731-160412.jar`.
 The previous `1.2.0` known-good JAR is retained at:
 `C:\Users\VMAdmin2\operator-work\output\archive\giants-foundry-plugin-backups\GiantsFoundryPlugin-before-1.2.1-20260731-151157.jar`.
-The client was left open and logged in; the plugin was stopped after the two-craft 1.2.2 smoke to
-avoid consuming a third set of bars.
+The last committed `1.2.2` source and JAR remain the rollback checkpoint at commit `4be239b`
+(`fix(giants-foundry): checkpoint quality controls`).
+
+## Version 1.2.3: event-assisted streamlined controller
+
+Version 1.2.3 adds:
+
+- A progress-varbit event coordinator that publishes immutable stage transitions with a monotonic
+  generation. All game interactions remain owned by one scheduler.
+- Generation checks before interactions so stale snapshots cannot click the previous workstation.
+- Immediate cancellation of the old continuous action after a real stage transition.
+- Closed-loop temperature control driven by observed heat changes, with fast bulk adjustment,
+  bounded downshift to the slow action, dynamic arrival prediction, and immediate workstation
+  handoff.
+- A one-tick handoff barrier so an interrupted heat/cool action can settle before the destination
+  workstation is clicked.
+- Run-preserving interruption through `Rs2Walker.walkFastCanvas(step, true)`.
+- A bank-open guard that treats the visible bank widget as authoritative before attempting to
+  reopen the Foundry chest. Both material preparation and supply snapshots use this guard.
+
+The intentionally removed controlled-final experiment:
+
+- stopped a workstation before its final progress action;
+- retried after three seconds even though a normal workstation progress tick can take about four
+  seconds;
+- generated repeated station interactions and slowed the script;
+- used a movement call that disabled run.
+
+Guest validation used JDK 11 and completed successfully:
+
+```powershell
+.\gradlew.bat --no-daemon '-Dorg.gradle.java.home=C:\Users\VMAdmin2\.jdks\temurin-11.0.31' test GiantsFoundryPluginJar '-PpluginList=GiantsFoundryPlugin' --console=plain
+```
+
+The built and installed JAR hashes matched:
+`CD545C4878CB0D6AEE81E81EB43A294CABE38F4CCEF954F04576CEF67710D313`.
+
+Live evidence collected while tuning 1.2.3:
+
+- One controlled-final experimental sword completed and handed in at `116/121`.
+- A following experimental sword showed one deterministic five-quality boundary loss before a
+  sweet spot recovered it.
+- The experiment was then observed interrupting and reclicking the trip hammer before its normal
+  progress tick, confirming that its pursuit of perfect quality was too costly.
+- After hand-in, the prior build reproduced a false `Could not open the Foundry bank chest`
+  report while the bank was visibly open. The widget-aware bank guard was added afterward.
+- The exact final streamlined build passed tests, built, installed, and launched. Its requested
+  one-sword smoke could not begin because login authentication failed as described above.
 
 ## Version 1.2.2: quality-control experiment
 
@@ -85,9 +143,9 @@ during the failure. The previous crash instead showed:
 The current VM keeps the DX12 renderer enabled. Broadcom's documented Workstation workaround for
 this DX12 presentation failure is the host-global preference
 `mks.enableDX12Presentation = "FALSE"` in
-`C:\Users\bizz4\AppData\Roaming\VMware\preferences.ini`. That preference has not been changed
-because it is host-global and should be applied with VMware Workstation/VMs stopped. Until then,
-avoid resizing the VM display or opening/closing the Workstation side panel during a live craft.
+`C:\Users\bizz4\AppData\Roaming\VMware\preferences.ini`. It was applied with the VM and Workstation
+closed. Guest SVGA3D acceleration and the DX12 renderer remain enabled; only the problematic host
+DX12 presentation path is disabled.
 
 ## Version 1.2.1: passive cooling route decision
 
@@ -209,6 +267,9 @@ The full hand-in, shop purchase, next commission, bank withdrawal, and crucible-
 - Overlay GP values are value estimates for materials and rewards, not a literal coin-pouch ledger.
 - Enabling the plugin before login can briefly show the Sleeping Giants requirement. Start it after login if this latch appears.
 - A client relaunch produced two transient `SSLHandshakeException`/HTTP 400 authentication attempts before BreakHandler recovered automatically. No evidence connected this to Foundry logic.
+- The 1.2.3 relaunch on 2026-07-31 repeatedly failed the same authentication REST request with
+  HTTP 400 and `Remote host terminated the handshake`; unlike the earlier occurrence, it did not
+  recover during the bounded smoke window. The final one-sword smoke remains pending.
 
 ## Continue on the laptop
 
@@ -233,15 +294,14 @@ Use the host checkout for fast reading, but build and validate in the Bizza VM. 
 The current build output is:
 
 ```text
-C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade\build\libs\GiantsFoundryPlugin-1.2.1.jar
+C:\Users\VMAdmin2\IdeaProjects\Microbot-Hub-foundry-upgrade\build\libs\GiantsFoundryPlugin-1.2.3.jar
 ```
 
 The last interactive launch helper is:
 
 ```text
-Host:  F:\vmware boxs\MBOT\operator-work\temp\launch-bizza-giants-foundry-1.2.1.ps1
-Guest: C:\Users\VMAdmin2\operator-work\temp\launch-bizza-giants-foundry-1.2.1.ps1
-Log:   C:\Users\VMAdmin2\operator-work\output\logs\microbot-client-launch-giants-foundry-1.2.1.log
+Guest: C:\Users\VMAdmin2\operator-work\temp\launch-bizza-giants-foundry-1.2.3.ps1
+Log:   C:\Users\VMAdmin2\operator-work\output\logs\microbot-client-launch-giants-foundry-1.2.3.log
 ```
 
 The Agent Server is guest-local on port 8081 and requires the configured `X-Agent-Token`. Prefer the guest `microbot-cli` wrapper so the token is never printed or copied into documentation. Useful passive checks are:
@@ -255,9 +315,10 @@ Set-Location C:\Users\VMAdmin2\IdeaProjects\Microbot
 
 ## Recommended next sequence
 
-1. Fetch this branch and confirm `0d08e1b` or later before making changes.
-2. Passively inspect the current client and recent Foundry log before restarting anything.
-3. Let several more hand-in/rebank cycles run to stress the fixed cycle reset.
+1. Fetch this branch and confirm the 1.2.3 checkpoint or later before making changes.
+2. Log in manually if the transient authentication handshake failure persists.
+3. Start Giants' Foundry only after `LOGGED_IN`, then smoke one complete sword through hand-in.
+4. Confirm the open-bank guard prevents the false bank-open error on the next material withdrawal.
 4. Test a controlled supply shortage when interrupting the existing progression is acceptable.
 5. Test the level 70 alloy transition, later mould purchases, and eventually the Smiths outfit path.
 6. Rebuild with JDK 11, replace the JAR only while the client is closed, launch interactively, and verify both the visible window and Agent Server state.
