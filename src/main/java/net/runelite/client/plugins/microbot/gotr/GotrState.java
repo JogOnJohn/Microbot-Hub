@@ -6,10 +6,12 @@ import lombok.Getter;
 @AllArgsConstructor
 @Getter
 public enum GotrState {
+    PREPARING_SUPPLIES,
     ENTER_GAME,
     WAITING,
     MINE_LARGE_GUARDIAN_REMAINS,
     LEAVING_LARGE_MINE,
+    LEAVING_HUGE_MINE,
     ENTER_ALTAR,
     CRAFTING_RUNES,
     LEAVING_ALTAR,

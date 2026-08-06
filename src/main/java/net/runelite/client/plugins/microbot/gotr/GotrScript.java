@@ -12,7 +12,9 @@ import net.runelite.client.plugins.microbot.gotr.data.CellType;
 import net.runelite.client.plugins.microbot.gotr.data.GuardianPortalInfo;
 import net.runelite.client.plugins.microbot.gotr.data.Mode;
 import net.runelite.client.plugins.microbot.gotr.data.RuneType;
+import net.runelite.client.plugins.microbot.pouch.Pouch;
 import net.runelite.client.plugins.microbot.util.Global;
+import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
@@ -56,6 +58,7 @@ public class GotrScript extends Script {
     private static final int PRE_ROUND_GUARDIAN_POWER = 10;
     private static final int ALTAR_ENTRY_START_TIMEOUT_MS = 12000;
     private static final int ALTAR_LOAD_TIMEOUT_MS = 10000;
+    private static final int HUGE_MINE_EXIT_RETRY_MS = 1500;
     public static final Map<Integer, GuardianPortalInfo> guardianPortalInfo = new HashMap<>();
     public static Optional<Instant> nextGameStart = Optional.empty();
     public static Optional<Instant> timeSincePortal = Optional.empty();
@@ -74,8 +77,42 @@ public class GotrScript extends Script {
     boolean optimizedEssenceLoop = false;
     private int lastLoggedFragmentStopCount = -1;
     private int lastObservedGuardiansPower = -1;
+    private boolean startupPreparationComplete = false;
+    private String lastStartupWarning = "";
+    private long hugeMineExitStartedAt = 0;
+    private long lastHugeMineExitAttemptAt = 0;
 
     static boolean useNpcContact = true;
+
+    private enum PickaxeTool {
+        BRONZE(net.runelite.api.gameval.ItemID.BRONZE_PICKAXE, "Bronze pickaxe", 1, 10),
+        IRON(net.runelite.api.gameval.ItemID.IRON_PICKAXE, "Iron pickaxe", 1, 20),
+        STEEL(net.runelite.api.gameval.ItemID.STEEL_PICKAXE, "Steel pickaxe", 6, 30),
+        BLACK(net.runelite.api.gameval.ItemID.BLACK_PICKAXE, "Black pickaxe", 11, 40),
+        MITHRIL(net.runelite.api.gameval.ItemID.MITHRIL_PICKAXE, "Mithril pickaxe", 21, 50),
+        ADAMANT(net.runelite.api.gameval.ItemID.ADAMANT_PICKAXE, "Adamant pickaxe", 31, 60),
+        RUNE(net.runelite.api.gameval.ItemID.RUNE_PICKAXE, "Rune pickaxe", 41, 70),
+        GILDED(net.runelite.api.gameval.ItemID.TRAIL_GILDED_PICKAXE, "Gilded pickaxe", 41, 71),
+        DRAGON(net.runelite.api.gameval.ItemID.DRAGON_PICKAXE, "Dragon pickaxe", 61, 80),
+        DRAGON_OR(net.runelite.api.gameval.ItemID.DRAGON_PICKAXE_PRETTY, "Dragon pickaxe (or)", 61, 81),
+        INFERNAL_EMPTY(net.runelite.api.gameval.ItemID.INFERNAL_PICKAXE_EMPTY, "Infernal pickaxe (uncharged)", 61, 82),
+        INFERNAL(net.runelite.api.gameval.ItemID.INFERNAL_PICKAXE, "Infernal pickaxe", 61, 83),
+        THIRD_AGE(net.runelite.api.gameval.ItemID._3A_PICKAXE, "3rd age pickaxe", 61, 84),
+        TRAILBLAZER(net.runelite.api.gameval.ItemID.TRAILBLAZER_PICKAXE, "Trailblazer pickaxe", 61, 85),
+        CRYSTAL(net.runelite.api.gameval.ItemID.CRYSTAL_PICKAXE, "Crystal pickaxe", 71, 90);
+
+        private final int id;
+        private final String itemName;
+        private final int miningLevel;
+        private final int priority;
+
+        PickaxeTool(int id, String itemName, int miningLevel, int priority) {
+            this.id = id;
+            this.itemName = itemName;
+            this.miningLevel = miningLevel;
+            this.priority = priority;
+        }
+    }
 
     private static final class GuardianPortalCandidate {
         private final GameObject portal;
@@ -166,6 +203,10 @@ public class GotrScript extends Script {
         optimizedEssenceLoop = false;
         lastLoggedFragmentStopCount = -1;
         lastObservedGuardiansPower = -1;
+        startupPreparationComplete = false;
+        lastStartupWarning = "";
+        hugeMineExitStartedAt = 0;
+        lastHugeMineExitAttemptAt = 0;
         needsOpeningCell = true;
         guardians.clear();
         activeGuardianPortals.clear();
@@ -194,8 +235,13 @@ public class GotrScript extends Script {
                     initCheck = true;
                 }
 
-                if (!Rs2Inventory.hasItem("pickaxe") && !Rs2Equipment.isWearing("pickaxe")) {
-                    log("You need to have a pickaxe before you can participate in this minigame.");
+                GotrScript.isInMiniGame = !isOutsideBarrier() && isInMainRegion();
+
+                if (handleStartupPreparation()) return;
+
+                if (!hasUsablePickaxeOnPlayer()) {
+                    logStartupWarning("No usable pickaxe is available; GOTR cannot continue.");
+                    startupPreparationComplete = false;
                     return;
                 }
 
@@ -214,10 +260,8 @@ public class GotrScript extends Script {
                     }
                 }
 
-                GotrScript.isInMiniGame = !isOutsideBarrier() && isInMainRegion();
-
-
                 if (isInMiniGame) {
+                    completeHugeMineExitTransition();
                     updateRoundCompletionState();
 
                     if (waitingForGameToStart(timeToStart)) return;
@@ -740,6 +784,194 @@ public class GotrScript extends Script {
         return state == GotrState.WAITING;
     }
 
+    private boolean handleStartupPreparation() {
+        boolean insideGameArea = isInsideGotrGameArea();
+        if (insideGameArea && hasUsablePickaxeOnPlayer()) {
+            if (!startupPreparationComplete) {
+                log("Usable pickaxe found inside GOTR; skipping outside-arena bank preparation.");
+            }
+            startupPreparationComplete = true;
+            lastStartupWarning = "";
+            return false;
+        }
+
+        state = GotrState.PREPARING_SUPPLIES;
+        if (insideGameArea) {
+            logStartupWarning("No usable pickaxe found inside GOTR; leaving the arena to prepare at a bank.");
+            if (!isInMainRegion()) {
+                Rs2TileObjectModel altarExit = findPortalToLeaveAltar();
+                if (altarExit != null) {
+                    interactObject(altarExit, null);
+                }
+                return true;
+            }
+            if (isInHugeMine()) {
+                return leaveHugeMine();
+            }
+            if (isInLargeMine()) {
+                return leaveLargeMine();
+            }
+            leaveMinigame();
+            return true;
+        }
+
+        if (startupPreparationComplete) {
+            return false;
+        }
+
+        if (!Rs2Bank.isOpen()) {
+            logStartupWarning("Preparing GOTR supplies at the nearest bank.");
+            Rs2Bank.walkToBankAndUseBank();
+            return true;
+        }
+
+        PickaxeTool selectedPickaxe = ensureUsablePickaxe();
+        if (selectedPickaxe == null) {
+            return true;
+        }
+
+        boolean hasChisel = ensureChisel();
+        List<String> availablePouches = withdrawEligiblePouches();
+        if (!Rs2Bank.closeBank()) {
+            logStartupWarning("GOTR supplies are ready, but the bank did not close; retrying.");
+            return true;
+        }
+
+        startupPreparationComplete = true;
+        lastStartupWarning = "";
+        log("GOTR startup supplies ready | pickaxe=" + selectedPickaxe.itemName
+            + " | chisel=" + (hasChisel ? "ready" : "not available")
+            + " | pouches=" + (availablePouches.isEmpty() ? "none" : availablePouches));
+        return true;
+    }
+
+    private boolean isInsideGotrGameArea() {
+        return isInMainRegion() ? !isOutsideBarrier() : isInMiniGame();
+    }
+
+    private boolean hasUsablePickaxeOnPlayer() {
+        return Arrays.stream(PickaxeTool.values())
+            .filter(this::canUsePickaxe)
+            .anyMatch(pickaxe -> Rs2Equipment.isWearing(pickaxe.id)
+                || Rs2Inventory.hasItem(pickaxe.id));
+    }
+
+    private PickaxeTool ensureUsablePickaxe() {
+        Optional<PickaxeTool> carried = Arrays.stream(PickaxeTool.values())
+            .filter(this::canUsePickaxe)
+            .filter(pickaxe -> Rs2Equipment.isWearing(pickaxe.id)
+                || Rs2Inventory.hasItem(pickaxe.id))
+            .max(Comparator.comparingInt(pickaxe -> pickaxe.priority));
+        if (carried.isPresent()) {
+            return carried.get();
+        }
+
+        Optional<PickaxeTool> banked = Arrays.stream(PickaxeTool.values())
+            .filter(this::canUsePickaxe)
+            .filter(pickaxe -> Rs2Bank.hasItem(pickaxe.id))
+            .max(Comparator.comparingInt(pickaxe -> pickaxe.priority));
+        if (!banked.isPresent()) {
+            logStartupWarning("No usable pickaxe was found in equipment, inventory, or bank; GOTR cannot start.");
+            return null;
+        }
+
+        PickaxeTool pickaxe = banked.get();
+        if (Rs2Inventory.emptySlotCount() == 0) {
+            logStartupWarning("A usable " + pickaxe.itemName
+                + " is banked, but an inventory slot is required to withdraw it.");
+            return null;
+        }
+        Rs2Bank.withdrawItem(pickaxe.id);
+        if (!sleepUntil(() -> Rs2Inventory.hasItem(pickaxe.id), 3000)) {
+            logStartupWarning("Failed to withdraw the usable " + pickaxe.itemName + "; GOTR cannot start.");
+            return null;
+        }
+        return pickaxe;
+    }
+
+    private boolean canUsePickaxe(PickaxeTool pickaxe) {
+        return Rs2Player.getSkillRequirement(Skill.MINING, pickaxe.miningLevel);
+    }
+
+    private boolean ensureChisel() {
+        if (Rs2Inventory.hasItem(ItemID.CHISEL)) {
+            return true;
+        }
+        if (!Rs2Bank.hasItem(ItemID.CHISEL)) {
+            logStartupWarning("No chisel was found in the bank; continuing because only a pickaxe is mandatory.");
+            return false;
+        }
+        if (Rs2Inventory.emptySlotCount() == 0) {
+            logStartupWarning("No inventory slot is available for a chisel; continuing without one.");
+            return false;
+        }
+        Rs2Bank.withdrawItem(ItemID.CHISEL);
+        return sleepUntil(() -> Rs2Inventory.hasItem(ItemID.CHISEL), 3000);
+    }
+
+    private List<String> withdrawEligiblePouches() {
+        List<String> availablePouches = new ArrayList<>();
+        if (Pouch.COLOSSAL.hasRequiredRunecraftingLevel()
+            && (hasPouchInInventory(Pouch.COLOSSAL) || hasPouchInBank(Pouch.COLOSSAL))) {
+            withdrawPouchIfAvailable(Pouch.COLOSSAL, availablePouches);
+            return availablePouches;
+        }
+
+        for (Pouch pouch : Pouch.values()) {
+            if (pouch == Pouch.COLOSSAL || !pouch.hasRequiredRunecraftingLevel()) continue;
+            withdrawPouchIfAvailable(pouch, availablePouches);
+        }
+        return availablePouches;
+    }
+
+    private void withdrawPouchIfAvailable(Pouch pouch, List<String> availablePouches) {
+        String pouchName = pouch.name().charAt(0) + pouch.name().substring(1).toLowerCase() + " pouch";
+        if (hasPouchInInventory(pouch)) {
+            availablePouches.add(pouchName);
+            return;
+        }
+
+        OptionalInt bankedPouchId = Arrays.stream(getPouchIds(pouch))
+            .filter(Rs2Bank::hasItem)
+            .findFirst();
+        if (!bankedPouchId.isPresent()) return;
+        if (Rs2Inventory.emptySlotCount() == 0) {
+            logStartupWarning("No inventory slot is available for the eligible "
+                + pouchName + "; continuing without it.");
+            return;
+        }
+
+        Rs2Bank.withdrawItem(bankedPouchId.getAsInt());
+        if (sleepUntil(() -> hasPouchInInventory(pouch), 3000)) {
+            availablePouches.add(pouchName);
+        } else {
+            logStartupWarning("Failed to withdraw the eligible " + pouchName
+                + "; continuing without it.");
+        }
+    }
+
+    private boolean hasPouchInInventory(Pouch pouch) {
+        return Arrays.stream(getPouchIds(pouch)).anyMatch(Rs2Inventory::hasItem);
+    }
+
+    private boolean hasPouchInBank(Pouch pouch) {
+        return Arrays.stream(getPouchIds(pouch)).anyMatch(Rs2Bank::hasItem);
+    }
+
+    private int[] getPouchIds(Pouch pouch) {
+        if (pouch != Pouch.COLOSSAL) return pouch.getItemIds();
+        int[] ids = Arrays.copyOf(pouch.getItemIds(), pouch.getItemIds().length + 1);
+        ids[ids.length - 1] = net.runelite.api.gameval.ItemID.DEVIOUS_GLOWINGPOUCH_COLOSSAL;
+        return ids;
+    }
+
+    private void logStartupWarning(String message) {
+        if (!message.equals(lastStartupWarning)) {
+            log(message);
+            lastStartupWarning = message;
+        }
+    }
+
     private static boolean enterMinigame() {
         if (interactObject(ObjectID.BARRIER_43700, "quick-pass")) {
             Rs2Player.waitForWalking();
@@ -764,7 +996,7 @@ public class GotrScript extends Script {
                 repairPouches();
                 leaveHugeMine();
                 optimizedEssenceLoop = false;
-                return false;
+                return true;
             }
             if (!Rs2Inventory.isFull()) {
                 if (!Rs2Player.isAnimating()) {
@@ -856,11 +1088,39 @@ public class GotrScript extends Script {
         }
     }
 
-    private void leaveHugeMine() {
-        interactObject(38044);
-        log("Leave huge mine...");
-        Global.sleepUntil(() -> !isInHugeMine(), 5000);
+    private boolean leaveHugeMine() {
+        if (!isInHugeMine()) {
+            completeHugeMineExitTransition();
+            return false;
+        }
 
+        long now = System.currentTimeMillis();
+        state = GotrState.LEAVING_HUGE_MINE;
+        if (hugeMineExitStartedAt == 0) {
+            hugeMineExitStartedAt = now;
+        }
+        if (lastHugeMineExitAttemptAt > 0
+            && now - lastHugeMineExitAttemptAt < HUGE_MINE_EXIT_RETRY_MS) {
+            return true;
+        }
+
+        lastHugeMineExitAttemptAt = now;
+        if (interactObject(38044)) {
+            log("Leaving huge mine...");
+        } else {
+            log("Huge-mine exit interaction did not start; retrying promptly.");
+        }
+        return true;
+    }
+
+    private void completeHugeMineExitTransition() {
+        if (hugeMineExitStartedAt == 0 || isInHugeMine()) {
+            return;
+        }
+        log("Huge-mine exit completed in "
+            + (System.currentTimeMillis() - hugeMineExitStartedAt) + "ms.");
+        hugeMineExitStartedAt = 0;
+        lastHugeMineExitAttemptAt = 0;
     }
 
     private static boolean repairPouches() {
