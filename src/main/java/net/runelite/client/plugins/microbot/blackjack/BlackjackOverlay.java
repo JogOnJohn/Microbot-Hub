@@ -58,9 +58,14 @@ public class BlackjackOverlay extends OverlayPanel
         addLine("Burst timeouts", Integer.toString(script.getBurstTimeouts()));
         addLine("Menu misses", Integer.toString(script.getKnockoutMenuMisses()));
         addLine("Reset probes", Integer.toString(script.getCombatResetRetries()));
-        addLine("HP", String.format("%.0f%%", Rs2Player.getHealthPercentage()));
+        addLine("HP", Rs2Player.getBoostedSkillLevel(Skill.HITPOINTS)
+                + "/" + Rs2Player.getRealSkillLevel(Skill.HITPOINTS));
         addLine("Wine", Integer.toString(Rs2Inventory.count(WINE_ID)));
         addLine("Noted wine", Integer.toString(Rs2Inventory.count(NOTED_WINE_ID)));
+        addLine("Wine needed", Integer.toString(script.getProjectedWinesNeeded()));
+        addLine("Wine run", script.isWineRestockPending() ? "Pending" : "Ready");
+        addLine("Humanizer", script.getHumanizerStatus());
+        addLine("Human events", Integer.toString(script.getHumanizerEvents()));
         addLine("Runtime", script.getFormattedRuntime());
 
         if (!script.getStopReason().isEmpty())

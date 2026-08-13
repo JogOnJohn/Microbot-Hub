@@ -27,6 +27,14 @@ public interface BlackjackConfig extends Config
     )
     String suppliesSection = "supplies";
 
+    @ConfigSection(
+            name = "Humanizer randomizer",
+            description = "Bounded timing, mouse, mistake, and break variation",
+            position = 2,
+            closedByDefault = false
+    )
+    String humanizerSection = "humanizer";
+
     @ConfigItem(
             keyName = "guide",
             name = "Requirements",
@@ -38,14 +46,15 @@ public interface BlackjackConfig extends Config
     {
         return "Requires 45 Thieving, an equipped blackjack, coins, and a pre-lured target in the supported Pollnivneach house. " +
                 "The script selects level 41 Bandits until 55, level 56 Bandits until 65, then Menaphite Thugs. " +
-                "Keep attack options hidden. Jug of wine healing and the nearby note exchange/shop restock route are supported.";
+                "Keep attack options hidden. For automatic restocking, carry noted wine and coins. The script isolates the target " +
+                "behind the east door before clearing empty jugs and exchanging notes with the nearby merchant.";
     }
 
-    @Range(min = 10, max = 90)
+    @Range(min = 1, max = 99)
     @ConfigItem(
             keyName = "healBelowPercent",
-            name = "Heal below",
-            description = "Start drinking wine below this hitpoints percentage",
+            name = "Heal below HP",
+            description = "Start drinking wine below this Hitpoints level",
             position = 0,
             section = suppliesSection
     )
@@ -54,11 +63,11 @@ public interface BlackjackConfig extends Config
         return 40;
     }
 
-    @Range(min = 20, max = 100)
+    @Range(min = 1, max = 99)
     @ConfigItem(
             keyName = "healToPercent",
-            name = "Heal to",
-            description = "Stop drinking wine at this hitpoints percentage",
+            name = "Heal to HP",
+            description = "Keep drinking wine until this Hitpoints level is reached",
             position = 1,
             section = suppliesSection
     )
@@ -70,11 +79,71 @@ public interface BlackjackConfig extends Config
     @ConfigItem(
             keyName = "autoRestockWine",
             name = "Auto-restock wine",
-            description = "Exchange noted wines first, otherwise buy wines from Faisal when possible",
+            description = "Leave before the remaining wines can no longer reach Heal to HP, then exchange noted wines or use Faisal",
             position = 2,
             section = suppliesSection
     )
     default boolean autoRestockWine()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+            keyName = "humanizerEnabled",
+            name = "Enable humanizer",
+            description = "Enable bounded timing variation, mouse recovery, menu mistakes, and scheduled breaks",
+            position = 0,
+            section = humanizerSection
+    )
+    default boolean humanizerEnabled()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+            keyName = "randomMouseRecovery",
+            name = "Mouse wander and recover",
+            description = "Occasionally move away from the target and naturally recover before continuing",
+            position = 1,
+            section = humanizerSection
+    )
+    default boolean randomMouseRecovery()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+            keyName = "randomMenuMistakes",
+            name = "Random menu mistakes",
+            description = "Rarely select another target option and recover before resuming",
+            position = 2,
+            section = humanizerSection
+    )
+    default boolean randomMenuMistakes()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+            keyName = "includeLureMistakes",
+            name = "Include Lure mistakes",
+            description = "Allow very rare Lure selections; this can move the pre-lured target",
+            position = 3,
+            section = humanizerSection
+    )
+    default boolean includeLureMistakes()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+            keyName = "humanizerBreaks",
+            name = "Random breaks",
+            description = "Take approximately 30-second breaks around every 10 minutes and 1-2 minute breaks every 20-30 minutes",
+            position = 4,
+            section = humanizerSection
+    )
+    default boolean humanizerBreaks()
     {
         return true;
     }
