@@ -99,4 +99,18 @@ public interface BankStandingProcessor {
     /** Optional game-message hook for equipment and processing telemetry. */
     default void onGameMessage(String message) {
     }
+
+    /** Whether this processor owns a bounded offline wait that must keep receiving ticks. */
+    default boolean shouldProcessWhileLoggedOut() {
+        return false;
+    }
+
+    /** Perform only offline-safe timing/login work. Called while the client is logged out. */
+    default void processWhileLoggedOut() {
+    }
+
+    /** Whether the owning script should finalize shutdown even though the client is logged out. */
+    default boolean shouldStopWhileLoggedOut() {
+        return false;
+    }
 }

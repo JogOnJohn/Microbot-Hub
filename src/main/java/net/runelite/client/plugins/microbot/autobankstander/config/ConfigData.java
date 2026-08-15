@@ -9,6 +9,7 @@ import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enum
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerbCleaningMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.Mode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.UnfinishedPotionMode;
+import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.continuous.ContinuousStartPhase;
 import net.runelite.client.plugins.microbot.autobankstander.skills.fletching.enums.FletchingMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.fletching.enums.ArrowType;
 import net.runelite.client.plugins.microbot.autobankstander.skills.fletching.enums.BowType;
@@ -53,6 +54,12 @@ public class ConfigData {
     private boolean continuousUnlimitedCycles = false;
     private boolean continuousDecant = true;
     private boolean continuousSell = true;
+    private boolean continuousStartOverride = false;
+    private ContinuousStartPhase continuousStartPhase = ContinuousStartPhase.ACQUIRE_INPUTS;
+    private boolean continuousUseFixedSellPrice = false;
+    private int continuousFixedSellPrice = 1;
+    private boolean continuousIntervalSelling = true;
+    private int continuousSellIntervalPercent = 50;
     
     // Fletching settings
     private FletchingMode fletchingMode = FletchingMode.DARTS;
@@ -97,6 +104,12 @@ public class ConfigData {
         this.continuousUnlimitedCycles = other.continuousUnlimitedCycles;
         this.continuousDecant = other.continuousDecant;
         this.continuousSell = other.continuousSell;
+        this.continuousStartOverride = other.continuousStartOverride;
+        this.continuousStartPhase = other.continuousStartPhase;
+        this.continuousUseFixedSellPrice = other.continuousUseFixedSellPrice;
+        this.continuousFixedSellPrice = other.continuousFixedSellPrice;
+        this.continuousIntervalSelling = other.continuousIntervalSelling;
+        this.continuousSellIntervalPercent = other.continuousSellIntervalPercent;
         this.fletchingMode = other.fletchingMode;
         this.dartType = other.dartType;
         this.fletchingBoltType = other.fletchingBoltType;
@@ -181,6 +194,18 @@ public class ConfigData {
     public void setContinuousDecant(boolean value) { this.continuousDecant = value; }
     public boolean isContinuousSell() { return continuousSell; }
     public void setContinuousSell(boolean value) { this.continuousSell = value; }
+    public boolean isContinuousStartOverride() { return continuousStartOverride; }
+    public void setContinuousStartOverride(boolean value) { this.continuousStartOverride = value; }
+    public ContinuousStartPhase getContinuousStartPhase() { return continuousStartPhase; }
+    public void setContinuousStartPhase(ContinuousStartPhase value) { this.continuousStartPhase = value; }
+    public boolean isContinuousUseFixedSellPrice() { return continuousUseFixedSellPrice; }
+    public void setContinuousUseFixedSellPrice(boolean value) { this.continuousUseFixedSellPrice = value; }
+    public int getContinuousFixedSellPrice() { return continuousFixedSellPrice; }
+    public void setContinuousFixedSellPrice(int value) { this.continuousFixedSellPrice = value; }
+    public boolean isContinuousIntervalSelling() { return continuousIntervalSelling; }
+    public void setContinuousIntervalSelling(boolean value) { this.continuousIntervalSelling = value; }
+    public int getContinuousSellIntervalPercent() { return continuousSellIntervalPercent; }
+    public void setContinuousSellIntervalPercent(int value) { this.continuousSellIntervalPercent = value; }
 
     public FletchingMode getFletchingMode() { return fletchingMode; }
     public void setFletchingMode(FletchingMode fletchingMode) { this.fletchingMode = fletchingMode; }
@@ -259,6 +284,10 @@ public class ConfigData {
             case CONTINUOUS:
                 return finishedPotion != null && continuousQuantity > 0
                         && continuousMaxBuyPrice > 0 && continuousMinSellPrice > 0
+                        && (!continuousStartOverride || continuousStartPhase != null)
+                        && (!continuousUseFixedSellPrice || continuousFixedSellPrice >= continuousMinSellPrice)
+                        && (!continuousIntervalSelling || (continuousSellIntervalPercent > 0
+                        && continuousSellIntervalPercent < 100))
                         && continuousRetryLimit >= 0 && continuousPhaseTimeoutSeconds > 0
                         && (continuousUnlimitedCycles || continuousCycleLimit > 0);
             default:

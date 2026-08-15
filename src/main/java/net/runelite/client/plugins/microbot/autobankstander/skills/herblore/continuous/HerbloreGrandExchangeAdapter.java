@@ -121,6 +121,19 @@ public final class HerbloreGrandExchangeAdapter {
     }
 
     public GrandExchangeSlots getActiveSlot() { return activeSlot; }
+    public int getActiveCompletedQuantity() {
+        GrandExchangeOfferDetails details = activeSlot == null ? null
+                : Rs2GrandExchange.getOfferDetails(activeSlot);
+        if (details == null || details.getItemId() != activeItemId
+                || details.isSelling() != selling || details.getQuantitySold() < 0) return -1;
+        return details.getQuantitySold();
+    }
+    public boolean isActiveOfferComplete() {
+        GrandExchangeOfferDetails details = activeSlot == null ? null
+                : Rs2GrandExchange.getOfferDetails(activeSlot);
+        return details != null && details.getItemId() == activeItemId
+                && details.isSelling() == selling && details.isCompleted();
+    }
     public int getTotalQuantityReconciled() { return totalQuantityReconciled; }
     public int getLifetimeSoldQuantity() { return lifetimeSoldQuantity; }
     public void resetCycleQuantity() { totalQuantityReconciled = 0; }

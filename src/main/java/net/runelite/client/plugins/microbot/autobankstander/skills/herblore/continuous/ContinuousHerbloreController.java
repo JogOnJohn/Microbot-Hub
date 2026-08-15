@@ -28,7 +28,8 @@ public final class ContinuousHerbloreController {
     }
 
     public boolean maySell(int unitPrice) {
-        return phase == ContinuousHerblorePhase.OPTIONAL_SELL
+        return (phase == ContinuousHerblorePhase.OPTIONAL_SELL
+                || phase == ContinuousHerblorePhase.INTERIM_SELL)
                 && plan.sellEnabled && unitPrice >= plan.minSellPrice;
     }
 
@@ -42,9 +43,33 @@ public final class ContinuousHerbloreController {
     }
 
     public void recordSale(long actualRevenue) {
-        requirePhase(ContinuousHerblorePhase.OPTIONAL_SELL);
+        if (phase != ContinuousHerblorePhase.OPTIONAL_SELL
+                && phase != ContinuousHerblorePhase.INTERIM_SELL) {
+            throw new IllegalStateException("expected a sale phase, was " + phase);
+        }
         if (actualRevenue < 0) stop("ambiguous sale accounting");
         else revenue += actualRevenue;
+    }
+
+    public void beginAfterPrecheck(ContinuousHerblorePhase requestedPhase, long now) {
+        requirePhase(ContinuousHerblorePhase.PRECHECK);
+        if (requestedPhase != ContinuousHerblorePhase.ACQUIRE_INPUTS
+                && requestedPhase != ContinuousHerblorePhase.CLEAN_HERBS
+                && requestedPhase != ContinuousHerblorePhase.MAKE_UNFINISHED
+                && requestedPhase != ContinuousHerblorePhase.MAKE_FINISHED
+                && requestedPhase != ContinuousHerblorePhase.OPTIONAL_DECANT
+                && requestedPhase != ContinuousHerblorePhase.OPTIONAL_SELL) {
+            throw new IllegalArgumentException("unsupported continuous start phase: " + requestedPhase);
+        }
+        phaseRetries = 0;
+        transition(requestedPhase, now);
+    }
+
+    public void beginInterimSale(boolean decantFirst, long now) {
+        requirePhase(ContinuousHerblorePhase.MAKE_FINISHED);
+        phaseRetries = 0;
+        transition(decantFirst ? ContinuousHerblorePhase.INTERIM_DECANT
+                : ContinuousHerblorePhase.INTERIM_SELL, now);
     }
 
     public void succeedPhase(long now) {
@@ -60,6 +85,8 @@ public final class ContinuousHerbloreController {
                         : plan.sellEnabled ? ContinuousHerblorePhase.OPTIONAL_SELL
                         : ContinuousHerblorePhase.RECONCILE, now);
                 break;
+            case INTERIM_DECANT: transition(ContinuousHerblorePhase.INTERIM_SELL, now); break;
+            case INTERIM_SELL: transition(ContinuousHerblorePhase.MAKE_FINISHED, now); break;
             case OPTIONAL_DECANT:
                 transition(plan.sellEnabled ? ContinuousHerblorePhase.OPTIONAL_SELL
                         : ContinuousHerblorePhase.RECONCILE, now);

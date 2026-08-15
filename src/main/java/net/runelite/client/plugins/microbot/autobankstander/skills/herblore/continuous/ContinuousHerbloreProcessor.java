@@ -3,6 +3,7 @@ package net.runelite.client.plugins.microbot.autobankstander.skills.herblore.con
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Skill;
 import net.runelite.api.gameval.ItemID;
+import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.autobankstander.config.ConfigData;
 import net.runelite.client.plugins.microbot.autobankstander.processors.BankStandingProcessor;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.HerbloreProcessor;
@@ -14,9 +15,11 @@ import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.grandexchange.Rs2GrandExchange;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
+import net.runelite.client.plugins.microbot.util.security.Login;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static net.runelite.client.plugins.microbot.util.Global.sleepUntil;
 
@@ -27,6 +30,11 @@ import static net.runelite.client.plugins.microbot.util.Global.sleepUntil;
  */
 @Slf4j
 public final class ContinuousHerbloreProcessor implements BankStandingProcessor {
+    private static final long SALE_SHORT_BREAK_MIN_MILLIS = 3 * 60_000L;
+    private static final long SALE_SHORT_BREAK_MAX_MILLIS = 5 * 60_000L;
+    private static final long SALE_LOGOUT_BREAK_MILLIS = 15 * 60_000L;
+    private static final long LOGIN_RETRY_MILLIS = 30_000L;
+
     private final ConfigData config;
     private final ContinuousHerblorePlan plan;
     private final ContinuousHerbloreController controller;
@@ -42,6 +50,17 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
     private int herbsCleaned;
     private int unfinishedPotionsMade;
     private int finishedPotionsMade;
+    private int nextSaleCheckpoint;
+    private int lastInterimCheckpoint;
+    private int pendingInterimContainers;
+    private ContinuousHerblorePhase activeSalePhase;
+    private int salePhaseBaselineReconciled;
+    private int salePhaseTarget;
+    private SaleWaitStage saleWaitStage = SaleWaitStage.NONE;
+    private long saleWaitUntil;
+    private int saleProgressAtLogout;
+    private int logoutReturnWorld;
+    private long lastLoginAttemptAt;
 
     public ContinuousHerbloreProcessor(ConfigData config) {
         this.config = new ConfigData(config);
@@ -95,10 +114,23 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
     @Override
     public boolean process() {
         long now = System.currentTimeMillis();
-        if (controller.isPhaseTimedOut(now)) {
+        if (saleWaitStage == SaleWaitStage.LOGOUT_BREAK && Microbot.isLoggedIn()) {
+            if (now < saleWaitUntil) {
+                detail = "Sale offer resting offline; logging back out";
+                Rs2Player.logout();
+                return true;
+            }
+            saleWaitStage = SaleWaitStage.POST_LOGIN_CHECK;
+        }
+        if (saleWaitStage == SaleWaitStage.POST_LOGIN_CHECK) {
+            return checkSaleAfterLogout(now);
+        }
+        if (!isSalePhase(controller.getPhase()) && controller.isPhaseTimedOut(now)) {
             exchange.abortAndCollect();
-            phaseWorker = null;
-            workerPhase = null;
+            if (workerPhase == controller.getPhase()) {
+                phaseWorker = null;
+                workerPhase = null;
+            }
             controller.failPhase("phase timeout", now);
             log.info("Restarting continuous phase {} (retry {}/{})",
                     controller.getPhase(), controller.getPhaseRetries(), config.getContinuousRetryLimit());
@@ -111,6 +143,8 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
             case CLEAN_HERBS:
             case MAKE_UNFINISHED:
             case MAKE_FINISHED: return processPhase(now);
+            case INTERIM_DECANT: return decantInterim(now);
+            case INTERIM_SELL: return sell(now);
             case OPTIONAL_DECANT: return decant(now);
             case OPTIONAL_SELL: return sell(now);
             case RECONCILE: return reconcile(now);
@@ -122,13 +156,34 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
     private boolean precheck(long now) {
         detail = "Precheck and baseline";
         if (!ensureBankOpen()) return true;
-        baselineFinishedContainers = bankFinishedContainers();
+        boolean applyStartOverride = config.isContinuousStartOverride()
+                && controller.getCompletedCycles() == 0;
+        ContinuousHerblorePhase startPhase = applyStartOverride
+                ? config.getContinuousStartPhase().getPhase()
+                : ContinuousHerblorePhase.ACQUIRE_INPUTS;
+        int existingFinished = bankFinishedContainers();
         expectedOutputContainers = config.getContinuousQuantity();
+        if (startPhase == ContinuousHerblorePhase.OPTIONAL_DECANT
+                || startPhase == ContinuousHerblorePhase.OPTIONAL_SELL) {
+            if (existingFinished < expectedOutputContainers) {
+                controller.stop("selected start phase requires " + expectedOutputContainers
+                        + " finished potions, but bank has " + existingFinished);
+                return true;
+            }
+            baselineFinishedContainers = existingFinished - expectedOutputContainers;
+        } else {
+            baselineFinishedContainers = existingFinished;
+        }
+        nextSaleCheckpoint = saleCheckpointStep();
+        lastInterimCheckpoint = 0;
         if (config.isUseAmuletOfChemistry() && !recipe.chemistryEligible) {
             controller.stop("selected recipe is not chemistry eligible");
             return true;
         }
-        controller.succeedPhase(now);
+        log.info("Continuous start: override={}, phase={}, quantity={}, existingFinished={}, baseline={}",
+                applyStartOverride, startPhase, expectedOutputContainers,
+                existingFinished, baselineFinishedContainers);
+        controller.beginAfterPrecheck(startPhase, now);
         return true;
     }
 
@@ -193,6 +248,22 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
         }
         detail = phase + " " + phaseWorker.getProcessedCount() + "/" + config.getContinuousQuantity();
         if (phaseWorker.isActivelyProcessing()) return true;
+        int processed = phaseWorker.getProcessedCount();
+        if (phase == ContinuousHerblorePhase.MAKE_FINISHED
+                && config.isContinuousIntervalSelling()
+                && processed >= nextSaleCheckpoint
+                && processed < config.getContinuousQuantity()) {
+            if (!depositInventory()) return true;
+            pendingInterimContainers = processed - lastInterimCheckpoint;
+            lastInterimCheckpoint = processed;
+            int step = saleCheckpointStep();
+            while (nextSaleCheckpoint <= processed) nextSaleCheckpoint += step;
+            clearSalePhase();
+            log.info("Pausing finished-potion production for interim sale: produced={}, tranche={}, next={}",
+                    processed, pendingInterimContainers, nextSaleCheckpoint);
+            controller.beginInterimSale(config.isContinuousDecant(), now);
+            return true;
+        }
         if (phaseWorker.getProcessedCount() >= config.getContinuousQuantity()) {
             if (!depositInventory()) return true;
             int completed = phaseWorker.getProcessedCount();
@@ -233,37 +304,60 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
 
     private boolean decant(long now) {
         detail = "Decanting to four doses";
+        int wanted = Math.max(1, config.getContinuousQuantity() - lastInterimCheckpoint);
         int inventoryContainers = inventoryPotionContainers();
-        if (inventoryContainers != config.getContinuousQuantity()) {
+        if (inventoryContainers != wanted) {
             if (inventoryContainers > 0 && !depositInventory()) return true;
-            if (!withdrawFinishedAsNotes(config.getContinuousQuantity())) return true;
+            if (!withdrawFinishedAsNotes(wanted)) return true;
         }
         HerbloreDecantAdapter.Result result = decanter.decantToFourDoses(recipe.potion.toString());
         if (!result.success) {
             controller.failPhase(result.reason, now);
             return true;
         }
-        expectedOutputContainers = result.after.containers;
+        expectedOutputContainers -= result.before.containers - result.after.containers;
+        if (!depositInventory()) return true;
+        controller.succeedPhase(now);
+        return true;
+    }
+
+    private boolean decantInterim(long now) {
+        detail = "Decanting interim sale tranche";
+        int inventoryContainers = inventoryPotionContainers();
+        if (inventoryContainers != pendingInterimContainers) {
+            if (inventoryContainers > 0 && !depositInventory()) return true;
+            if (!withdrawFinishedAsNotes(pendingInterimContainers)) return true;
+        }
+        HerbloreDecantAdapter.Result result = decanter.decantToFourDoses(recipe.potion.toString());
+        if (!result.success) {
+            controller.failPhase(result.reason, now);
+            return true;
+        }
+        expectedOutputContainers -= result.before.containers - result.after.containers;
+        pendingInterimContainers = result.after.containers;
         if (!depositInventory()) return true;
         controller.succeedPhase(now);
         return true;
     }
 
     private boolean sell(long now) {
-        detail = "Selling reconciled output";
+        ContinuousHerblorePhase phase = controller.getPhase();
+        prepareSalePhase(phase);
+        detail = phase == ContinuousHerblorePhase.INTERIM_SELL
+                ? "Selling interim production tranche" : "Selling reconciled output";
         if (exchange.getActiveSlot() != null) {
-            if (!ensureExchangeOpen()) return true;
-            exchange.reconcileAndCollect();
+            return handleActiveSaleOffer(now);
+        }
+        int soldThisPhase = exchange.getTotalQuantityReconciled() - salePhaseBaselineReconciled;
+        if (soldThisPhase >= salePhaseTarget) {
+            controller.succeedPhase(now);
+            clearSalePhase();
             return true;
         }
+
         int itemId = inventoryPotionId();
         if (itemId < 0) {
-            if (exchange.getTotalQuantityReconciled() >= expectedOutputContainers) {
-                controller.succeedPhase(now);
-                return true;
-            }
-            if (!withdrawFinishedAsNotes(expectedOutputContainers
-                    - exchange.getTotalQuantityReconciled())) return true;
+            if (!withdrawFinishedAsNotes(salePhaseTarget - soldThisPhase)) return true;
             itemId = inventoryPotionId();
             if (itemId < 0) {
                 controller.failPhase("no reconciled potion output to sell", now);
@@ -272,12 +366,118 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
         }
         int quantity = Rs2Inventory.itemQuantity(itemId);
         int guide = Math.max(1, Rs2GrandExchange.getPrice(itemId));
-        int unitPrice = Math.max(config.getContinuousMinSellPrice(), (guide * 95) / 100);
+        int unitPrice = config.isContinuousUseFixedSellPrice()
+                ? config.getContinuousFixedSellPrice()
+                : Math.max(config.getContinuousMinSellPrice(), (guide * 95) / 100);
         if (!ensureExchangeOpen()) return true;
         if (!exchange.placeSell(itemId, quantity, unitPrice)) {
             controller.failPhase("GE sell dispatch failed", now);
+        } else {
+            beginShortSaleBreak(now);
         }
         return true;
+    }
+
+    private void prepareSalePhase(ContinuousHerblorePhase phase) {
+        if (activeSalePhase == phase) return;
+        activeSalePhase = phase;
+        salePhaseBaselineReconciled = exchange.getTotalQuantityReconciled();
+        salePhaseTarget = phase == ContinuousHerblorePhase.INTERIM_SELL
+                ? pendingInterimContainers
+                : Math.max(0, expectedOutputContainers - salePhaseBaselineReconciled);
+        resetSaleWait();
+        log.info("Prepared continuous sale phase {}: target={}, alreadyReconciled={}",
+                phase, salePhaseTarget, salePhaseBaselineReconciled);
+    }
+
+    private boolean handleActiveSaleOffer(long now) {
+        if (saleWaitStage == SaleWaitStage.NONE) beginShortSaleBreak(now);
+        if (saleWaitStage == SaleWaitStage.SHORT_BREAK && now < saleWaitUntil) {
+            detail = "Sale offer resting for " + remainingMinutes(now) + "m";
+            return true;
+        }
+        if (saleWaitStage == SaleWaitStage.SHORT_BREAK) {
+            if (!ensureExchangeOpen()) return true;
+            if (exchange.isActiveOfferComplete()) {
+                exchange.reconcileAndCollect();
+                resetSaleWait();
+                return true;
+            }
+            int progress = exchange.getActiveCompletedQuantity();
+            if (progress < 0) {
+                controller.stop("ambiguous GE sale progress before logout break");
+                return true;
+            }
+            saleProgressAtLogout = progress;
+            logoutReturnWorld = Microbot.getClient() == null ? 0 : Microbot.getClient().getWorld();
+            Rs2GrandExchange.closeExchange();
+            saleWaitStage = SaleWaitStage.LOGOUT_BREAK;
+            saleWaitUntil = now + SALE_LOGOUT_BREAK_MILLIS;
+            detail = "Sale still pending; logged out for 15 minutes";
+            log.info("GE sale still pending after short break; quantitySold={}, logging out until {}",
+                    saleProgressAtLogout, saleWaitUntil);
+            Rs2Player.logout();
+            return true;
+        }
+        return true;
+    }
+
+    private boolean checkSaleAfterLogout(long now) {
+        detail = "Checking sale after 15-minute logout";
+        if (!ensureExchangeOpen()) return true;
+        if (exchange.isActiveOfferComplete()) {
+            exchange.reconcileAndCollect();
+            resetSaleWait();
+            return true;
+        }
+        int progress = exchange.getActiveCompletedQuantity();
+        if (progress < 0) {
+            controller.stop("ambiguous GE sale progress after logout break");
+            Rs2GrandExchange.closeExchange();
+            Rs2Player.logout();
+            return true;
+        }
+        if (progress > saleProgressAtLogout) {
+            log.info("GE sale progressed during logout break: {} -> {}; continuing bounded waits",
+                    saleProgressAtLogout, progress);
+            beginShortSaleBreak(now);
+            return true;
+        }
+
+        log.info("GE sale made no progress during logout break; aborting offer and stopping gracefully");
+        if (!exchange.abortAndCollect()) return true;
+        Rs2GrandExchange.closeExchange();
+        controller.stop("sale made no progress during 15-minute logout break");
+        detail = "Sale stalled; stopped and logged out";
+        Rs2Player.logout();
+        return true;
+    }
+
+    private void beginShortSaleBreak(long now) {
+        long duration = ThreadLocalRandom.current().nextLong(
+                SALE_SHORT_BREAK_MIN_MILLIS, SALE_SHORT_BREAK_MAX_MILLIS + 1);
+        saleWaitStage = SaleWaitStage.SHORT_BREAK;
+        saleWaitUntil = now + duration;
+        log.info("All current sale stock is offered; taking a {}ms sale break", duration);
+    }
+
+    private long remainingMinutes(long now) {
+        return Math.max(1L, (saleWaitUntil - now + 59_999L) / 60_000L);
+    }
+
+    private void resetSaleWait() {
+        saleWaitStage = SaleWaitStage.NONE;
+        saleWaitUntil = 0;
+        saleProgressAtLogout = 0;
+        lastLoginAttemptAt = 0;
+    }
+
+    private void clearSalePhase() {
+        activeSalePhase = null;
+        salePhaseBaselineReconciled = 0;
+        salePhaseTarget = 0;
+        pendingInterimContainers = 0;
+        resetSaleWait();
     }
 
     private boolean reconcile(long now) {
@@ -298,6 +498,43 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
         exchange.resetCycleQuantity();
         controller.succeedPhase(now);
         return true;
+    }
+
+    private int saleCheckpointStep() {
+        if (!config.isContinuousIntervalSelling()) return config.getContinuousQuantity();
+        return Math.max(1, (int) Math.ceil(config.getContinuousQuantity()
+                * (config.getContinuousSellIntervalPercent() / 100.0)));
+    }
+
+    private boolean isSalePhase(ContinuousHerblorePhase phase) {
+        return phase == ContinuousHerblorePhase.INTERIM_SELL
+                || phase == ContinuousHerblorePhase.OPTIONAL_SELL;
+    }
+
+    @Override
+    public boolean shouldProcessWhileLoggedOut() {
+        return saleWaitStage == SaleWaitStage.LOGOUT_BREAK;
+    }
+
+    @Override
+    public boolean shouldStopWhileLoggedOut() {
+        return controller.getPhase() == ContinuousHerblorePhase.STOPPED;
+    }
+
+    @Override
+    public void processWhileLoggedOut() {
+        long now = System.currentTimeMillis();
+        if (saleWaitStage != SaleWaitStage.LOGOUT_BREAK) return;
+        if (now < saleWaitUntil) {
+            detail = "Offline sale break: " + remainingMinutes(now) + "m remaining";
+            return;
+        }
+        if (now - lastLoginAttemptAt < LOGIN_RETRY_MILLIS) return;
+        lastLoginAttemptAt = now;
+        int world = logoutReturnWorld > 0 ? logoutReturnWorld : Login.getRandomWorld(true);
+        detail = "Logging in to check pending sale";
+        log.info("15-minute GE sale break complete; attempting login to world {}", world);
+        new Login(world);
     }
 
     private boolean ensureBankOpen() {
@@ -435,6 +672,13 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
         }
     }
     @Override public void onGameMessage(String message) { if (phaseWorker != null) phaseWorker.onGameMessage(message); }
+
+    private enum SaleWaitStage {
+        NONE,
+        SHORT_BREAK,
+        LOGOUT_BREAK,
+        POST_LOGIN_CHECK
+    }
 
     private static final class Purchase {
         private final int itemId;

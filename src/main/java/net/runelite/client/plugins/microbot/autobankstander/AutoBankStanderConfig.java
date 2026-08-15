@@ -14,6 +14,7 @@ import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enum
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerbCleaningMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.Mode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.UnfinishedPotionMode;
+import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.continuous.ContinuousStartPhase;
 
 @ConfigGroup("AutoBankStander")
 @ConfigInformation(
@@ -248,4 +249,30 @@ public interface AutoBankStanderConfig extends Config {
     @ConfigItem(keyName = "continuousSell", name = "Sell output",
             description = "Continuous mode always sells its cycle output to fund the next cycle.", hidden = true)
     default boolean continuousSell() { return true; }
+
+    @ConfigItem(keyName = "continuousStartOverride", name = "Override start phase",
+            description = "Trust the selected phase instead of starting with input acquisition.", hidden = true)
+    default boolean continuousStartOverride() { return false; }
+
+    @ConfigItem(keyName = "continuousStartPhase", name = "Start phase",
+            description = "Explicit continuous-mode entry point when override is enabled.", hidden = true)
+    default ContinuousStartPhase continuousStartPhase() { return ContinuousStartPhase.ACQUIRE_INPUTS; }
+
+    @ConfigItem(keyName = "continuousUseFixedSellPrice", name = "Use fixed sale price",
+            description = "Place finished-potion offers at the configured exact per-unit price.", hidden = true)
+    default boolean continuousUseFixedSellPrice() { return false; }
+
+    @ConfigItem(keyName = "continuousFixedSellPrice", name = "Fixed sale price",
+            description = "Exact GE offer price per finished potion when enabled.", hidden = true)
+    @Range(min = 1, max = 2000000000)
+    default int continuousFixedSellPrice() { return 1; }
+
+    @ConfigItem(keyName = "continuousIntervalSelling", name = "Sell during production",
+            description = "Pause at production checkpoints to liquidate finished stock.", hidden = true)
+    default boolean continuousIntervalSelling() { return true; }
+
+    @ConfigItem(keyName = "continuousSellIntervalPercent", name = "Sale checkpoint interval",
+            description = "Percentage of cycle production between interim sales.", hidden = true)
+    @Range(min = 1, max = 99)
+    default int continuousSellIntervalPercent() { return 50; }
 }

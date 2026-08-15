@@ -63,6 +63,23 @@ public class AutoBankStanderScript extends Script {
         
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
+                if (processor != null && !Microbot.isLoggedIn()
+                        && processor.shouldStopWhileLoggedOut()) {
+                    ScriptHeartbeatRegistry.recordHeartbeat(PLUGIN_HEARTBEAT_KEY);
+                    captureProcessorStats();
+                    lastAction = processor.getTaskDetail();
+                    log.info("Processor requested graceful shutdown while logged out: {}", lastAction);
+                    shutdown();
+                    return;
+                }
+                if (processor != null && !Microbot.isLoggedIn()
+                        && processor.shouldProcessWhileLoggedOut()) {
+                    ScriptHeartbeatRegistry.recordHeartbeat(PLUGIN_HEARTBEAT_KEY);
+                    loopCount.incrementAndGet();
+                    processor.processWhileLoggedOut();
+                    lastAction = processor.getStatusMessage();
+                    return;
+                }
                 boolean readyToRun = super.run();
                 ScriptHeartbeatRegistry.recordHeartbeat(PLUGIN_HEARTBEAT_KEY);
                 loopCount.incrementAndGet();

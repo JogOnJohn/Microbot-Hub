@@ -10,6 +10,7 @@ import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enum
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerbCleaningMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.Mode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.UnfinishedPotionMode;
+import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.continuous.ContinuousStartPhase;
 import net.runelite.client.plugins.microbot.autobankstander.skills.magic.MagicMethod;
 import net.runelite.client.plugins.microbot.autobankstander.skills.magic.enchanting.BoltType;
 import net.runelite.client.plugins.microbot.autobankstander.skills.fletching.enums.FletchingMode;
@@ -382,43 +383,98 @@ public class AutoBankStanderPanel extends PluginPanel {
                 configurationPanel.add(checkboxPanel);
                 break;
             case CONTINUOUS:
+                JLabel warning = new JLabel("<html><div style='width:220px;text-align:center;color:#ffb347'>"
+                        + "Continuous mode uses the GE and may log out while sale offers are pending. "
+                        + "Start-phase override trusts the selected bank stock.</div></html>");
+                warning.setAlignmentX(Component.CENTER_ALIGNMENT);
+                configurationPanel.add(warning);
+                configurationPanel.add(Box.createRigidArea(new Dimension(0, 8)));
+
                 JComboBox<HerblorePotion> continuousPotion = new JComboBox<>(HerblorePotion.values());
                 continuousPotion.setSelectedItem(currentConfig.getFinishedPotion());
                 continuousPotion.addActionListener(e -> currentConfig.setFinishedPotion(
                         (HerblorePotion) continuousPotion.getSelectedItem()));
-                configurationPanel.add(labeled("Recipe", continuousPotion));
+                configurationPanel.add(labeledStacked("Recipe", continuousPotion));
 
                 JSpinner quantity = spinner(currentConfig.getContinuousQuantity(), 1, 10000, 1);
                 quantity.addChangeListener(e -> currentConfig.setContinuousQuantity((Integer) quantity.getValue()));
-                configurationPanel.add(labeled("Cycle quantity", quantity));
+                quantity.setToolTipText("Number of potion operations to process in this cycle");
+                configurationPanel.add(labeledStacked("Cycle volume (items)", quantity));
 
                 JSpinner reserve = spinner(currentConfig.getContinuousCapitalReserve(), 0, 2000000000, 1000);
                 reserve.addChangeListener(e -> currentConfig.setContinuousCapitalReserve((Integer) reserve.getValue()));
-                configurationPanel.add(labeled("Capital reserve", reserve));
+                configurationPanel.add(labeledStacked("Capital reserve (coins)", reserve));
 
                 JSpinner maxBuy = spinner(currentConfig.getContinuousMaxBuyPrice(), 1, 2000000000, 100);
                 maxBuy.addChangeListener(e -> currentConfig.setContinuousMaxBuyPrice((Integer) maxBuy.getValue()));
-                configurationPanel.add(labeled("Max buy / item", maxBuy));
+                maxBuy.setToolTipText("Maximum GE offer price for one input item; not purchase volume");
+                configurationPanel.add(labeledStacked("Buy ceiling (coins per item)", maxBuy));
 
                 JSpinner minSell = spinner(currentConfig.getContinuousMinSellPrice(), 1, 2000000000, 100);
                 minSell.addChangeListener(e -> currentConfig.setContinuousMinSellPrice((Integer) minSell.getValue()));
-                configurationPanel.add(labeled("Min sell / item", minSell));
+                minSell.setToolTipText("Lowest permitted GE offer price for one finished potion");
+                configurationPanel.add(labeledStacked("Sale floor (coins per item)", minSell));
+
+                JCheckBox fixedSell = new JCheckBox("Use exact sale price");
+                fixedSell.setSelected(currentConfig.isContinuousUseFixedSellPrice());
+                configurationPanel.add(fixedSell);
+
+                JSpinner fixedSellPrice = spinner(currentConfig.getContinuousFixedSellPrice(), 1, 2000000000, 100);
+                fixedSellPrice.setEnabled(fixedSell.isSelected());
+                fixedSellPrice.setToolTipText("Exact per-potion GE offer price when enabled");
+                fixedSellPrice.addChangeListener(e -> currentConfig.setContinuousFixedSellPrice(
+                        (Integer) fixedSellPrice.getValue()));
+                fixedSell.addActionListener(e -> {
+                    currentConfig.setContinuousUseFixedSellPrice(fixedSell.isSelected());
+                    fixedSellPrice.setEnabled(fixedSell.isSelected());
+                });
+                configurationPanel.add(labeledStacked("Exact sale price (coins per item)", fixedSellPrice));
+
+                JCheckBox startOverride = new JCheckBox("Override starting phase");
+                startOverride.setSelected(currentConfig.isContinuousStartOverride());
+                configurationPanel.add(startOverride);
+
+                JComboBox<ContinuousStartPhase> startPhase = new JComboBox<>(ContinuousStartPhase.values());
+                startPhase.setSelectedItem(currentConfig.getContinuousStartPhase());
+                startPhase.setEnabled(startOverride.isSelected());
+                startPhase.addActionListener(e -> currentConfig.setContinuousStartPhase(
+                        (ContinuousStartPhase) startPhase.getSelectedItem()));
+                startOverride.addActionListener(e -> {
+                    currentConfig.setContinuousStartOverride(startOverride.isSelected());
+                    startPhase.setEnabled(startOverride.isSelected());
+                });
+                configurationPanel.add(labeledStacked("Trusted starting phase", startPhase));
+
+                JCheckBox intervalSelling = new JCheckBox("Sell during production");
+                intervalSelling.setSelected(currentConfig.isContinuousIntervalSelling());
+                configurationPanel.add(intervalSelling);
+
+                JSpinner saleInterval = spinner(currentConfig.getContinuousSellIntervalPercent(), 1, 99, 1);
+                saleInterval.setEnabled(intervalSelling.isSelected());
+                saleInterval.setToolTipText("50 means sell near halfway, then sell the remainder at cycle end");
+                saleInterval.addChangeListener(e -> currentConfig.setContinuousSellIntervalPercent(
+                        (Integer) saleInterval.getValue()));
+                intervalSelling.addActionListener(e -> {
+                    currentConfig.setContinuousIntervalSelling(intervalSelling.isSelected());
+                    saleInterval.setEnabled(intervalSelling.isSelected());
+                });
+                configurationPanel.add(labeledStacked("Sale interval (% produced)", saleInterval));
 
                 JSpinner cycles = spinner(currentConfig.getContinuousCycleLimit(), 1, 10000, 1);
                 cycles.addChangeListener(e -> currentConfig.setContinuousCycleLimit((Integer) cycles.getValue()));
-                configurationPanel.add(labeled("Cycle limit", cycles));
+                configurationPanel.add(labeledStacked("Cycle limit", cycles));
 
                 JSpinner retries = spinner(currentConfig.getContinuousRetryLimit(), 0, 10, 1);
                 retries.addChangeListener(e -> currentConfig.setContinuousRetryLimit((Integer) retries.getValue()));
-                configurationPanel.add(labeled("Phase retries", retries));
+                configurationPanel.add(labeledStacked("Phase retries", retries));
 
                 JSpinner timeout = spinner(currentConfig.getContinuousPhaseTimeoutSeconds(), 15, 3600, 15);
                 timeout.addChangeListener(e -> currentConfig.setContinuousPhaseTimeoutSeconds((Integer) timeout.getValue()));
-                configurationPanel.add(labeled("Timeout seconds", timeout));
+                configurationPanel.add(labeledStacked("Phase timeout (seconds)", timeout));
 
                 JSpinner stopLoss = spinner(currentConfig.getContinuousStopLoss(), 0, 2000000000, 1000);
                 stopLoss.addChangeListener(e -> currentConfig.setContinuousStopLoss((Integer) stopLoss.getValue()));
-                configurationPanel.add(labeled("Stop loss", stopLoss));
+                configurationPanel.add(labeledStacked("Stop loss (coins)", stopLoss));
 
                 JCheckBox unlimited = new JCheckBox("Deliberately unlimited");
                 unlimited.setSelected(currentConfig.isContinuousUnlimitedCycles());
@@ -430,7 +486,9 @@ public class AutoBankStanderPanel extends PluginPanel {
                 decant.addActionListener(e -> currentConfig.setContinuousDecant(decant.isSelected()));
                 configurationPanel.add(decant);
 
-                JLabel sell = new JLabel("Cycle output is sold to fund the next cycle");
+                JLabel sell = new JLabel("<html><div style='width:220px;text-align:center'>"
+                        + "Output is sold to fund the next cycle.</div></html>");
+                sell.setAlignmentX(Component.CENTER_ALIGNMENT);
                 currentConfig.setContinuousSell(true);
                 configurationPanel.add(sell);
 
@@ -460,7 +518,9 @@ public class AutoBankStanderPanel extends PluginPanel {
         label.setAlignmentX(Component.CENTER_ALIGNMENT);
         component.setAlignmentX(Component.CENTER_ALIGNMENT);
         Dimension preferred = component.getPreferredSize();
-        component.setMaximumSize(new Dimension(Math.max(220, preferred.width), preferred.height));
+        int boundedWidth = Math.min(220, Math.max(140, preferred.width));
+        component.setPreferredSize(new Dimension(boundedWidth, preferred.height));
+        component.setMaximumSize(new Dimension(220, preferred.height));
         panel.add(label);
         panel.add(Box.createRigidArea(new Dimension(0, 4)));
         panel.add(component);

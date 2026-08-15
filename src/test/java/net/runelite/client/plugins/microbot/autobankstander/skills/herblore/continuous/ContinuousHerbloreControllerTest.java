@@ -8,6 +8,8 @@ public final class ContinuousHerbloreControllerTest {
         exposesTimeoutBeforeMutation();
         stopsAtActualSpendLossBound();
         routesCycleOutputThroughSale();
+        startsAtExplicitPhase();
+        routesInterimSaleBackToProduction();
     }
 
     private static ContinuousHerblorePlan plan() {
@@ -69,6 +71,31 @@ public final class ContinuousHerbloreControllerTest {
         expect(c.getPhase() == ContinuousHerblorePhase.RECONCILE,
                 "sale must reconcile before another cycle");
         expect(c.getRevenue() == 123_456, "actual sale proceeds must fund cycle accounting");
+    }
+
+    private static void startsAtExplicitPhase() {
+        ContinuousHerbloreController c = new ContinuousHerbloreController(plan(), 0);
+        c.beginAfterPrecheck(ContinuousHerblorePhase.MAKE_FINISHED, 1);
+        expect(c.getPhase() == ContinuousHerblorePhase.MAKE_FINISHED,
+                "operator override must enter the trusted first-cycle phase");
+    }
+
+    private static void routesInterimSaleBackToProduction() {
+        ContinuousHerblorePlan selling = new ContinuousHerblorePlan(100_000, 10_000, 7_000, 2,
+                5_000, 500_000, 1, false, true, true);
+        ContinuousHerbloreController c = new ContinuousHerbloreController(selling, 0);
+        c.beginAfterPrecheck(ContinuousHerblorePhase.MAKE_FINISHED, 1);
+        c.beginInterimSale(true, 2);
+        expect(c.getPhase() == ContinuousHerblorePhase.INTERIM_DECANT,
+                "decant-enabled checkpoint must decant the interim tranche");
+        c.succeedPhase(3);
+        expect(c.getPhase() == ContinuousHerblorePhase.INTERIM_SELL,
+                "interim decant must flow into an interim sale");
+        c.recordSale(50_000);
+        c.succeedPhase(4);
+        expect(c.getPhase() == ContinuousHerblorePhase.MAKE_FINISHED,
+                "interim sale must resume finished-potion production");
+        expect(c.getRevenue() == 50_000, "interim proceeds must count toward cycle revenue");
     }
 
     private static void expect(boolean condition, String message) {

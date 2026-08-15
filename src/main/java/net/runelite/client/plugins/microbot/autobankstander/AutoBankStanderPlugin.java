@@ -37,7 +37,7 @@ import java.awt.image.BufferedImage;
 )
 @Slf4j
 public class AutoBankStanderPlugin extends Plugin {
-    static final String version = "1.1.0";
+    static final String version = "1.2.0";
     
     @Inject
     private AutoBankStanderConfig config;
@@ -157,6 +157,12 @@ public class AutoBankStanderPlugin extends Plugin {
             currentConfigData.setContinuousUnlimitedCycles(config.continuousUnlimitedCycles());
             currentConfigData.setContinuousDecant(config.continuousDecant());
             currentConfigData.setContinuousSell(config.continuousSell());
+            currentConfigData.setContinuousStartOverride(config.continuousStartOverride());
+            currentConfigData.setContinuousStartPhase(config.continuousStartPhase());
+            currentConfigData.setContinuousUseFixedSellPrice(config.continuousUseFixedSellPrice());
+            currentConfigData.setContinuousFixedSellPrice(config.continuousFixedSellPrice());
+            currentConfigData.setContinuousIntervalSelling(config.continuousIntervalSelling());
+            currentConfigData.setContinuousSellIntervalPercent(config.continuousSellIntervalPercent());
             
             // note: fletching configurations are set by panel since config doesn't store them
             // they remain at their defaults until panel updates them
