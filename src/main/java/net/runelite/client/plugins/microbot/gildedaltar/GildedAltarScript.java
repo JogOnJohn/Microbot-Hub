@@ -1,27 +1,34 @@
 package net.runelite.client.plugins.microbot.gildedaltar;
 
 import net.runelite.api.ObjectID;
+import net.runelite.api.Skill;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
+import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
+import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 public class GildedAltarScript extends Script {
 
     private static final int HOUSE_PORTAL_OBJECT = 4525;
     private static final int FAST_LOOP_DELAY_MS = 100;
     private static final int NORMAL_LOOP_DELAY_MS = 900;
+    private static final int OFFERING_STALL_TIMEOUT_MS = 3000;
+    private static final int OFFERING_RECOVERY_COOLDOWN_MS = 2500;
     private Widget toggleArrow;
     public Widget targetWidget;
     public String houseOwner;
@@ -35,6 +42,10 @@ public class GildedAltarScript extends Script {
     private int lazyFastOffersRemaining;
     private int lazyBurstRemaining;
     private int lazyNextBurstAtBoneCount;
+    private int offeringAnchorSlot = -1;
+    private int lastPrayerXp = -1;
+    private long lastPrayerXpAt;
+    private long lastOfferingRecoveryAt;
     private long lastNormalLoopAt;
     private boolean leaveHousePending;
     private long leaveHouseAttemptedAt;
@@ -275,13 +286,23 @@ public class GildedAltarScript extends Script {
             return;
         }
 
+        observePrayerXp();
+
         if (config.oneTickOffering()) {
+            if (recoverStalledOffering(altar)) {
+                lastUnnotedBoneCount = boneCount;
+                return;
+            }
             offerOncePerGameTick(altar);
             lastUnnotedBoneCount = boneCount;
             return;
         }
 
         if (config.randomLazyOffering()) {
+            if (recoverStalledOffering(altar)) {
+                lastUnnotedBoneCount = boneCount;
+                return;
+            }
             randomLazyOffer(config, altar, boneCount);
             return;
         }
@@ -339,10 +360,108 @@ public class GildedAltarScript extends Script {
         if (currentTick == lastOfferTick) {
             return false;
         }
-        if (!Rs2Inventory.useUnNotedItemOnObject("bones", altar.getId())) {
+        if (!offerLowerBoneOnAltar(altar, 250)) {
             return false;
         }
         lastOfferTick = currentTick;
+        return true;
+    }
+
+    private boolean offerLowerBoneOnAltar(Rs2TileObjectModel altar, int selectionTimeoutMs) {
+        Rs2ItemModel selectedBone = lowerInventoryBone();
+        if (selectedBone == null) {
+            return false;
+        }
+
+        // A selected bone may be left over from an interrupted interaction. In
+        // that case, finish the item-on-altar action instead of selecting again
+        // (which would turn the click into a bone-on-bone interaction).
+        boolean expectedBoneSelected = Rs2Inventory.isItemSelected()
+                && Rs2Inventory.getSelectedItemId() == selectedBone.getId();
+        if (!expectedBoneSelected) {
+            if (Rs2Inventory.isItemSelected()) {
+                Rs2Inventory.deselect();
+                sleepUntil(() -> !Rs2Inventory.isItemSelected(), 300);
+            }
+            if (!Rs2Inventory.use(selectedBone)) {
+                return false;
+            }
+            if (!sleepUntil(() -> Rs2Inventory.isItemSelected()
+                    && Rs2Inventory.getSelectedItemId() == selectedBone.getId()
+                    && Rs2Inventory.getSelectedItemIndex() == selectedBone.getSlot(), selectionTimeoutMs)) {
+                return false;
+            }
+        }
+
+        // Never invoke the altar's default action unless a bone selection is
+        // confirmed. This prevents a missed inventory click becoming "Pray".
+        if (!Rs2Inventory.isItemSelected()
+                || Rs2Inventory.getSelectedItemId() != selectedBone.getId()) {
+            return false;
+        }
+        return Rs2GameObject.interact(altar);
+    }
+
+    private Rs2ItemModel lowerInventoryBone() {
+        List<Rs2ItemModel> bones = Rs2Inventory.items(item -> !item.isNoted()
+                        && item.getName().toLowerCase().contains("bones"))
+                .sorted(Comparator.comparingInt(Rs2ItemModel::getSlot).reversed())
+                .collect(Collectors.toList());
+        if (bones.isEmpty()) {
+            offeringAnchorSlot = -1;
+            return null;
+        }
+
+        // Offering consumes the first available matching bone, not necessarily
+        // the inventory slot that was clicked. Reuse one lower-row anchor while
+        // earlier slots drain so the inventory click remains on a real bone.
+        Rs2ItemModel existingAnchor = bones.stream()
+                .filter(item -> item.getSlot() == offeringAnchorSlot)
+                .findFirst()
+                .orElse(null);
+        if (existingAnchor != null) {
+            return existingAnchor;
+        }
+
+        List<Rs2ItemModel> lowerRows = bones.stream()
+                .filter(item -> item.getSlot() >= 16)
+                .limit(8)
+                .collect(Collectors.toList());
+        List<Rs2ItemModel> candidates = lowerRows.isEmpty()
+                ? bones.subList(0, Math.min(4, bones.size()))
+                : lowerRows;
+        Rs2ItemModel newAnchor = candidates.get(random.nextInt(candidates.size()));
+        offeringAnchorSlot = newAnchor.getSlot();
+        return newAnchor;
+    }
+
+    private void observePrayerXp() {
+        int prayerXp = Microbot.getClient().getSkillExperience(Skill.PRAYER);
+        long now = System.currentTimeMillis();
+        if (lastPrayerXp < 0 || prayerXp > lastPrayerXp) {
+            lastPrayerXp = prayerXp;
+            lastPrayerXpAt = now;
+        }
+    }
+
+    private boolean recoverStalledOffering(Rs2TileObjectModel altar) {
+        long now = System.currentTimeMillis();
+        if (lastPrayerXpAt <= 0
+                || now - lastPrayerXpAt < OFFERING_STALL_TIMEOUT_MS
+                || now - lastOfferingRecoveryAt < OFFERING_RECOVERY_COOLDOWN_MS) {
+            return false;
+        }
+
+        int prayerXpBefore = lastPrayerXp;
+        lastOfferingRecoveryAt = now;
+        lastOfferTick = -1;
+        Microbot.log("Gilded Altar: Prayer XP stalled; safely re-priming bone offering.");
+        if (!offerLowerBoneOnAltar(altar, 600)) {
+            return true;
+        }
+
+        sleepUntil(() -> Microbot.getClient().getSkillExperience(Skill.PRAYER) > prayerXpBefore, 1800);
+        observePrayerXp();
         return true;
     }
 
@@ -352,6 +471,10 @@ public class GildedAltarScript extends Script {
         lazyFastOffersRemaining = 0;
         lazyBurstRemaining = 0;
         lazyNextBurstAtBoneCount = 0;
+        offeringAnchorSlot = -1;
+        lastPrayerXp = -1;
+        lastPrayerXpAt = 0;
+        lastOfferingRecoveryAt = 0;
     }
 
     public void addNameToBlackList() {
