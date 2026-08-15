@@ -346,7 +346,7 @@ public class AutoBankStanderPanel extends PluginPanel {
                 cleaningStyle.setSelectedItem(currentConfig.getHerbCleaningMode());
                 cleaningStyle.addActionListener(e -> currentConfig.setHerbCleaningMode(
                         (HerbCleaningMode) cleaningStyle.getSelectedItem()));
-                configurationPanel.add(labeled("Cleaning style", cleaningStyle));
+                configurationPanel.add(labeledStacked("Cleaning style", cleaningStyle));
                 break;
             case UNFINISHED_POTIONS:
                 JComboBox<UnfinishedPotionMode> potionModeDropdown = new JComboBox<>(UnfinishedPotionMode.values());
@@ -449,6 +449,23 @@ public class AutoBankStanderPanel extends PluginPanel {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER, 5, 0));
         panel.add(new JLabel(text));
         panel.add(component);
+        return panel;
+    }
+
+    private JPanel labeledStacked(String text, JComponent component) {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setOpaque(false);
+        JLabel label = new JLabel(text);
+        label.setAlignmentX(Component.CENTER_ALIGNMENT);
+        component.setAlignmentX(Component.CENTER_ALIGNMENT);
+        Dimension preferred = component.getPreferredSize();
+        component.setMaximumSize(new Dimension(Math.max(220, preferred.width), preferred.height));
+        panel.add(label);
+        panel.add(Box.createRigidArea(new Dimension(0, 4)));
+        panel.add(component);
+        panel.setMaximumSize(new Dimension(Integer.MAX_VALUE,
+                label.getPreferredSize().height + preferred.height + 8));
         return panel;
     }
 

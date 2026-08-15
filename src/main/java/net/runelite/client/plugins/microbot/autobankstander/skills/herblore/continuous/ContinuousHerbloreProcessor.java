@@ -39,6 +39,9 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
     private int expectedOutputContainers;
     private String detail = "Awaiting precheck";
     private String lastEquipmentStatus = "Not checked";
+    private int herbsCleaned;
+    private int unfinishedPotionsMade;
+    private int finishedPotionsMade;
 
     public ContinuousHerbloreProcessor(ConfigData config) {
         this.config = new ConfigData(config);
@@ -192,6 +195,10 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
         if (phaseWorker.isActivelyProcessing()) return true;
         if (phaseWorker.getProcessedCount() >= config.getContinuousQuantity()) {
             if (!depositInventory()) return true;
+            int completed = phaseWorker.getProcessedCount();
+            if (phase == ContinuousHerblorePhase.CLEAN_HERBS) herbsCleaned += completed;
+            else if (phase == ContinuousHerblorePhase.MAKE_UNFINISHED) unfinishedPotionsMade += completed;
+            else if (phase == ContinuousHerblorePhase.MAKE_FINISHED) finishedPotionsMade += completed;
             lastEquipmentStatus = phaseWorker.getEquipmentStatus();
             phaseWorker = null;
             workerPhase = null;
@@ -376,6 +383,23 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
     @Override public int getProcessedCount() {
         return controller.getCompletedCycles() * config.getContinuousQuantity()
                 + (phaseWorker == null ? 0 : phaseWorker.getProcessedCount());
+    }
+    @Override public int getHerbsCleanedCount() {
+        return herbsCleaned + activePhaseProgress(ContinuousHerblorePhase.CLEAN_HERBS);
+    }
+    @Override public int getUnfinishedPotionCount() {
+        return unfinishedPotionsMade + activePhaseProgress(ContinuousHerblorePhase.MAKE_UNFINISHED);
+    }
+    @Override public int getFinishedPotionCount() {
+        return finishedPotionsMade + activePhaseProgress(ContinuousHerblorePhase.MAKE_FINISHED);
+    }
+    @Override public int getPotionsSoldCount() { return exchange.getLifetimeSoldQuantity(); }
+    @Override public int getCompletedCycleCount() { return controller.getCompletedCycles(); }
+    @Override public long getCoinsSpent() { return controller.getSpent(); }
+    @Override public long getCoinsRevenue() { return controller.getRevenue(); }
+
+    private int activePhaseProgress(ContinuousHerblorePhase phase) {
+        return workerPhase == phase && phaseWorker != null ? phaseWorker.getProcessedCount() : 0;
     }
     @Override public String getBatchProgress() {
         return phaseWorker == null ? controller.getPhase().toString() : phaseWorker.getBatchProgress();

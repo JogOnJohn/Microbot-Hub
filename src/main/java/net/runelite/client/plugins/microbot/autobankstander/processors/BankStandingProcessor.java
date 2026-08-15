@@ -73,6 +73,14 @@ public interface BankStandingProcessor {
         return -1;
     }
 
+    default int getHerbsCleanedCount() { return 0; }
+    default int getUnfinishedPotionCount() { return 0; }
+    default int getFinishedPotionCount() { return 0; }
+    default int getPotionsSoldCount() { return 0; }
+    default int getCompletedCycleCount() { return 0; }
+    default long getCoinsSpent() { return 0; }
+    default long getCoinsRevenue() { return 0; }
+
     /** Current inventory batch completion summary. */
     default String getBatchProgress() {
         return "Not available";

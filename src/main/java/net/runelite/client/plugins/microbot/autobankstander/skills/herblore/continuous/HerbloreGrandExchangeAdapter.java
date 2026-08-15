@@ -16,6 +16,7 @@ public final class HerbloreGrandExchangeAdapter {
     private int activeItemId = -1;
     private boolean selling;
     private int totalQuantityReconciled;
+    private int lifetimeSoldQuantity;
 
     public HerbloreGrandExchangeAdapter(ContinuousHerbloreController controller) {
         if (controller == null) throw new IllegalArgumentException("controller is required");
@@ -78,6 +79,7 @@ public final class HerbloreGrandExchangeAdapter {
         if (selling) controller.recordSale(actualCoins);
         else controller.recordPurchase(actualCoins);
         totalQuantityReconciled += completed;
+        if (selling) lifetimeSoldQuantity += completed;
         log.info("Reconciled GE {} in {}: item={}, quantity={}, coins={}",
                 selling ? "sale" : "purchase", activeSlot, activeItemId, completed, actualCoins);
         clear();
@@ -99,6 +101,7 @@ public final class HerbloreGrandExchangeAdapter {
                 if (selling) controller.recordSale(details.getSpent());
                 else controller.recordPurchase(details.getSpent());
                 totalQuantityReconciled += details.getQuantitySold();
+                if (selling) lifetimeSoldQuantity += details.getQuantitySold();
             }
             clear();
         }
@@ -119,5 +122,6 @@ public final class HerbloreGrandExchangeAdapter {
 
     public GrandExchangeSlots getActiveSlot() { return activeSlot; }
     public int getTotalQuantityReconciled() { return totalQuantityReconciled; }
+    public int getLifetimeSoldQuantity() { return lifetimeSoldQuantity; }
     public void resetCycleQuantity() { totalQuantityReconciled = 0; }
 }

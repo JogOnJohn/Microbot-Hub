@@ -318,6 +318,18 @@ public class HerbloreProcessor implements BankStandingProcessor {
         return processedCount;
     }
 
+    @Override public int getHerbsCleanedCount() {
+        return mode == Mode.CLEAN_HERBS ? processedCount : 0;
+    }
+
+    @Override public int getUnfinishedPotionCount() {
+        return mode == Mode.UNFINISHED_POTIONS ? processedCount : 0;
+    }
+
+    @Override public int getFinishedPotionCount() {
+        return mode == Mode.FINISHED_POTIONS ? processedCount : 0;
+    }
+
     @Override
     public String getBatchProgress() {
         if (batchSize <= 0) return "Awaiting batch";

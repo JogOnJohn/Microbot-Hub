@@ -49,6 +49,17 @@ public class AutoBankStanderOverlay extends OverlayPanel {
             addLine("Equipment", processor.getEquipmentStatus());
         }
 
+        addLine("Herbs cleaned", formatNumber(script.getSessionHerbsCleaned()));
+        addLine("Unfinished made", formatNumber(script.getSessionUnfinishedMade()));
+        addLine("Potions made", formatNumber(script.getSessionPotionsMade()));
+        addLine("Potions sold", formatNumber(script.getSessionPotionsSold()));
+        addLine("Cycles", formatNumber(script.getSessionCycles()));
+        long spent = script.getSessionCoinsSpent();
+        long revenue = script.getSessionCoinsRevenue();
+        addLine("GE spent", formatNumber(spent));
+        addLine("GE revenue", formatNumber(revenue));
+        addLine("Net GP", formatNumber(revenue - spent));
+
         addLine("Loops", Long.toString(script.getLoopCount()));
         addLine("Runtime", formatRuntime(script));
         return super.render(graphics);
@@ -68,5 +79,9 @@ public class AutoBankStanderOverlay extends OverlayPanel {
         long minutes = (totalSeconds % 3600) / 60;
         long seconds = totalSeconds % 60;
         return String.format("%02d:%02d:%02d", hours, minutes, seconds);
+    }
+
+    private String formatNumber(long value) {
+        return String.format("%,d", value);
     }
 }

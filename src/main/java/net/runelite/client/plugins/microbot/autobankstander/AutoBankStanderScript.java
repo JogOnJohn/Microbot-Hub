@@ -33,6 +33,21 @@ public class AutoBankStanderScript extends Script {
     private volatile BankStandingProcessor processor;
     private AutoBankStanderPlugin plugin;
     private final AtomicLong loopCount = new AtomicLong();
+    private final AtomicLong sessionHerbsCleaned = new AtomicLong();
+    private final AtomicLong sessionUnfinishedMade = new AtomicLong();
+    private final AtomicLong sessionPotionsMade = new AtomicLong();
+    private final AtomicLong sessionPotionsSold = new AtomicLong();
+    private final AtomicLong sessionCycles = new AtomicLong();
+    private final AtomicLong sessionCoinsSpent = new AtomicLong();
+    private final AtomicLong sessionCoinsRevenue = new AtomicLong();
+    private BankStandingProcessor statsProcessor;
+    private long lastHerbsCleaned;
+    private long lastUnfinishedMade;
+    private long lastPotionsMade;
+    private long lastPotionsSold;
+    private long lastCycles;
+    private long lastCoinsSpent;
+    private long lastCoinsRevenue;
     private volatile long startedAt;
     private volatile String lastAction = "Stopped";
 
@@ -53,6 +68,7 @@ public class AutoBankStanderScript extends Script {
                 loopCount.incrementAndGet();
                 if (processor != null && Microbot.isLoggedIn()) {
                     processor.refreshDiagnostics();
+                    captureProcessorStats();
                 }
                 if (!readyToRun) {
                     log.info("Super.run() returned false, stopping");
@@ -108,6 +124,7 @@ public class AutoBankStanderScript extends Script {
         lastAction = "Creating processor";
         
         // create the appropriate processor based on config data
+        captureProcessorStats();
         processor = createProcessor();
         if (processor == null) {
             log.info("Failed to create processor for skill: {}", configData.getSkill());
@@ -343,8 +360,45 @@ public class AutoBankStanderScript extends Script {
         return processor;
     }
 
+    private synchronized void captureProcessorStats() {
+        BankStandingProcessor current = processor;
+        if (current == null) return;
+        if (statsProcessor != current) {
+            statsProcessor = current;
+            lastHerbsCleaned = 0;
+            lastUnfinishedMade = 0;
+            lastPotionsMade = 0;
+            lastPotionsSold = 0;
+            lastCycles = 0;
+            lastCoinsSpent = 0;
+            lastCoinsRevenue = 0;
+        }
+        lastHerbsCleaned = accumulate(sessionHerbsCleaned, lastHerbsCleaned, current.getHerbsCleanedCount());
+        lastUnfinishedMade = accumulate(sessionUnfinishedMade, lastUnfinishedMade, current.getUnfinishedPotionCount());
+        lastPotionsMade = accumulate(sessionPotionsMade, lastPotionsMade, current.getFinishedPotionCount());
+        lastPotionsSold = accumulate(sessionPotionsSold, lastPotionsSold, current.getPotionsSoldCount());
+        lastCycles = accumulate(sessionCycles, lastCycles, current.getCompletedCycleCount());
+        lastCoinsSpent = accumulate(sessionCoinsSpent, lastCoinsSpent, current.getCoinsSpent());
+        lastCoinsRevenue = accumulate(sessionCoinsRevenue, lastCoinsRevenue, current.getCoinsRevenue());
+    }
+
+    private long accumulate(AtomicLong sessionTotal, long previous, long current) {
+        long safeCurrent = Math.max(0, current);
+        if (safeCurrent >= previous) sessionTotal.addAndGet(safeCurrent - previous);
+        return safeCurrent;
+    }
+
+    public long getSessionHerbsCleaned() { return sessionHerbsCleaned.get(); }
+    public long getSessionUnfinishedMade() { return sessionUnfinishedMade.get(); }
+    public long getSessionPotionsMade() { return sessionPotionsMade.get(); }
+    public long getSessionPotionsSold() { return sessionPotionsSold.get(); }
+    public long getSessionCycles() { return sessionCycles.get(); }
+    public long getSessionCoinsSpent() { return sessionCoinsSpent.get(); }
+    public long getSessionCoinsRevenue() { return sessionCoinsRevenue.get(); }
+
     @Override
     public void shutdown() {
+        captureProcessorStats();
         ScriptHeartbeatRegistry.remove(PLUGIN_HEARTBEAT_KEY);
         if (!isRunning()) {
             log.info("Script already shutdown, ignoring");
