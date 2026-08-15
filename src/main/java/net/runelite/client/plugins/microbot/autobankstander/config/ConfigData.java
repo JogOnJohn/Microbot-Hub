@@ -6,6 +6,7 @@ import net.runelite.client.plugins.microbot.autobankstander.skills.magic.MagicMe
 import net.runelite.client.plugins.microbot.autobankstander.skills.magic.enchanting.BoltType;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.CleanHerbMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerblorePotion;
+import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerbCleaningMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.Mode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.UnfinishedPotionMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.fletching.enums.FletchingMode;
@@ -32,11 +33,26 @@ public class ConfigData {
     private UnfinishedPotionMode unfinishedPotionMode = UnfinishedPotionMode.ANY_AND_ALL;
     private HerblorePotion finishedPotion = HerblorePotion.ATTACK;
     private boolean useAmuletOfChemistry = false;
-    private boolean herbloreTurboMode = false;
+    private HerbCleaningMode herbCleaningMode = HerbCleaningMode.DEFAULT;
     private int herbloreTurboLimit = 0;
     private int herbloreSleepMin = 60;
     private int herbloreSleepMax = 300;
     private int herbloreSleepTarget = 150;
+    private int reverseIngredientChance = 15;
+    private int batchMicroBreakChance = 8;
+    private int batchMicroBreakMinMs = 700;
+    private int batchMicroBreakMaxMs = 1800;
+    private int continuousQuantity = 100;
+    private int continuousCapitalReserve = 1000000;
+    private int continuousMaxBuyPrice = 100000;
+    private int continuousMinSellPrice = 1;
+    private int continuousRetryLimit = 2;
+    private int continuousPhaseTimeoutSeconds = 180;
+    private int continuousStopLoss = 1000000;
+    private int continuousCycleLimit = 1;
+    private boolean continuousUnlimitedCycles = false;
+    private boolean continuousDecant = true;
+    private boolean continuousSell = true;
     
     // Fletching settings
     private FletchingMode fletchingMode = FletchingMode.DARTS;
@@ -61,11 +77,26 @@ public class ConfigData {
         this.unfinishedPotionMode = other.unfinishedPotionMode;
         this.finishedPotion = other.finishedPotion;
         this.useAmuletOfChemistry = other.useAmuletOfChemistry;
-        this.herbloreTurboMode = other.herbloreTurboMode;
+        this.herbCleaningMode = other.herbCleaningMode;
         this.herbloreTurboLimit = other.herbloreTurboLimit;
         this.herbloreSleepMin = other.herbloreSleepMin;
         this.herbloreSleepMax = other.herbloreSleepMax;
         this.herbloreSleepTarget = other.herbloreSleepTarget;
+        this.reverseIngredientChance = other.reverseIngredientChance;
+        this.batchMicroBreakChance = other.batchMicroBreakChance;
+        this.batchMicroBreakMinMs = other.batchMicroBreakMinMs;
+        this.batchMicroBreakMaxMs = other.batchMicroBreakMaxMs;
+        this.continuousQuantity = other.continuousQuantity;
+        this.continuousCapitalReserve = other.continuousCapitalReserve;
+        this.continuousMaxBuyPrice = other.continuousMaxBuyPrice;
+        this.continuousMinSellPrice = other.continuousMinSellPrice;
+        this.continuousRetryLimit = other.continuousRetryLimit;
+        this.continuousPhaseTimeoutSeconds = other.continuousPhaseTimeoutSeconds;
+        this.continuousStopLoss = other.continuousStopLoss;
+        this.continuousCycleLimit = other.continuousCycleLimit;
+        this.continuousUnlimitedCycles = other.continuousUnlimitedCycles;
+        this.continuousDecant = other.continuousDecant;
+        this.continuousSell = other.continuousSell;
         this.fletchingMode = other.fletchingMode;
         this.dartType = other.dartType;
         this.fletchingBoltType = other.fletchingBoltType;
@@ -101,8 +132,8 @@ public class ConfigData {
     public boolean isUseAmuletOfChemistry() { return useAmuletOfChemistry; }
     public void setUseAmuletOfChemistry(boolean useAmuletOfChemistry) { this.useAmuletOfChemistry = useAmuletOfChemistry; }
 
-    public boolean isHerbloreTurboMode() { return herbloreTurboMode; }
-    public void setHerbloreTurboMode(boolean herbloreTurboMode) { this.herbloreTurboMode = herbloreTurboMode; }
+    public HerbCleaningMode getHerbCleaningMode() { return herbCleaningMode; }
+    public void setHerbCleaningMode(HerbCleaningMode herbCleaningMode) { this.herbCleaningMode = herbCleaningMode; }
 
     public int getHerbloreTurboLimit() { return herbloreTurboLimit; }
     public void setHerbloreTurboLimit(int herbloreTurboLimit) { this.herbloreTurboLimit = herbloreTurboLimit; }
@@ -115,6 +146,41 @@ public class ConfigData {
 
     public int getHerbloreSleepTarget() { return herbloreSleepTarget; }
     public void setHerbloreSleepTarget(int herbloreSleepTarget) { this.herbloreSleepTarget = herbloreSleepTarget; }
+
+    public int getReverseIngredientChance() { return reverseIngredientChance; }
+    public void setReverseIngredientChance(int value) { this.reverseIngredientChance = value; }
+
+    public int getBatchMicroBreakChance() { return batchMicroBreakChance; }
+    public void setBatchMicroBreakChance(int value) { this.batchMicroBreakChance = value; }
+
+    public int getBatchMicroBreakMinMs() { return batchMicroBreakMinMs; }
+    public void setBatchMicroBreakMinMs(int value) { this.batchMicroBreakMinMs = value; }
+
+    public int getBatchMicroBreakMaxMs() { return batchMicroBreakMaxMs; }
+    public void setBatchMicroBreakMaxMs(int value) { this.batchMicroBreakMaxMs = value; }
+
+    public int getContinuousQuantity() { return continuousQuantity; }
+    public void setContinuousQuantity(int value) { this.continuousQuantity = value; }
+    public int getContinuousCapitalReserve() { return continuousCapitalReserve; }
+    public void setContinuousCapitalReserve(int value) { this.continuousCapitalReserve = value; }
+    public int getContinuousMaxBuyPrice() { return continuousMaxBuyPrice; }
+    public void setContinuousMaxBuyPrice(int value) { this.continuousMaxBuyPrice = value; }
+    public int getContinuousMinSellPrice() { return continuousMinSellPrice; }
+    public void setContinuousMinSellPrice(int value) { this.continuousMinSellPrice = value; }
+    public int getContinuousRetryLimit() { return continuousRetryLimit; }
+    public void setContinuousRetryLimit(int value) { this.continuousRetryLimit = value; }
+    public int getContinuousPhaseTimeoutSeconds() { return continuousPhaseTimeoutSeconds; }
+    public void setContinuousPhaseTimeoutSeconds(int value) { this.continuousPhaseTimeoutSeconds = value; }
+    public int getContinuousStopLoss() { return continuousStopLoss; }
+    public void setContinuousStopLoss(int value) { this.continuousStopLoss = value; }
+    public int getContinuousCycleLimit() { return continuousCycleLimit; }
+    public void setContinuousCycleLimit(int value) { this.continuousCycleLimit = value; }
+    public boolean isContinuousUnlimitedCycles() { return continuousUnlimitedCycles; }
+    public void setContinuousUnlimitedCycles(boolean value) { this.continuousUnlimitedCycles = value; }
+    public boolean isContinuousDecant() { return continuousDecant; }
+    public void setContinuousDecant(boolean value) { this.continuousDecant = value; }
+    public boolean isContinuousSell() { return continuousSell; }
+    public void setContinuousSell(boolean value) { this.continuousSell = value; }
 
     public FletchingMode getFletchingMode() { return fletchingMode; }
     public void setFletchingMode(FletchingMode fletchingMode) { this.fletchingMode = fletchingMode; }
@@ -190,6 +256,11 @@ public class ConfigData {
                 return unfinishedPotionMode != null;
             case FINISHED_POTIONS:
                 return finishedPotion != null;
+            case CONTINUOUS:
+                return finishedPotion != null && continuousQuantity > 0
+                        && continuousMaxBuyPrice > 0 && continuousMinSellPrice > 0
+                        && continuousRetryLimit >= 0 && continuousPhaseTimeoutSeconds > 0
+                        && (continuousUnlimitedCycles || continuousCycleLimit > 0);
             default:
                 return false;
         }

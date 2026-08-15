@@ -7,6 +7,7 @@ import net.runelite.client.plugins.microbot.autobankstander.config.ConfigData;
 import net.runelite.client.plugins.microbot.autobankstander.processors.SkillType;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.CleanHerbMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerblorePotion;
+import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerbCleaningMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.Mode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.UnfinishedPotionMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.magic.MagicMethod;
@@ -341,6 +342,11 @@ public class AutoBankStanderPanel extends PluginPanel {
                 JPanel herbPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 0, 0));
                 herbPanel.add(herbModeDropdown);
                 configurationPanel.add(herbPanel);
+                JComboBox<HerbCleaningMode> cleaningStyle = new JComboBox<>(HerbCleaningMode.values());
+                cleaningStyle.setSelectedItem(currentConfig.getHerbCleaningMode());
+                cleaningStyle.addActionListener(e -> currentConfig.setHerbCleaningMode(
+                        (HerbCleaningMode) cleaningStyle.getSelectedItem()));
+                configurationPanel.add(labeled("Cleaning style", cleaningStyle));
                 break;
             case UNFINISHED_POTIONS:
                 JComboBox<UnfinishedPotionMode> potionModeDropdown = new JComboBox<>(UnfinishedPotionMode.values());
@@ -375,10 +381,79 @@ public class AutoBankStanderPanel extends PluginPanel {
                 checkboxPanel.add(amuletCheckbox);
                 configurationPanel.add(checkboxPanel);
                 break;
+            case CONTINUOUS:
+                JComboBox<HerblorePotion> continuousPotion = new JComboBox<>(HerblorePotion.values());
+                continuousPotion.setSelectedItem(currentConfig.getFinishedPotion());
+                continuousPotion.addActionListener(e -> currentConfig.setFinishedPotion(
+                        (HerblorePotion) continuousPotion.getSelectedItem()));
+                configurationPanel.add(labeled("Recipe", continuousPotion));
+
+                JSpinner quantity = spinner(currentConfig.getContinuousQuantity(), 1, 10000, 1);
+                quantity.addChangeListener(e -> currentConfig.setContinuousQuantity((Integer) quantity.getValue()));
+                configurationPanel.add(labeled("Cycle quantity", quantity));
+
+                JSpinner reserve = spinner(currentConfig.getContinuousCapitalReserve(), 0, 2000000000, 1000);
+                reserve.addChangeListener(e -> currentConfig.setContinuousCapitalReserve((Integer) reserve.getValue()));
+                configurationPanel.add(labeled("Capital reserve", reserve));
+
+                JSpinner maxBuy = spinner(currentConfig.getContinuousMaxBuyPrice(), 1, 2000000000, 100);
+                maxBuy.addChangeListener(e -> currentConfig.setContinuousMaxBuyPrice((Integer) maxBuy.getValue()));
+                configurationPanel.add(labeled("Max buy / item", maxBuy));
+
+                JSpinner minSell = spinner(currentConfig.getContinuousMinSellPrice(), 1, 2000000000, 100);
+                minSell.addChangeListener(e -> currentConfig.setContinuousMinSellPrice((Integer) minSell.getValue()));
+                configurationPanel.add(labeled("Min sell / item", minSell));
+
+                JSpinner cycles = spinner(currentConfig.getContinuousCycleLimit(), 1, 10000, 1);
+                cycles.addChangeListener(e -> currentConfig.setContinuousCycleLimit((Integer) cycles.getValue()));
+                configurationPanel.add(labeled("Cycle limit", cycles));
+
+                JSpinner retries = spinner(currentConfig.getContinuousRetryLimit(), 0, 10, 1);
+                retries.addChangeListener(e -> currentConfig.setContinuousRetryLimit((Integer) retries.getValue()));
+                configurationPanel.add(labeled("Phase retries", retries));
+
+                JSpinner timeout = spinner(currentConfig.getContinuousPhaseTimeoutSeconds(), 15, 3600, 15);
+                timeout.addChangeListener(e -> currentConfig.setContinuousPhaseTimeoutSeconds((Integer) timeout.getValue()));
+                configurationPanel.add(labeled("Timeout seconds", timeout));
+
+                JSpinner stopLoss = spinner(currentConfig.getContinuousStopLoss(), 0, 2000000000, 1000);
+                stopLoss.addChangeListener(e -> currentConfig.setContinuousStopLoss((Integer) stopLoss.getValue()));
+                configurationPanel.add(labeled("Stop loss", stopLoss));
+
+                JCheckBox unlimited = new JCheckBox("Deliberately unlimited");
+                unlimited.setSelected(currentConfig.isContinuousUnlimitedCycles());
+                unlimited.addActionListener(e -> currentConfig.setContinuousUnlimitedCycles(unlimited.isSelected()));
+                configurationPanel.add(unlimited);
+
+                JCheckBox decant = new JCheckBox("Decant to 4 doses");
+                decant.setSelected(currentConfig.isContinuousDecant());
+                decant.addActionListener(e -> currentConfig.setContinuousDecant(decant.isSelected()));
+                configurationPanel.add(decant);
+
+                JLabel sell = new JLabel("Cycle output is sold to fund the next cycle");
+                currentConfig.setContinuousSell(true);
+                configurationPanel.add(sell);
+
+                JCheckBox chemistry = new JCheckBox("Use amulet of chemistry");
+                chemistry.setSelected(currentConfig.isUseAmuletOfChemistry());
+                chemistry.addActionListener(e -> currentConfig.setUseAmuletOfChemistry(chemistry.isSelected()));
+                configurationPanel.add(chemistry);
+                break;
         }
         
         configurationPanel.revalidate();
         configurationPanel.repaint();
+    }
+
+    private JPanel labeled(String text, JComponent component) {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.CENTER, 5, 0));
+        panel.add(new JLabel(text));
+        panel.add(component);
+        return panel;
+    }
+
+    private JSpinner spinner(int value, int minimum, int maximum, int step) {
+        return new JSpinner(new SpinnerNumberModel(value, minimum, maximum, step));
     }
     
     private void createFletchingMethodButtons() {

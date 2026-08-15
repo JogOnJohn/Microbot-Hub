@@ -1,14 +1,14 @@
 package net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums;
 
-public enum Mode {
-    CLEAN_HERBS("Clean herbs"),
-    UNFINISHED_POTIONS("Make unfinished potions"),
-    FINISHED_POTIONS("Make finished potions"),
-    CONTINUOUS("Continuous Herblore");
+public enum HerbCleaningMode {
+    DEFAULT("Default"),
+    RECORDED_SERPENTINE("Recorded serpentine"),
+    TURBO("Turbo"),
+    RANDOM("Random");
 
     private final String displayName;
 
-    Mode(String displayName) {
+    HerbCleaningMode(String displayName) {
         this.displayName = displayName;
     }
 

@@ -6,6 +6,8 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.api.ChatMessageType;
+import net.runelite.api.events.ChatMessage;
 import net.runelite.client.game.SkillIconManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
@@ -13,7 +15,9 @@ import net.runelite.client.plugins.microbot.autobankstander.config.ConfigData;
 import net.runelite.client.plugins.microbot.PluginConstants;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
+import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.ImageUtil;
+import net.runelite.client.util.Text;
 
 import javax.inject.Inject;
 import java.awt.*;
@@ -33,7 +37,7 @@ import java.awt.image.BufferedImage;
 )
 @Slf4j
 public class AutoBankStanderPlugin extends Plugin {
-    static final String version = "1.0.3";
+    static final String version = "1.1.0";
     
     @Inject
     private AutoBankStanderConfig config;
@@ -50,6 +54,12 @@ public class AutoBankStanderPlugin extends Plugin {
     
     @Inject
     private SkillIconManager skillIconManager;
+
+    @Inject
+    private OverlayManager overlayManager;
+
+    @Inject
+    private AutoBankStanderOverlay overlay;
     
     private AutoBankStanderPanel panel;
     private NavigationButton navButton;
@@ -67,6 +77,7 @@ public class AutoBankStanderPlugin extends Plugin {
         
         // create and add panel to sidebar
         addPanel();
+        overlayManager.add(overlay);
         
         // build configuration data directly from config values
         buildConfigurationData();
@@ -78,6 +89,7 @@ public class AutoBankStanderPlugin extends Plugin {
     @Override
     protected void shutDown() {
         script.shutdown();
+        overlayManager.remove(overlay);
         removePanel();
         log.info("Plugin stopped");
     }
@@ -100,6 +112,15 @@ public class AutoBankStanderPlugin extends Plugin {
             // note: we don't auto-restart to give user control over when script runs
         }
     }
+
+    @Subscribe
+    public void onChatMessage(ChatMessage event) {
+        if (event.getType() != ChatMessageType.GAMEMESSAGE
+                && event.getType() != ChatMessageType.SPAM) {
+            return;
+        }
+        script.onGameMessage(Text.removeTags(event.getMessage()));
+    }
     
     private void buildConfigurationData() {
         try {
@@ -116,6 +137,26 @@ public class AutoBankStanderPlugin extends Plugin {
             currentConfigData.setUnfinishedPotionMode(config.unfinishedPotionMode());
             currentConfigData.setFinishedPotion(config.finishedPotion());
             currentConfigData.setUseAmuletOfChemistry(config.useAmuletOfChemistry());
+            currentConfigData.setHerbCleaningMode(config.herbCleaningMode());
+            currentConfigData.setHerbloreTurboLimit(config.herbloreTurboLimit());
+            currentConfigData.setHerbloreSleepMin(config.herbloreSleepMin());
+            currentConfigData.setHerbloreSleepMax(config.herbloreSleepMax());
+            currentConfigData.setHerbloreSleepTarget(config.herbloreSleepTarget());
+            currentConfigData.setReverseIngredientChance(config.reverseIngredientChance());
+            currentConfigData.setBatchMicroBreakChance(config.batchMicroBreakChance());
+            currentConfigData.setBatchMicroBreakMinMs(config.batchMicroBreakMinMs());
+            currentConfigData.setBatchMicroBreakMaxMs(config.batchMicroBreakMaxMs());
+            currentConfigData.setContinuousQuantity(config.continuousQuantity());
+            currentConfigData.setContinuousCapitalReserve(config.continuousCapitalReserve());
+            currentConfigData.setContinuousMaxBuyPrice(config.continuousMaxBuyPrice());
+            currentConfigData.setContinuousMinSellPrice(config.continuousMinSellPrice());
+            currentConfigData.setContinuousRetryLimit(config.continuousRetryLimit());
+            currentConfigData.setContinuousPhaseTimeoutSeconds(config.continuousPhaseTimeoutSeconds());
+            currentConfigData.setContinuousStopLoss(config.continuousStopLoss());
+            currentConfigData.setContinuousCycleLimit(config.continuousCycleLimit());
+            currentConfigData.setContinuousUnlimitedCycles(config.continuousUnlimitedCycles());
+            currentConfigData.setContinuousDecant(config.continuousDecant());
+            currentConfigData.setContinuousSell(config.continuousSell());
             
             // note: fletching configurations are set by panel since config doesn't store them
             // they remain at their defaults until panel updates them

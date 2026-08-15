@@ -53,4 +53,42 @@ public interface BankStandingProcessor {
     default boolean isActivelyProcessing() {
         return false; // default implementation for processors that don't need this
     }
+
+    /** Refresh cached values consumed by overlays and diagnostics. */
+    default void refreshDiagnostics() {
+    }
+
+    /** Number of complete operations currently supported by cached bank materials. */
+    default int getBankProcessableCount() {
+        return -1;
+    }
+
+    /** Human-readable bank material counts, including limiting multi-input materials. */
+    default String getBankMaterialSummary() {
+        return "Not available";
+    }
+
+    /** Total completed operations observed during this script run. */
+    default int getProcessedCount() {
+        return -1;
+    }
+
+    /** Current inventory batch completion summary. */
+    default String getBatchProgress() {
+        return "Not available";
+    }
+
+    /** Relevant equipment state, such as chemistry amulet charges. */
+    default String getEquipmentStatus() {
+        return "Not applicable";
+    }
+
+    /** Selected recipe/mode detail for operator debugging. */
+    default String getTaskDetail() {
+        return "Not available";
+    }
+
+    /** Optional game-message hook for equipment and processing telemetry. */
+    default void onGameMessage(String message) {
+    }
 }

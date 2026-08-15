@@ -1,17 +1,23 @@
 package net.runelite.client.plugins.microbot.autobankstander.skills.herblore;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 import java.util.stream.Collectors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.Skill;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.autobankstander.processors.BankStandingProcessor;
+import net.runelite.client.plugins.microbot.autobankstander.processing.BatchTransaction;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.CleanHerbMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.Herb;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerblorePotion;
+import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerbCleaningMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.Mode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.UnfinishedPotionMode;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
@@ -39,7 +45,7 @@ public class HerbloreProcessor implements BankStandingProcessor {
     private boolean useAmuletOfChemistry;
 
     // cleaning tuning (from recovered HerbloreScript)
-    private final boolean turboModeEnabled;
+    private final HerbCleaningMode herbCleaningMode;
     private final int turboHerbLimit;
     private final int sleepMin;
     private final int sleepMax;
@@ -47,6 +53,15 @@ public class HerbloreProcessor implements BankStandingProcessor {
     private boolean turboActive;
     private int turboHerbsCleanedCount = 0;
     private final Random sleepRandom = new Random();
+    private final int reverseIngredientChance;
+    private final int batchMicroBreakChance;
+    private final int batchMicroBreakMinMs;
+    private final int batchMicroBreakMaxMs;
+
+    private static final int[] RECORDED_SERPENTINE_SLOTS = {
+        0, 1, 5, 4, 8, 9, 13, 12, 16, 17, 21, 20, 24, 25,
+        26, 27, 23, 22, 18, 19, 15, 14, 10, 11, 7, 6, 2, 3
+    };
 
     // processing state
     private Herb currentHerb;
@@ -54,28 +69,96 @@ public class HerbloreProcessor implements BankStandingProcessor {
     private HerblorePotion currentPotion;
     private int withdrawnAmount;
     private boolean amuletBroken = false;
+    private int lastAmuletItemId = -1;
+    private volatile int amuletCharges = -1;
+    private volatile int chemistryProcCount = 0;
+    private volatile String amuletStatus = "Disabled";
+
+    // overlay/debug diagnostics
+    private volatile int bankProcessableCount = -1;
+    private volatile String bankMaterialSummary = "Awaiting bank scan";
+    private volatile int processedCount = 0;
+    private final int operationLimit;
+    private volatile int batchSize = 0;
+    private volatile int batchProcessed = 0;
+    private int batchPrimaryItemId = -1;
+    private int batchAccounted = 0;
+    private String lastLoggedBankSummary = "";
+    private static final int BATCH_ACK_TIMEOUT_TICKS = 5;
+    private static final int BATCH_PROGRESS_TIMEOUT_TICKS = 12;
+    private static final int MAX_BATCH_RETRIES = 2;
+    private long batchGeneration = 0;
+    private BatchTransaction batchTransaction;
+    private int batchRetryCount = 0;
+    private int batchSecondaryItemId = -1;
+    private int batchSecondaryRatio = 1;
+
+    private static final Pattern CHEMISTRY_CHECK_PATTERN = Pattern.compile(
+            "^Your amulet of chemistry has (\\d+) charges? left\\.$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern CHEMISTRY_USED_PATTERN = Pattern.compile(
+            "^Your amulet of chemistry helps you create a \\d+-dose potion\\. It has (\\d+|one) charges? left\\.$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern CHEMISTRY_BREAK_PATTERN = Pattern.compile(
+            "^Your amulet of chemistry helps you create a \\d+-dose potion\\. It then crumbles to dust\\.$",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern ALCHEMIST_CHECK_PATTERN = Pattern.compile(
+            "^Your Alchemist's amulet has (\\d+) charges? left\\.$", Pattern.CASE_INSENSITIVE);
 
     public HerbloreProcessor(Mode mode, CleanHerbMode cleanHerbMode, UnfinishedPotionMode unfinishedPotionMode,
                            HerblorePotion finishedPotion, boolean useAmuletOfChemistry) {
         this(mode, cleanHerbMode, unfinishedPotionMode, finishedPotion, useAmuletOfChemistry,
-             false, 0, 60, 300, 150);
+                HerbCleaningMode.DEFAULT, 0, 60, 300, 150, 15, 8, 700, 1800);
     }
 
     public HerbloreProcessor(Mode mode, CleanHerbMode cleanHerbMode, UnfinishedPotionMode unfinishedPotionMode,
                            HerblorePotion finishedPotion, boolean useAmuletOfChemistry,
-                           boolean turboMode, int turboHerbLimit,
-                           int sleepMin, int sleepMax, int sleepTarget) {
+                           HerbCleaningMode herbCleaningMode, int turboHerbLimit,
+                           int sleepMin, int sleepMax, int sleepTarget,
+                           int reverseIngredientChance, int batchMicroBreakChance,
+                           int batchMicroBreakMinMs, int batchMicroBreakMaxMs) {
         this.mode = mode;
         this.cleanHerbMode = cleanHerbMode;
         this.unfinishedPotionMode = unfinishedPotionMode;
         this.finishedPotion = finishedPotion;
         this.useAmuletOfChemistry = useAmuletOfChemistry;
-        this.turboModeEnabled = turboMode;
+        this.herbCleaningMode = herbCleaningMode == null ? HerbCleaningMode.DEFAULT : herbCleaningMode;
         this.turboHerbLimit = turboHerbLimit;
         this.sleepMin = sleepMin;
         this.sleepMax = sleepMax;
         this.sleepTarget = sleepTarget;
-        this.turboActive = turboMode;
+        this.reverseIngredientChance = clampPercent(reverseIngredientChance);
+        this.batchMicroBreakChance = clampPercent(batchMicroBreakChance);
+        this.batchMicroBreakMinMs = Math.max(250, Math.min(batchMicroBreakMinMs, batchMicroBreakMaxMs));
+        this.batchMicroBreakMaxMs = Math.max(this.batchMicroBreakMinMs, batchMicroBreakMaxMs);
+        this.operationLimit = 0;
+        this.turboActive = this.herbCleaningMode == HerbCleaningMode.TURBO;
+        this.withdrawnAmount = 0;
+    }
+
+    /** Creates a phase worker that cannot consume more than the requested number of operations. */
+    public HerbloreProcessor(Mode mode, CleanHerbMode cleanHerbMode, UnfinishedPotionMode unfinishedPotionMode,
+                            HerblorePotion finishedPotion, boolean useAmuletOfChemistry,
+                            HerbCleaningMode herbCleaningMode, int turboHerbLimit,
+                            int sleepMin, int sleepMax, int sleepTarget,
+                            int reverseIngredientChance, int batchMicroBreakChance,
+                            int batchMicroBreakMinMs, int batchMicroBreakMaxMs,
+                            int operationLimit) {
+        this.mode = mode;
+        this.cleanHerbMode = cleanHerbMode;
+        this.unfinishedPotionMode = unfinishedPotionMode;
+        this.finishedPotion = finishedPotion;
+        this.useAmuletOfChemistry = useAmuletOfChemistry;
+        this.herbCleaningMode = herbCleaningMode == null ? HerbCleaningMode.DEFAULT : herbCleaningMode;
+        this.turboHerbLimit = Math.max(0, turboHerbLimit);
+        this.sleepMin = Math.max(1, sleepMin);
+        this.sleepMax = Math.max(this.sleepMin, sleepMax);
+        this.sleepTarget = Math.max(this.sleepMin, Math.min(this.sleepMax, sleepTarget));
+        this.reverseIngredientChance = clampPercent(reverseIngredientChance);
+        this.batchMicroBreakChance = clampPercent(batchMicroBreakChance);
+        this.batchMicroBreakMinMs = Math.max(0, batchMicroBreakMinMs);
+        this.batchMicroBreakMaxMs = Math.max(this.batchMicroBreakMinMs, batchMicroBreakMaxMs);
+        this.operationLimit = Math.max(0, operationLimit);
+        this.turboActive = this.herbCleaningMode == HerbCleaningMode.TURBO;
         this.withdrawnAmount = 0;
     }
     
@@ -140,6 +223,7 @@ public class HerbloreProcessor implements BankStandingProcessor {
                        Rs2Inventory.hasItem(ItemID.VIAL_WATER);
             case FINISHED_POTIONS:
                 if (currentPotion == null) return false;
+                if (useAmuletOfChemistry && !isSupportedAmuletWorn()) return false;
                 if (isSuperCombat(currentPotion)) {
                     return Rs2Inventory.hasItem(ItemID.TORSTOL) && 
                            Rs2Inventory.hasItem(ItemID._4DOSE2ATTACK) &&
@@ -189,9 +273,118 @@ public class HerbloreProcessor implements BankStandingProcessor {
         
         return false;
     }
+
+    @Override
+    public boolean isActivelyProcessing() {
+        if (batchTransaction == null) return false;
+        BatchTransaction.State previous = batchTransaction.getState();
+        BatchTransaction.State current = batchTransaction.observe(currentBatchObservation());
+        refreshProcessingProgress();
+        if (current != previous) {
+            log.info("Batch generation {} transitioned {} -> {} (progress {}/{})",
+                    batchTransaction.getGeneration(), previous, current,
+                    batchTransaction.getCompletedOperations(), batchSize);
+        }
+        if (current == BatchTransaction.State.COMPLETED && previous != current) {
+            maybeTakeBatchBoundaryBreak();
+        }
+        if (current == BatchTransaction.State.FAILED) {
+            log.info("Batch generation {} failed: {} (retry {}/{})",
+                    batchTransaction.getGeneration(), batchTransaction.getFailureReason(),
+                    batchRetryCount, MAX_BATCH_RETRIES);
+        }
+        return batchTransaction.isInFlight();
+    }
+
+    @Override
+    public void refreshDiagnostics() {
+        refreshProcessingProgress();
+        refreshBankMaterialDiagnostics();
+        refreshAmuletStatus();
+    }
+
+    @Override
+    public int getBankProcessableCount() {
+        return bankProcessableCount;
+    }
+
+    @Override
+    public String getBankMaterialSummary() {
+        return bankMaterialSummary;
+    }
+
+    @Override
+    public int getProcessedCount() {
+        return processedCount;
+    }
+
+    @Override
+    public String getBatchProgress() {
+        if (batchSize <= 0) return "Awaiting batch";
+        String transaction = batchTransaction == null ? "ready"
+                : "g" + batchTransaction.getGeneration() + " " + batchTransaction.getState();
+        return batchProcessed + " / " + batchSize + " | " + transaction;
+    }
+
+    @Override
+    public String getEquipmentStatus() {
+        return amuletStatus + " | procs " + chemistryProcCount;
+    }
+
+    @Override
+    public String getTaskDetail() {
+        switch (mode) {
+            case CLEAN_HERBS:
+                return (currentHerb == null ? cleanHerbMode.toString() : currentHerb.name())
+                        + " | " + herbCleaningMode;
+            case UNFINISHED_POTIONS:
+                return currentHerbForUnfinished == null
+                        ? unfinishedPotionMode.toString()
+                        : currentHerbForUnfinished.name();
+            case FINISHED_POTIONS:
+                return finishedPotion == null ? "No potion selected" : finishedPotion.toString();
+            default:
+                return mode.toString();
+        }
+    }
+
+    @Override
+    public void onGameMessage(String message) {
+        if (message == null || message.isEmpty()) return;
+
+        Matcher check = CHEMISTRY_CHECK_PATTERN.matcher(message);
+        Matcher used = CHEMISTRY_USED_PATTERN.matcher(message);
+        Matcher alchemistCheck = ALCHEMIST_CHECK_PATTERN.matcher(message);
+
+        if (check.matches()) {
+            amuletCharges = Integer.parseInt(check.group(1));
+            log.info("Amulet of chemistry charge check: {} remaining", amuletCharges);
+        } else if (used.matches()) {
+            amuletCharges = parseChargeCount(used.group(1));
+            chemistryProcCount++;
+            log.info("Amulet of chemistry proc: {} charges remaining ({} procs this run)",
+                    amuletCharges, chemistryProcCount);
+        } else if (CHEMISTRY_BREAK_PATTERN.matcher(message).matches()) {
+            amuletCharges = 0;
+            amuletBroken = true;
+            chemistryProcCount++;
+            log.info("Amulet of chemistry depleted after proc; replacement required ({} procs this run)",
+                    chemistryProcCount);
+        } else if (alchemistCheck.matches()) {
+            amuletCharges = Integer.parseInt(alchemistCheck.group(1));
+            log.info("Alchemist's amulet charge check: {} remaining", amuletCharges);
+        } else if (message.toLowerCase().contains("alchemist's amulet")
+                && message.toLowerCase().contains("helps you create")) {
+            chemistryProcCount++;
+            log.info("Alchemist's amulet proc observed ({} procs this run)", chemistryProcCount);
+        }
+
+        refreshAmuletStatus();
+    }
     
     @Override
     public boolean canContinueProcessing() {
+        if (operationLimit > 0 && processedCount >= operationLimit) return false;
         switch (mode) {
             case CLEAN_HERBS:
                 // can continue if we have grimy herbs in inventory OR more in bank
@@ -230,14 +423,17 @@ public class HerbloreProcessor implements BankStandingProcessor {
             return false;
         }
         
-        log.info("Withdrawing 28 grimy {}", currentHerb.name());
-        Rs2Bank.withdrawX(currentHerb.grimy, 28);
+        int bankCount = Rs2Bank.count(currentHerb.grimy);
+        log.info("Withdrawing up to 28 grimy {} ({} detected in bank)", currentHerb.name(), bankCount);
+        int amount = Math.min(28, remainingOperationLimit());
+        Rs2Bank.withdrawX(currentHerb.grimy, amount);
         boolean withdrawn = sleepUntil(() -> Rs2Inventory.hasItem(currentHerb.grimy), 3000);
         if (!withdrawn) {
             log.info("Failed to withdraw grimy herbs");
             return false;
         }
-        
+
+        initializeBatchTracking(currentHerb.grimy, Rs2Inventory.itemQuantity(currentHerb.grimy));
         return true;
     }
     
@@ -250,7 +446,7 @@ public class HerbloreProcessor implements BankStandingProcessor {
         
         int herbCount = Rs2Bank.count(currentHerbForUnfinished.clean);
         int vialCount = Rs2Bank.count(ItemID.VIAL_WATER);
-        withdrawnAmount = Math.min(Math.min(herbCount, vialCount), 14);
+        withdrawnAmount = Math.min(Math.min(Math.min(herbCount, vialCount), 14), remainingOperationLimit());
         
         log.info("Withdrawing {} clean herbs and vials", withdrawnAmount);
         Rs2Bank.withdrawX(currentHerbForUnfinished.clean, withdrawnAmount);
@@ -264,13 +460,18 @@ public class HerbloreProcessor implements BankStandingProcessor {
             log.info("Failed to withdraw unfinished ingredients");
             return false;
         }
-        
+
+        initializeBatchTracking(currentHerbForUnfinished.clean,
+                Rs2Inventory.itemQuantity(currentHerbForUnfinished.clean));
         return true;
     }
     
     private boolean bankForFinishedPotions() {
-        if (amuletBroken && useAmuletOfChemistry) {
-            checkAndEquipAmulet();
+        if (useAmuletOfChemistry && !isSupportedAmuletWorn()) {
+            if (!checkAndEquipAmulet()) {
+                log.info("Chemistry amulet is required but no charged supported amulet is available");
+                return false;
+            }
             amuletBroken = false;
         }
         
@@ -295,8 +496,8 @@ public class HerbloreProcessor implements BankStandingProcessor {
         int superStrengthCount = Rs2Bank.count(ItemID._4DOSE2STRENGTH);
         int superDefenceCount = Rs2Bank.count(ItemID._4DOSE2DEFENSE);
         
-        withdrawnAmount = Math.min(Math.min(Math.min(Math.min(torstolCount, superAttackCount), 
-                                                   superStrengthCount), superDefenceCount), 7);
+        withdrawnAmount = Math.min(Math.min(Math.min(Math.min(Math.min(torstolCount, superAttackCount),
+                                                   superStrengthCount), superDefenceCount), 7), remainingOperationLimit());
         
         log.info("Withdrawing {} of each super combat ingredient", withdrawnAmount);
         Rs2Bank.withdrawX(ItemID.TORSTOL, withdrawnAmount);
@@ -304,8 +505,10 @@ public class HerbloreProcessor implements BankStandingProcessor {
         Rs2Bank.withdrawX(ItemID._4DOSE2STRENGTH, withdrawnAmount);
         Rs2Bank.withdrawX(ItemID._4DOSE2DEFENSE, withdrawnAmount);
         
-        return sleepUntil(() -> Rs2Inventory.hasItem(ItemID.TORSTOL) && 
+        boolean withdrawn = sleepUntil(() -> Rs2Inventory.hasItem(ItemID.TORSTOL) &&
                                Rs2Inventory.hasItem(ItemID._4DOSE2ATTACK), 3000);
+        if (withdrawn) initializeBatchTracking(ItemID.TORSTOL, Rs2Inventory.itemQuantity(ItemID.TORSTOL));
+        return withdrawn;
     }
     
     private boolean bankForStackableSecondary() {
@@ -313,7 +516,7 @@ public class HerbloreProcessor implements BankStandingProcessor {
         int secondaryCount = Rs2Bank.count(currentPotion.secondary);
         
         int secondaryRatio = getStackableSecondaryRatio(currentPotion);
-        withdrawnAmount = Math.min(unfinishedCount, 27);
+        withdrawnAmount = Math.min(Math.min(unfinishedCount, 27), remainingOperationLimit());
         int secondaryNeeded = withdrawnAmount * secondaryRatio;
         
         if (secondaryCount < secondaryNeeded) {
@@ -325,21 +528,27 @@ public class HerbloreProcessor implements BankStandingProcessor {
         Rs2Bank.withdrawX(currentPotion.unfinished, withdrawnAmount);
         Rs2Bank.withdrawX(currentPotion.secondary, secondaryNeeded);
         
-        return sleepUntil(() -> Rs2Inventory.hasItem(currentPotion.unfinished) && 
+        boolean withdrawn = sleepUntil(() -> Rs2Inventory.hasItem(currentPotion.unfinished) &&
                                Rs2Inventory.hasItem(currentPotion.secondary), 3000);
+        if (withdrawn) initializeBatchTracking(currentPotion.unfinished,
+                Rs2Inventory.itemQuantity(currentPotion.unfinished));
+        return withdrawn;
     }
     
     private boolean bankForRegularPotion() {
         int unfinishedCount = Rs2Bank.count(currentPotion.unfinished);
         int secondaryCount = Rs2Bank.count(currentPotion.secondary);
-        withdrawnAmount = Math.min(Math.min(unfinishedCount, secondaryCount), 14);
+        withdrawnAmount = Math.min(Math.min(Math.min(unfinishedCount, secondaryCount), 14), remainingOperationLimit());
         
         log.info("Withdrawing {} unfinished and secondary", withdrawnAmount);
         Rs2Bank.withdrawX(currentPotion.unfinished, withdrawnAmount);
         Rs2Bank.withdrawX(currentPotion.secondary, withdrawnAmount);
         
-        return sleepUntil(() -> Rs2Inventory.hasItem(currentPotion.unfinished) && 
+        boolean withdrawn = sleepUntil(() -> Rs2Inventory.hasItem(currentPotion.unfinished) &&
                                Rs2Inventory.hasItem(currentPotion.secondary), 3000);
+        if (withdrawn) initializeBatchTracking(currentPotion.unfinished,
+                Rs2Inventory.itemQuantity(currentPotion.unfinished));
+        return withdrawn;
     }
     
     private boolean processCleanHerbs() {
@@ -355,8 +564,24 @@ public class HerbloreProcessor implements BankStandingProcessor {
 
         if (turboActive) {
             cleanHerbsTurbo();
-        } else {
-            cleanHerbsNormal();
+            return true;
+        }
+
+        switch (herbCleaningMode) {
+            case RECORDED_SERPENTINE:
+                cleanHerbsRecordedSerpentine();
+                break;
+            case RANDOM:
+                cleanHerbsRandom();
+                break;
+            case TURBO:
+                // A configured limit can disable turbo for the remainder of the run.
+                cleanHerbsNormal();
+                break;
+            case DEFAULT:
+            default:
+                cleanHerbsNormal();
+                break;
         }
         return true;
     }
@@ -387,6 +612,61 @@ public class HerbloreProcessor implements BankStandingProcessor {
         sleep(Rs2Random.between(50, 100));
     }
 
+    private void cleanHerbsRecordedSerpentine() {
+        log.info("Cleaning herbs (recorded serpentine, 180-240ms)");
+        List<Integer> slots = new ArrayList<>(RECORDED_SERPENTINE_SLOTS.length);
+        for (int slot : RECORDED_SERPENTINE_SLOTS) {
+            slots.add(slot);
+        }
+        cleanHerbsInSlotOrder(slots);
+        retryRemainingGrimyHerbs(slots);
+    }
+
+    private void cleanHerbsRandom() {
+        log.info("Cleaning herbs (random, 180-240ms)");
+        List<Integer> slots = currentGrimySlots();
+        Collections.shuffle(slots, sleepRandom);
+        cleanHerbsInSlotOrder(slots);
+
+        List<Integer> retrySlots = currentGrimySlots();
+        Collections.shuffle(retrySlots, sleepRandom);
+        retryRemainingGrimyHerbs(retrySlots);
+    }
+
+    private void cleanHerbsInSlotOrder(List<Integer> slots) {
+        for (int slot : slots) {
+            Rs2ItemModel herb = Rs2Inventory.getItemInSlot(slot);
+            if (!isGrimyHerb(herb)) {
+                continue;
+            }
+            Rs2Inventory.interact(herb, "Clean");
+            sleep(Rs2Random.between(180, 240));
+        }
+        Rs2Inventory.waitForInventoryChanges(1000);
+    }
+
+    private void retryRemainingGrimyHerbs(List<Integer> slots) {
+        if (!Rs2Inventory.hasItem("grimy")) {
+            return;
+        }
+
+        log.info("Retrying remaining grimy herb slots after paced cleaning pass");
+        cleanHerbsInSlotOrder(slots);
+        sleepUntil(() -> !Rs2Inventory.hasItem("grimy"), 3000);
+    }
+
+    private List<Integer> currentGrimySlots() {
+        return Rs2Inventory.items()
+                .filter(this::isGrimyHerb)
+                .map(Rs2ItemModel::getSlot)
+                .collect(Collectors.toList());
+    }
+
+    private boolean isGrimyHerb(Rs2ItemModel item) {
+        return item != null && item.getName() != null
+                && item.getName().toLowerCase().contains("grimy");
+    }
+
     private int gaussianSleep() {
         double mean = (sleepMin + sleepMax + sleepTarget) / 3.0;
         double std = Math.abs(sleepTarget - mean) / 3.0;
@@ -399,14 +679,19 @@ public class HerbloreProcessor implements BankStandingProcessor {
     }
     
     private boolean processUnfinishedPotions() {
+        if (!prepareBatchDispatch()) return batchTransaction != null && batchTransaction.isInFlight();
         if (Rs2Inventory.hasItem(currentHerbForUnfinished.clean) && Rs2Inventory.hasItem(ItemID.VIAL_WATER)) {
             log.info("Combining {} with vial of water", currentHerbForUnfinished.name());
             
-            if (Rs2Inventory.combine(currentHerbForUnfinished.clean, ItemID.VIAL_WATER)) {
-                sleep(600, 800);
+            if (combineWithVariation(currentHerbForUnfinished.clean, ItemID.VIAL_WATER)) {
+                startBatchTransaction(currentHerbForUnfinished.clean, ItemID.VIAL_WATER, 1);
                 if (withdrawnAmount > 1) {
-                    sleepUntil(() -> Rs2Dialogue.hasCombinationDialogue(), 3000);
+                    sleepUntil(() -> Rs2Dialogue.hasCombinationDialogue()
+                            || Rs2Inventory.itemQuantity(currentHerbForUnfinished.clean) < batchSize, 1800);
+                    batchTransaction.observe(currentBatchObservation());
+                    if (Rs2Dialogue.hasCombinationDialogue()) {
                     Rs2Keyboard.keyPress('1');
+                    }
                 }
                 log.info("Started making unfinished potions");
                 return true;
@@ -416,8 +701,8 @@ public class HerbloreProcessor implements BankStandingProcessor {
     }
     
     private boolean processFinishedPotions() {
-        if (amuletBroken && useAmuletOfChemistry) {
-            log.info("Amulet broke - need banking");
+        if (useAmuletOfChemistry && (amuletBroken || !isSupportedAmuletWorn())) {
+            log.info("Chemistry amulet missing or depleted - need banking");
             return false;
         }
         
@@ -429,14 +714,19 @@ public class HerbloreProcessor implements BankStandingProcessor {
     }
     
     private boolean processSuperCombat() {
+        if (!prepareBatchDispatch()) return batchTransaction != null && batchTransaction.isInFlight();
         if (Rs2Inventory.hasItem(ItemID.TORSTOL) && Rs2Inventory.hasItem(ItemID._4DOSE2ATTACK)) {
             log.info("Combining torstol with super attack for super combat");
             
-            if (Rs2Inventory.combine(ItemID.TORSTOL, ItemID._4DOSE2ATTACK)) {
-                sleep(600, 800);
+            if (combineWithVariation(ItemID.TORSTOL, ItemID._4DOSE2ATTACK)) {
+                startBatchTransaction(ItemID.TORSTOL, ItemID._4DOSE2ATTACK, 1);
                 if (withdrawnAmount > 1) {
-                    sleepUntil(() -> Rs2Dialogue.hasCombinationDialogue(), 3000);
+                    sleepUntil(() -> Rs2Dialogue.hasCombinationDialogue()
+                            || Rs2Inventory.itemQuantity(ItemID.TORSTOL) < batchSize, 1800);
+                    batchTransaction.observe(currentBatchObservation());
+                    if (Rs2Dialogue.hasCombinationDialogue()) {
                     Rs2Keyboard.keyPress('1');
+                    }
                 }
                 log.info("Started making super combat potions");
                 return true;
@@ -446,14 +736,20 @@ public class HerbloreProcessor implements BankStandingProcessor {
     }
     
     private boolean processRegularPotion() {
+        if (!prepareBatchDispatch()) return batchTransaction != null && batchTransaction.isInFlight();
         if (Rs2Inventory.hasItem(currentPotion.unfinished) && Rs2Inventory.hasItem(currentPotion.secondary)) {
             log.info("Combining {} unfinished with secondary ingredient", currentPotion.name());
             
-            if (Rs2Inventory.combine(currentPotion.unfinished, currentPotion.secondary)) {
-                sleep(600, 800);
+            if (combineWithVariation(currentPotion.unfinished, currentPotion.secondary)) {
+                startBatchTransaction(currentPotion.unfinished, currentPotion.secondary,
+                        getStackableSecondaryRatio(currentPotion));
                 if (withdrawnAmount > 1) {
-                    sleepUntil(() -> Rs2Dialogue.hasCombinationDialogue(), 3000);
+                    sleepUntil(() -> Rs2Dialogue.hasCombinationDialogue()
+                            || Rs2Inventory.itemQuantity(currentPotion.unfinished) < batchSize, 1800);
+                    batchTransaction.observe(currentBatchObservation());
+                    if (Rs2Dialogue.hasCombinationDialogue()) {
                     Rs2Keyboard.keyPress('1');
+                    }
                 }
                 log.info("Started making {} potions", currentPotion.name());
                 return true;
@@ -550,31 +846,222 @@ public class HerbloreProcessor implements BankStandingProcessor {
         return null;
     }
     
-    private void checkAndEquipAmulet() {
-        if (!useAmuletOfChemistry) return;
-        
-        if (!Rs2Equipment.isWearing(ItemID.AMULET_OF_CHEMISTRY) && 
-            !Rs2Equipment.isWearing(ItemID.AMULET_OF_CHEMISTRY_IMBUED_CHARGED)) {
-            
-            log.info("No amulet equipped - need to get one from bank");
-            
-            if (Rs2Bank.hasItem(ItemID.AMULET_OF_CHEMISTRY_IMBUED_CHARGED)) {
-                log.info("Withdrawing and equipping imbued amulet of chemistry");
-                Rs2Bank.withdrawAndEquip(ItemID.AMULET_OF_CHEMISTRY_IMBUED_CHARGED);
-                sleepUntil(() -> Rs2Equipment.isWearing(ItemID.AMULET_OF_CHEMISTRY_IMBUED_CHARGED), 3000);
-            } else if (Rs2Bank.hasItem(ItemID.AMULET_OF_CHEMISTRY)) {
-                log.info("Withdrawing and equipping regular amulet of chemistry");
-                Rs2Bank.withdrawAndEquip(ItemID.AMULET_OF_CHEMISTRY);
-                sleepUntil(() -> Rs2Equipment.isWearing(ItemID.AMULET_OF_CHEMISTRY), 3000);
-            } else {
-                log.info("No amulet of chemistry found in bank");
+    private boolean checkAndEquipAmulet() {
+        if (!useAmuletOfChemistry) return true;
+        if (isSupportedAmuletWorn()) return true;
+
+        log.info("No charged chemistry amulet equipped; checking bank");
+        int targetItemId;
+        String targetName;
+        if (Rs2Bank.hasItem(ItemID.AMULET_OF_CHEMISTRY_IMBUED_CHARGED)) {
+            targetItemId = ItemID.AMULET_OF_CHEMISTRY_IMBUED_CHARGED;
+            targetName = "Alchemist's amulet";
+        } else if (Rs2Bank.hasItem(ItemID.AMULET_OF_CHEMISTRY)) {
+            targetItemId = ItemID.AMULET_OF_CHEMISTRY;
+            targetName = "amulet of chemistry";
+        } else {
+            log.info("No charged chemistry amulet found in bank");
+            return false;
+        }
+
+        int displacedAmuletId = getWornAmuletId();
+        log.info("Withdrawing and equipping {}", targetName);
+        Rs2Bank.withdrawAndEquip(targetItemId);
+        boolean equipped = sleepUntil(() -> Rs2Equipment.isWearing(targetItemId), 3000);
+        log.info("Chemistry amulet equip result: {}", equipped ? "equipped" : "timed out");
+        if (equipped) {
+            if (targetItemId != lastAmuletItemId) {
+                amuletCharges = -1;
             }
+            amuletBroken = false;
+            lastAmuletItemId = targetItemId;
+            if (displacedAmuletId != -1 && displacedAmuletId != targetItemId
+                    && Rs2Inventory.hasItem(displacedAmuletId)) {
+                log.info("Depositing displaced amulet item {}", displacedAmuletId);
+                Rs2Bank.depositOne(displacedAmuletId);
+            }
+            refreshAmuletStatus();
+        }
+        return equipped;
+    }
+
+    private boolean isSupportedAmuletWorn() {
+        return Rs2Equipment.isWearing(ItemID.AMULET_OF_CHEMISTRY)
+                || Rs2Equipment.isWearing(ItemID.AMULET_OF_CHEMISTRY_IMBUED_CHARGED);
+    }
+
+    private void refreshAmuletStatus() {
+        if (!useAmuletOfChemistry) {
+            amuletStatus = "Disabled";
+            return;
+        }
+
+        int wornId = getWornAmuletId();
+        int previousWornId = lastAmuletItemId;
+        if (lastAmuletItemId != -1 && wornId == -1 && !amuletBroken) {
+            amuletBroken = true;
+            log.info("Previously equipped chemistry amulet is no longer present; replacement required");
+        }
+        lastAmuletItemId = wornId;
+        if (previousWornId != wornId) {
+            log.info("Chemistry equipment changed: {} -> {}", previousWornId, wornId);
+        }
+
+        if (wornId == ItemID.AMULET_OF_CHEMISTRY) {
+            loadTrackedRegularAmuletCharges();
+            amuletStatus = amuletCharges >= 0
+                    ? "Chemistry " + amuletCharges + "/5"
+                    : "Chemistry equipped (charges unknown)";
+        } else if (wornId == ItemID.AMULET_OF_CHEMISTRY_IMBUED_CHARGED) {
+            amuletStatus = amuletCharges >= 0
+                    ? "Alchemist " + amuletCharges + "/5000"
+                    : "Alchemist charged (count unknown)";
+        } else if (wornId == ItemID.AMULET_OF_CHEMISTRY_IMBUED_UNCHARGED) {
+            amuletStatus = "Alchemist uncharged";
+        } else if (amuletBroken) {
+            amuletStatus = "Depleted - replacement pending";
+        } else {
+            amuletStatus = "Not equipped";
         }
     }
-    
-    // setters for amulet breaking detection
-    public void setAmuletBroken(boolean broken) {
-        this.amuletBroken = broken;
+
+    private int getWornAmuletId() {
+        Rs2ItemModel amulet = Rs2Equipment.get(EquipmentInventorySlot.AMULET);
+        return amulet == null ? -1 : amulet.getId();
+    }
+
+    private int parseChargeCount(String value) {
+        return "one".equalsIgnoreCase(value) ? 1 : Integer.parseInt(value);
+    }
+
+    private void loadTrackedRegularAmuletCharges() {
+        if (amuletCharges >= 0) return;
+        Integer tracked = Microbot.getConfigManager().getRSProfileConfiguration(
+                "itemCharge", "amuletOfChemistry", Integer.class);
+        if (tracked != null && tracked >= 0 && tracked <= 5) {
+            amuletCharges = tracked;
+            log.info("Loaded RuneLite-tracked amulet of chemistry charges: {}", tracked);
+        }
+    }
+
+    private void initializeBatchTracking(int primaryItemId, int initialCount) {
+        batchPrimaryItemId = primaryItemId;
+        batchSize = Math.max(0, initialCount);
+        batchProcessed = 0;
+        batchAccounted = 0;
+        batchTransaction = null;
+        batchRetryCount = 0;
+        batchSecondaryItemId = -1;
+        batchSecondaryRatio = 1;
+        refreshProcessingProgress();
+    }
+
+    private boolean prepareBatchDispatch() {
+        if (batchTransaction == null) return true;
+        batchTransaction.observe(currentBatchObservation());
+        if (batchTransaction.isInFlight()) return false;
+        if (batchTransaction.getState() == BatchTransaction.State.COMPLETED) return false;
+        if (batchRetryCount >= MAX_BATCH_RETRIES) {
+            log.info("Batch retry limit reached after generation {}", batchTransaction.getGeneration());
+            return false;
+        }
+        batchRetryCount++;
+        batchTransaction = null;
+        return true;
+    }
+
+    private void startBatchTransaction(int primaryItemId, int secondaryItemId, int secondaryRatio) {
+        batchPrimaryItemId = primaryItemId;
+        batchSecondaryItemId = secondaryItemId;
+        batchSecondaryRatio = Math.max(1, secondaryRatio);
+        batchTransaction = new BatchTransaction(++batchGeneration, currentBatchObservation(),
+                batchSecondaryRatio, BATCH_ACK_TIMEOUT_TICKS, BATCH_PROGRESS_TIMEOUT_TICKS);
+        log.info("Dispatched batch generation {} with primary={}, secondary={}, size={}, retry={}",
+                batchGeneration, primaryItemId, secondaryItemId, batchSize, batchRetryCount);
+    }
+
+    private BatchTransaction.Observation currentBatchObservation() {
+        int tick = Microbot.getClient() == null ? 0 : Microbot.getClient().getTickCount();
+        int primary = batchPrimaryItemId < 0 ? 0 : Rs2Inventory.itemQuantity(batchPrimaryItemId);
+        int secondary = batchSecondaryItemId < 0
+                ? Integer.MAX_VALUE : Rs2Inventory.itemQuantity(batchSecondaryItemId);
+        return new BatchTransaction.Observation(tick, primary, secondary,
+                Rs2Player.isAnimating(), Rs2Dialogue.hasCombinationDialogue());
+    }
+
+    private boolean combineWithVariation(int primaryItemId, int secondaryItemId) {
+        boolean reverse = sleepRandom.nextInt(100) < reverseIngredientChance;
+        log.info("Batch ingredient selection order: {} first",
+                reverse ? "secondary" : "primary");
+        return reverse
+                ? Rs2Inventory.combine(secondaryItemId, primaryItemId)
+                : Rs2Inventory.combine(primaryItemId, secondaryItemId);
+    }
+
+    private void maybeTakeBatchBoundaryBreak() {
+        if (batchMicroBreakChance <= 0 || sleepRandom.nextInt(100) >= batchMicroBreakChance) return;
+        int duration = Rs2Random.between(batchMicroBreakMinMs, batchMicroBreakMaxMs);
+        log.info("Taking safe batch-boundary micro-break for {}ms", duration);
+        sleep(duration);
+    }
+
+    private static int clampPercent(int value) {
+        return Math.max(0, Math.min(100, value));
+    }
+
+    private int remainingOperationLimit() {
+        return operationLimit <= 0 ? Integer.MAX_VALUE : Math.max(0, operationLimit - processedCount);
+    }
+
+    private void refreshProcessingProgress() {
+        if (batchPrimaryItemId < 0 || batchSize <= 0) return;
+        int remaining = Rs2Inventory.itemQuantity(batchPrimaryItemId);
+        int completed = Math.max(0, Math.min(batchSize, batchSize - remaining));
+        if (completed > batchAccounted) {
+            processedCount += completed - batchAccounted;
+            batchAccounted = completed;
+        }
+        batchProcessed = completed;
+    }
+
+    private void refreshBankMaterialDiagnostics() {
+        String summary = "Awaiting selection";
+        int processable = -1;
+
+        if (mode == Mode.CLEAN_HERBS && currentHerb != null) {
+            int grimy = Rs2Bank.count(currentHerb.grimy);
+            processable = grimy;
+            summary = currentHerb.name() + " grimy=" + grimy;
+        } else if (mode == Mode.UNFINISHED_POTIONS && currentHerbForUnfinished != null) {
+            int herbs = Rs2Bank.count(currentHerbForUnfinished.clean);
+            int vials = Rs2Bank.count(ItemID.VIAL_WATER);
+            processable = Math.min(herbs, vials);
+            summary = currentHerbForUnfinished.name() + " clean=" + herbs + ", vials=" + vials;
+        } else if (mode == Mode.FINISHED_POTIONS && finishedPotion != null) {
+            if (isSuperCombat(finishedPotion)) {
+                int torstol = Rs2Bank.count(ItemID.TORSTOL);
+                int attack = Rs2Bank.count(ItemID._4DOSE2ATTACK);
+                int strength = Rs2Bank.count(ItemID._4DOSE2STRENGTH);
+                int defence = Rs2Bank.count(ItemID._4DOSE2DEFENSE);
+                processable = Math.min(Math.min(torstol, attack), Math.min(strength, defence));
+                summary = "torstol=" + torstol + ", atk=" + attack + ", str=" + strength + ", def=" + defence;
+            } else {
+                int primary = Rs2Bank.count(finishedPotion.unfinished);
+                int secondary = Rs2Bank.count(finishedPotion.secondary);
+                int ratio = getStackableSecondaryRatio(finishedPotion);
+                processable = Math.min(primary, secondary / ratio);
+                summary = finishedPotion.name() + ": primary=" + primary + ", secondary=" + secondary
+                        + (ratio > 1 ? " (" + ratio + "/op)" : "");
+            }
+        }
+
+        bankProcessableCount = processable;
+        bankMaterialSummary = summary;
+        String logged = summary + " | processable=" + processable;
+        if (!logged.equals(lastLoggedBankSummary)) {
+            log.info("Bank material diagnostics: {}", logged);
+            lastLoggedBankSummary = logged;
+        }
     }
     
     // mapping methods
