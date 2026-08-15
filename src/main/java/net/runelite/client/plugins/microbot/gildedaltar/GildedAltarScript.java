@@ -1,12 +1,12 @@
 package net.runelite.client.plugins.microbot.gildedaltar;
 
 import net.runelite.api.ObjectID;
+import net.runelite.api.Point;
 import net.runelite.api.Skill;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
-import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
@@ -43,6 +43,10 @@ public class GildedAltarScript extends Script {
     private int lazyBurstRemaining;
     private int lazyNextBurstAtBoneCount;
     private int offeringAnchorSlot = -1;
+    private boolean acceleratedOfferingPrimed;
+    private boolean initialOfferPending;
+    private int initialOfferPrayerXp = -1;
+    private long initialOfferAttemptedAt;
     private int lastPrayerXp = -1;
     private long lastPrayerXpAt;
     private long lastOfferingRecoveryAt;
@@ -286,9 +290,11 @@ public class GildedAltarScript extends Script {
             return;
         }
 
-        observePrayerXp();
-
         if (config.oneTickOffering()) {
+            if (!primeAcceleratedOffering(altar)) {
+                return;
+            }
+            observePrayerXp();
             if (recoverStalledOffering(altar)) {
                 lastUnnotedBoneCount = boneCount;
                 return;
@@ -299,6 +305,10 @@ public class GildedAltarScript extends Script {
         }
 
         if (config.randomLazyOffering()) {
+            if (!primeAcceleratedOffering(altar)) {
+                return;
+            }
+            observePrayerXp();
             if (recoverStalledOffering(altar)) {
                 lastUnnotedBoneCount = boneCount;
                 return;
@@ -399,7 +409,36 @@ public class GildedAltarScript extends Script {
                 || Rs2Inventory.getSelectedItemId() != selectedBone.getId()) {
             return false;
         }
-        return Rs2GameObject.interact(altar);
+        Point clickPoint = getObjectClickPoint(altar);
+        if (clickPoint == null) {
+            return false;
+        }
+
+        // Give the selected-item state a moment to settle, then perform an
+        // actual click inside the altar clickbox. The previous direct menu
+        // invoke produced a red click marker without an accepted game action.
+        sleep(80, 140);
+        if (!Rs2Inventory.isItemSelected()
+                || Rs2Inventory.getSelectedItemId() != selectedBone.getId()) {
+            return false;
+        }
+        Microbot.getMouse().click(clickPoint);
+        return sleepUntil(() -> !Rs2Inventory.isItemSelected(), 500);
+    }
+
+    private Point getObjectClickPoint(Rs2TileObjectModel object) {
+        java.awt.Shape clickbox = Microbot.getClientThread()
+                .runOnClientThreadOptional(object::getClickbox)
+                .orElse(null);
+        if (clickbox != null) {
+            java.awt.Rectangle bounds = clickbox.getBounds();
+            if (!bounds.isEmpty()) {
+                return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+            }
+        }
+        return Microbot.getClientThread()
+                .runOnClientThreadOptional(object::getCanvasLocation)
+                .orElse(null);
     }
 
     private Rs2ItemModel lowerInventoryBone() {
@@ -444,6 +483,43 @@ public class GildedAltarScript extends Script {
         }
     }
 
+    private boolean primeAcceleratedOffering(Rs2TileObjectModel altar) {
+        if (acceleratedOfferingPrimed) {
+            return true;
+        }
+
+        int prayerXp = Microbot.getClient().getSkillExperience(Skill.PRAYER);
+        long now = System.currentTimeMillis();
+        if (initialOfferPending) {
+            if (prayerXp > initialOfferPrayerXp) {
+                acceleratedOfferingPrimed = true;
+                initialOfferPending = false;
+                lastPrayerXp = prayerXp;
+                lastPrayerXpAt = now;
+                lastOfferTick = Microbot.getClient().getTickCount();
+                Microbot.log("Gilded Altar: first Prayer XP drop confirmed; accelerated offering armed.");
+                return true;
+            }
+            if (now - initialOfferAttemptedAt < 12000) {
+                return false;
+            }
+            Microbot.log("Gilded Altar: initial offer produced no Prayer XP; retrying normal offer.");
+            initialOfferPending = false;
+        }
+
+        if (Rs2Player.isAnimating()) {
+            return false;
+        }
+
+        initialOfferPrayerXp = prayerXp;
+        if (!Rs2Inventory.useUnNotedItemOnObject("bones", altar.getId())) {
+            return false;
+        }
+        initialOfferPending = true;
+        initialOfferAttemptedAt = now;
+        return false;
+    }
+
     private boolean recoverStalledOffering(Rs2TileObjectModel altar) {
         long now = System.currentTimeMillis();
         if (lastPrayerXpAt <= 0
@@ -472,6 +548,10 @@ public class GildedAltarScript extends Script {
         lazyBurstRemaining = 0;
         lazyNextBurstAtBoneCount = 0;
         offeringAnchorSlot = -1;
+        acceleratedOfferingPrimed = false;
+        initialOfferPending = false;
+        initialOfferPrayerXp = -1;
+        initialOfferAttemptedAt = 0;
         lastPrayerXp = -1;
         lastPrayerXpAt = 0;
         lastOfferingRecoveryAt = 0;
