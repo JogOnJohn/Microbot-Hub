@@ -1,7 +1,6 @@
 package net.runelite.client.plugins.microbot.gildedaltar;
 
 import net.runelite.api.ObjectID;
-import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
@@ -9,27 +8,36 @@ import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectM
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
-import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 public class GildedAltarScript extends Script {
 
-    private final int HOUSE_PORTAL_OBJECT = 4525;
+    private static final int HOUSE_PORTAL_OBJECT = 4525;
+    private static final int FAST_LOOP_DELAY_MS = 100;
+    private static final int NORMAL_LOOP_DELAY_MS = 900;
     private Widget toggleArrow;
     public Widget targetWidget;
     public String houseOwner;
 
-    public WorldPoint portalCoords;
-    public WorldPoint altarCoords;
-    public Boolean usePortal;
     public boolean visitedOnce;
     List<String> blacklistNames = new ArrayList<>();
+
+    private final Random random = new Random();
+    private int lastOfferTick = -1;
+    private int lastUnnotedBoneCount = -1;
+    private int lazyFastOffersRemaining;
+    private int lazyBurstRemaining;
+    private int lazyNextBurstAtBoneCount;
+    private long lastNormalLoopAt;
+    private boolean leaveHousePending;
+    private long leaveHouseAttemptedAt;
 
 
     public static GildedAltarPlayerState state = GildedAltarPlayerState.IDLE;
@@ -44,6 +52,11 @@ public class GildedAltarScript extends Script {
 
     private boolean hasNotedBones() {
         return Rs2Inventory.hasNotedItem("bones");
+    }
+
+    private int unnotedBoneCount() {
+        return Rs2Inventory.count(item -> !item.isNoted()
+                && item.getName().toLowerCase().contains("bones"));
     }
 
     private void calculateState() {
@@ -64,6 +77,10 @@ public class GildedAltarScript extends Script {
 
     public boolean run(GildedAltarConfig config) {
         blacklistNames = new ArrayList<>();
+        resetOfferingPlan();
+        leaveHousePending = false;
+        leaveHouseAttemptedAt = 0;
+        lastNormalLoopAt = 0;
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 if (!Microbot.isLoggedIn()) return;
@@ -81,9 +98,22 @@ public class GildedAltarScript extends Script {
                     return;
                 }
 
-                if (Microbot.isGainingExp) return;
-
                 calculateState();
+
+                boolean acceleratedOffering = config.oneTickOffering() || config.randomLazyOffering();
+                if (Microbot.isGainingExp
+                        && !(acceleratedOffering && state == GildedAltarPlayerState.BONES_ON_ALTAR)) {
+                    return;
+                }
+
+                long now = System.currentTimeMillis();
+                if (state != GildedAltarPlayerState.BONES_ON_ALTAR
+                        && now - lastNormalLoopAt < NORMAL_LOOP_DELAY_MS) {
+                    return;
+                }
+                if (state != GildedAltarPlayerState.BONES_ON_ALTAR) {
+                    lastNormalLoopAt = now;
+                }
 
                 switch (state) {
                     case LEAVE_HOUSE:
@@ -96,57 +126,58 @@ public class GildedAltarScript extends Script {
                         enterHouse();
                         break;
                     case BONES_ON_ALTAR:
-                        bonesOnAltar();
+                        bonesOnAltar(config);
                         break;
                 }
             } catch (Exception ex) {
                 System.out.println(ex.getMessage());
             }
-        }, 0, 1000, TimeUnit.MILLISECONDS);
+        }, 0, FAST_LOOP_DELAY_MS, TimeUnit.MILLISECONDS);
         return true;
     }
 
     public void leaveHouse() {
         System.out.println("Attempting to leave house...");
+        long now = System.currentTimeMillis();
+        Rs2TileObjectModel portalObject = Microbot.getRs2TileObjectCache().query()
+                .withId(HOUSE_PORTAL_OBJECT)
+                .nearest();
 
-        // We should only rely on using the settings menu if the portal is several rooms away from the portal. Bringing up 3 different interfaces when we can see the portal on screen is unnecessary.
-        if(usePortal) {
-            Rs2TileObjectModel portalObject = Microbot.getRs2TileObjectCache().query().withId(HOUSE_PORTAL_OBJECT).nearest();
+        if (leaveHousePending) {
             if (portalObject == null) {
-                System.out.println("Not in house, HOUSE_PORTAL_OBJECT not found.");
+                leaveHousePending = false;
+                leaveHouseAttemptedAt = 0;
+                resetOfferingPlan();
                 return;
             }
-            portalObject.click();
-            Rs2Player.waitForWalking();
+            if (now - leaveHouseAttemptedAt < 9000) {
+                return;
+            }
+            System.out.println("House portal exit did not resolve; retrying.");
+            leaveHousePending = false;
+        }
+
+        if (portalObject == null) {
+            System.out.println("House portal not found; waiting for the house scene.");
             return;
         }
 
-        // Switch to Settings tab
-        Rs2Tab.switchToSettingsTab();
-        sleep(1200);
-
-
-        //If the house options button is not visible, player is on Display or Sound settings, need to click Controls.
-        String[] actions = Rs2Widget.getWidget(7602235).getActions(); // 116.59
-        boolean isControlsInterfaceVisible = actions != null && actions.length == 0;
-        if (!isControlsInterfaceVisible) {
-            Rs2Widget.clickWidget(7602235);
-            sleepUntil(() -> Rs2Widget.isWidgetVisible(7602207));
+        boolean clicked = Microbot.getRs2TileObjectCache().query().interact(HOUSE_PORTAL_OBJECT, "Enter");
+        if (!clicked) {
+            clicked = portalObject.click("Enter");
         }
-
-        // Click House Options
-        if (Rs2Widget.clickWidget(7602207)) {
-            sleep(1200);
-        } else {
-            System.out.println("House Options button not found.");
+        if (!clicked) {
+            System.out.println("Could not click the leave-house portal; will retry.");
             return;
         }
 
-        // Click Leave House
-        if (Rs2Widget.clickWidget(24248341)) {
-            sleep(3000);
-        } else {
-            System.out.println("Leave House button not found.");
+        leaveHousePending = true;
+        leaveHouseAttemptedAt = System.currentTimeMillis();
+        if (sleepUntil(() -> Microbot.getRs2TileObjectCache().query()
+                .withId(HOUSE_PORTAL_OBJECT).nearest() == null, 8000)) {
+            leaveHousePending = false;
+            leaveHouseAttemptedAt = 0;
+            resetOfferingPlan();
         }
     }
 
@@ -232,32 +263,95 @@ public class GildedAltarScript extends Script {
         }
     }
 
-    public void bonesOnAltar() {
-        if(portalCoords == null){
-            portalCoords = Rs2Player.getWorldLocation();
-        }
-
-        if (Rs2Player.isAnimating())  {
+    public void bonesOnAltar(GildedAltarConfig config) {
+        Rs2TileObjectModel altar = Microbot.getRs2TileObjectCache().query().withName("Altar").nearestOnClientThread();
+        if (altar == null) {
             return;
         }
 
+        int boneCount = unnotedBoneCount();
+        if (boneCount <= 0) {
+            resetOfferingPlan();
+            return;
+        }
 
-        Rs2TileObjectModel altar = Microbot.getRs2TileObjectCache().query().withName("Altar").nearestOnClientThread();
-        if (altar != null) {
+        if (config.oneTickOffering()) {
+            offerOncePerGameTick(altar);
+            lastUnnotedBoneCount = boneCount;
+            return;
+        }
+
+        if (config.randomLazyOffering()) {
+            randomLazyOffer(config, altar, boneCount);
+            return;
+        }
+
+        resetOfferingPlan();
+        if (!Rs2Player.isAnimating()) {
             Rs2Inventory.useUnNotedItemOnObject("bones", altar.getId());
-        Rs2Player.waitForAnimation();
+            Rs2Player.waitForAnimation();
+        }
+    }
+
+    private void randomLazyOffer(GildedAltarConfig config, Rs2TileObjectModel altar, int boneCount) {
+        if (lastUnnotedBoneCount <= 0 || boneCount > lastUnnotedBoneCount) {
+            startLazyInventory(boneCount, config.randomLazySpeedBoost());
+            // Start the normal automatic offering cycle. Planned bursts begin
+            // after a short randomized gap and interrupt it only occasionally.
+            if (!Rs2Player.isAnimating()) {
+                offerOncePerGameTick(altar);
+            }
         }
 
-
-
-        // Use bones on the altar if it's valid
-        if(altarCoords == null){
-            altarCoords = Rs2Player.getWorldLocation();
+        if (lazyFastOffersRemaining > 0
+                && lazyBurstRemaining == 0
+                && boneCount <= lazyNextBurstAtBoneCount) {
+            lazyBurstRemaining = Math.min(lazyFastOffersRemaining, 1 + random.nextInt(4));
         }
-        // If portal is more than 10 tiles from altar, use settings menu to leave. Else, just walk back to portal.
-        if(usePortal == null){
-            usePortal = altarCoords.distanceTo(portalCoords) <= 10;
+
+        if (lazyBurstRemaining > 0 && offerOncePerGameTick(altar)) {
+            lazyBurstRemaining--;
+            lazyFastOffersRemaining--;
+            if (lazyBurstRemaining == 0 && lazyFastOffersRemaining > 0) {
+                lazyNextBurstAtBoneCount = Math.max(1, boneCount - (2 + random.nextInt(5)));
+            }
         }
+
+        lastUnnotedBoneCount = boneCount;
+    }
+
+    private void startLazyInventory(int boneCount, int speedBoostPercent) {
+        double boost = Math.max(1, Math.min(100, speedBoostPercent)) / 100.0;
+        double manualOfferShare = (3.0 * boost) / (2.0 * (1.0 + boost));
+        int targetOffers = (int) Math.round(boneCount * manualOfferShare);
+
+        // Keep at least one normal bone between initialization and the first
+        // burst, and leave some of the inventory to the automatic offering loop.
+        lazyFastOffersRemaining = Math.max(1, Math.min(Math.max(1, boneCount - 2), targetOffers));
+        lazyBurstRemaining = 0;
+        lazyNextBurstAtBoneCount = Math.max(1, boneCount - (1 + random.nextInt(3)));
+        lastUnnotedBoneCount = boneCount;
+        lastOfferTick = -1;
+    }
+
+    private boolean offerOncePerGameTick(Rs2TileObjectModel altar) {
+        int currentTick = Microbot.getClient().getTickCount();
+        if (currentTick == lastOfferTick) {
+            return false;
+        }
+        if (!Rs2Inventory.useUnNotedItemOnObject("bones", altar.getId())) {
+            return false;
+        }
+        lastOfferTick = currentTick;
+        return true;
+    }
+
+    private void resetOfferingPlan() {
+        lastOfferTick = -1;
+        lastUnnotedBoneCount = -1;
+        lazyFastOffersRemaining = 0;
+        lazyBurstRemaining = 0;
+        lazyNextBurstAtBoneCount = 0;
     }
 
     public void addNameToBlackList() {

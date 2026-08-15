@@ -27,7 +27,7 @@ import java.awt.*;
 )
 @Slf4j
 public class GildedAltarPlugin extends Plugin {
-    public static final String version = "1.0.1";
+    public static final String version = "1.1.0";
     @Inject
     private GildedAltarConfig config;
 
@@ -67,9 +67,6 @@ public class GildedAltarPlugin extends Plugin {
         if(chatMsg.contains("that player is offline") || chatMsg.contains("haven't visited anyone this session") || chatMsg.contains("house is no longer accessible")){
             // If we try to use Visit-Last unsuccessfully, these chat messages will appear, and we need to reset vars.
             gildedAltarScript.visitedOnce= false;
-            gildedAltarScript.usePortal = null;
-            gildedAltarScript.altarCoords = null;
-            gildedAltarScript.portalCoords = null;
             gildedAltarScript.addNameToBlackList();
         }
     }
