@@ -433,12 +433,51 @@ public class GildedAltarScript extends Script {
         if (clickbox != null) {
             java.awt.Rectangle bounds = clickbox.getBounds();
             if (!bounds.isEmpty()) {
-                return new Point((int) bounds.getCenterX(), (int) bounds.getCenterY());
+                int centerX = (int) bounds.getCenterX();
+                int centerY = (int) bounds.getCenterY();
+                Point interiorPoint = findInteriorClickPoint(clickbox, bounds, centerX, centerY);
+                if (interiorPoint != null) {
+                    return interiorPoint;
+                }
             }
         }
-        return Microbot.getClientThread()
-                .runOnClientThreadOptional(object::getCanvasLocation)
-                .orElse(null);
+        return null;
+    }
+
+    private Point findInteriorClickPoint(java.awt.Shape clickbox, java.awt.Rectangle bounds,
+                                         int centerX, int centerY) {
+        Point nearestContainedPoint = null;
+        long nearestDistanceSquared = Long.MAX_VALUE;
+        Point nearestInsetPoint = null;
+        long nearestInsetDistanceSquared = Long.MAX_VALUE;
+
+        // The center of a clickbox's rectangular bounds can lie outside a
+        // slanted or concave object. Search the actual shape and prefer a point
+        // with a small inset on every side so the click cannot land on floor.
+        for (int y = bounds.y; y < bounds.y + bounds.height; y += 2) {
+            for (int x = bounds.x; x < bounds.x + bounds.width; x += 2) {
+                if (!clickbox.contains(x, y)) {
+                    continue;
+                }
+                long dx = x - centerX;
+                long dy = y - centerY;
+                long distanceSquared = dx * dx + dy * dy;
+                if (distanceSquared < nearestDistanceSquared) {
+                    nearestContainedPoint = new Point(x, y);
+                    nearestDistanceSquared = distanceSquared;
+                }
+                if (clickbox.contains(x - 3, y)
+                        && clickbox.contains(x + 3, y)
+                        && clickbox.contains(x, y - 3)
+                        && clickbox.contains(x, y + 3)) {
+                    if (distanceSquared < nearestInsetDistanceSquared) {
+                        nearestInsetPoint = new Point(x, y);
+                        nearestInsetDistanceSquared = distanceSquared;
+                    }
+                }
+            }
+        }
+        return nearestInsetPoint != null ? nearestInsetPoint : nearestContainedPoint;
     }
 
     private Rs2ItemModel lowerInventoryBone() {

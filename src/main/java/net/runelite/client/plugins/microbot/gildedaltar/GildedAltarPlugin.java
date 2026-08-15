@@ -27,7 +27,7 @@ import java.awt.*;
 )
 @Slf4j
 public class GildedAltarPlugin extends Plugin {
-    public static final String version = "1.1.2";
+    public static final String version = "1.1.3";
     @Inject
     private GildedAltarConfig config;
 
