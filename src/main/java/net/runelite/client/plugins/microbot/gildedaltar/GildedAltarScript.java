@@ -7,10 +7,12 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
+import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
+import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.util.ArrayList;
@@ -25,6 +27,11 @@ import java.util.stream.Collectors;
 public class GildedAltarScript extends Script {
 
     private static final int HOUSE_PORTAL_OBJECT = 4525;
+    private static final int[] GILDED_ALTAR_OBJECTS = {13197, 13198, 13199};
+    private static final int GILDED_ALTAR_SEARCH_RANGE = 20;
+    private static final int HOUSE_SCENE_GRACE_MS = 8000;
+    private static final int ACCELERATED_ALTAR_ZOOM = 100;
+    private static final int ACCELERATED_EXIT_ZOOM = 300;
     private static final int FAST_LOOP_DELAY_MS = 100;
     private static final int NORMAL_LOOP_DELAY_MS = 900;
     private static final int OFFERING_STALL_TIMEOUT_MS = 3000;
@@ -53,6 +60,10 @@ public class GildedAltarScript extends Script {
     private long lastNormalLoopAt;
     private boolean leaveHousePending;
     private long leaveHouseAttemptedAt;
+    private long missingGildedAltarSince;
+    private boolean badHouseInterfaceLeavePending;
+    private long badHouseInterfaceLeaveAttemptedAt;
+    private boolean acceleratedCameraZoomedIn;
 
 
     public static GildedAltarPlayerState state = GildedAltarPlayerState.IDLE;
@@ -95,6 +106,10 @@ public class GildedAltarScript extends Script {
         resetOfferingPlan();
         leaveHousePending = false;
         leaveHouseAttemptedAt = 0;
+        resetHouseValidation();
+        badHouseInterfaceLeavePending = false;
+        badHouseInterfaceLeaveAttemptedAt = 0;
+        acceleratedCameraZoomedIn = false;
         lastNormalLoopAt = 0;
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
@@ -153,6 +168,7 @@ public class GildedAltarScript extends Script {
 
     public void leaveHouse() {
         System.out.println("Attempting to leave house...");
+        zoomOutForAcceleratedExit();
         long now = System.currentTimeMillis();
         Rs2TileObjectModel portalObject = Microbot.getRs2TileObjectCache().query()
                 .withId(HOUSE_PORTAL_OBJECT)
@@ -163,6 +179,7 @@ public class GildedAltarScript extends Script {
                 leaveHousePending = false;
                 leaveHouseAttemptedAt = 0;
                 resetOfferingPlan();
+                resetHouseValidation();
                 return;
             }
             if (now - leaveHouseAttemptedAt < 9000) {
@@ -193,7 +210,54 @@ public class GildedAltarScript extends Script {
             leaveHousePending = false;
             leaveHouseAttemptedAt = 0;
             resetOfferingPlan();
+            resetHouseValidation();
         }
+    }
+
+    private void leaveBadHouseViaInterface() {
+        long now = System.currentTimeMillis();
+        if (badHouseInterfaceLeavePending) {
+            if (!inHouse()) {
+                badHouseInterfaceLeavePending = false;
+                badHouseInterfaceLeaveAttemptedAt = 0;
+                resetOfferingPlan();
+                resetHouseValidation();
+                return;
+            }
+            if (now - badHouseInterfaceLeaveAttemptedAt < 9000) {
+                return;
+            }
+            badHouseInterfaceLeavePending = false;
+        }
+
+        zoomOutForAcceleratedExit();
+        Rs2Tab.switchToSettingsTab();
+        sleep(1200);
+
+        Widget controlsButton = Rs2Widget.getWidget(7602235);
+        String[] actions = controlsButton == null ? null : controlsButton.getActions();
+        boolean controlsVisible = actions != null && actions.length == 0;
+        if (!controlsVisible) {
+            if (!Rs2Widget.clickWidget(7602235)
+                    || !sleepUntil(() -> Rs2Widget.isWidgetVisible(7602207), 2500)) {
+                Microbot.log("Gilded Altar: could not open Controls settings for bad-house exit.");
+                return;
+            }
+        }
+
+        if (!Rs2Widget.clickWidget(7602207)) {
+            Microbot.log("Gilded Altar: House Options button not found for bad-house exit.");
+            return;
+        }
+        sleep(1200);
+        if (!Rs2Widget.clickWidget(24248341)) {
+            Microbot.log("Gilded Altar: Leave House button not found for bad-house exit.");
+            return;
+        }
+
+        badHouseInterfaceLeavePending = true;
+        badHouseInterfaceLeaveAttemptedAt = System.currentTimeMillis();
+        sleepUntil(() -> !inHouse(), 5000);
     }
 
     public void unnoteBones() {
@@ -279,10 +343,15 @@ public class GildedAltarScript extends Script {
     }
 
     public void bonesOnAltar(GildedAltarConfig config) {
-        Rs2TileObjectModel altar = Microbot.getRs2TileObjectCache().query().withName("Altar").nearestOnClientThread();
+        Rs2TileObjectModel altar = Microbot.getRs2TileObjectCache().query()
+                .withIds(GILDED_ALTAR_OBJECTS)
+                .within(GILDED_ALTAR_SEARCH_RANGE)
+                .nearestOnClientThread();
         if (altar == null) {
+            handleMissingGildedAltar();
             return;
         }
+        resetHouseValidation();
 
         int boneCount = unnotedBoneCount();
         if (boneCount <= 0) {
@@ -536,6 +605,7 @@ public class GildedAltarScript extends Script {
                 lastPrayerXp = prayerXp;
                 lastPrayerXpAt = now;
                 lastOfferTick = Microbot.getClient().getTickCount();
+                zoomInForAcceleratedOffering();
                 Microbot.log("Gilded Altar: first Prayer XP drop confirmed; accelerated offering armed.");
                 return true;
             }
@@ -596,7 +666,67 @@ public class GildedAltarScript extends Script {
         lastOfferingRecoveryAt = 0;
     }
 
-    public void addNameToBlackList() {
+    private void handleMissingGildedAltar() {
+        long now = System.currentTimeMillis();
+        if (missingGildedAltarSince == 0) {
+            missingGildedAltarSince = now;
+            Microbot.log("Gilded Altar: waiting for a nearby gilded altar to load.");
+            return;
+        }
+        if (now - missingGildedAltarSince < HOUSE_SCENE_GRACE_MS) {
+            return;
+        }
+
+        blacklistCurrentHouseOwner();
+        visitedOnce = false;
+        Rs2TileObjectModel portal = Microbot.getRs2TileObjectCache().query()
+                .withId(HOUSE_PORTAL_OBJECT)
+                .nearestOnClientThread();
+        if (portal != null) {
+            if (!leaveHousePending) {
+                Microbot.log("Gilded Altar: no nearby gilded altar; leaving blacklisted house via portal.");
+            }
+            leaveHouse();
+            return;
+        }
+
+        if (!badHouseInterfaceLeavePending) {
+            Microbot.log("Gilded Altar: no nearby gilded altar or exit portal; using Leave House interface.");
+        }
+        leaveBadHouseViaInterface();
+    }
+
+    private void blacklistCurrentHouseOwner() {
+        if (houseOwner == null || houseOwner.trim().isEmpty() || blacklistNames.contains(houseOwner)) {
+            return;
+        }
         blacklistNames.add(houseOwner);
+        Microbot.log("Gilded Altar: blacklisted house owner " + houseOwner + " for this session.");
+    }
+
+    private void resetHouseValidation() {
+        missingGildedAltarSince = 0;
+    }
+
+    private void zoomInForAcceleratedOffering() {
+        if (acceleratedCameraZoomedIn) {
+            return;
+        }
+        Rs2Camera.setZoom(ACCELERATED_ALTAR_ZOOM);
+        acceleratedCameraZoomedIn = true;
+        Microbot.log("Gilded Altar: zoomed in for accelerated offering.");
+    }
+
+    private void zoomOutForAcceleratedExit() {
+        if (!acceleratedCameraZoomedIn) {
+            return;
+        }
+        Rs2Camera.setZoom(ACCELERATED_EXIT_ZOOM);
+        acceleratedCameraZoomedIn = false;
+        Microbot.log("Gilded Altar: zoomed out for portal exit.");
+    }
+
+    public void addNameToBlackList() {
+        blacklistCurrentHouseOwner();
     }
 }
