@@ -41,9 +41,11 @@ import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import javax.inject.Inject;
+import javax.inject.Singleton;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
+@Singleton
 public class NmzScript extends Script {
 
     private NmzConfig config;
@@ -60,6 +62,7 @@ public class NmzScript extends Script {
     @Setter
     private static boolean hasSurge = false;
     private boolean initialized = false;
+    private boolean initialInventorySetupComplete = false;
     private long lastCombatTime = 0;
     private boolean specialAttemptedForCurrentSurge;
     private boolean specialActionInFlight;
@@ -172,6 +175,7 @@ public class NmzScript extends Script {
         Rs2Antiban.deactivateAntiban();
         Rs2Antiban.resetAntibanSettings();
         initialized = false;
+        initialInventorySetupComplete = false;
     }
 
     public boolean isOutside() {
@@ -485,17 +489,38 @@ public class NmzScript extends Script {
     }
 
     public void randomlyToggleRapidHeal() {
-        if (Rs2Random.between(1, 50) == 2) {
+        if (Rs2Random.between(1, 40) == 2) {
             int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
             int prayer = Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER);
             Microbot.log("NMZ rapid heal: trigger at hp=" + hitpoints + " prayer=" + prayer);
-            updateOverlayAction("Click Rapid Heal on/off", "Wait for next random trigger", 2000);
+            updateOverlayAction("Click Rapid Heal on/off", "Check hitpoints and rock cake", 2000);
             boolean prayerTabOpen = switchToTab(InterfaceTab.PRAYER, "rapid heal");
             boolean enabled = prayerTabOpen && Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, true, true);
             sleep(300, 600);
             boolean disabled = enabled && Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, false, true);
             Microbot.log("NMZ rapid heal: " + (enabled && disabled ? "cycle acknowledged" : "cycle not acknowledged"));
+            if (enabled && disabled) {
+                rockCakeToOneAfterRapidHeal();
+            }
+            switchToTab(InterfaceTab.PRAYER, "post-rapid-heal readiness");
+            Rs2Antiban.moveMouseOffScreen(80);
         }
+    }
+
+    private void rockCakeToOneAfterRapidHeal() {
+        int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        if (hitpoints <= 1 || !Rs2Inventory.hasItem(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE)) return;
+        if (!switchToTab(InterfaceTab.INVENTORY, "post-rapid-heal rock cake")) return;
+
+        updateOverlayAction("Rock cake back to 1 HP", "Return to Prayer tab", 2500);
+        int attempts = 0;
+        while (hitpoints > 1 && attempts++ < 10) {
+            int previousHitpoints = hitpoints;
+            if (!Rs2Inventory.interact(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE, "guzzle")) break;
+            sleepUntil(() -> Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS) < previousHitpoints, 1500);
+            hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        }
+        Microbot.log("NMZ rapid heal: post-cycle rock cake hp=" + hitpoints + " attempts=" + attempts);
     }
 
     public void useOverloadPotion() {
@@ -522,7 +547,7 @@ public class NmzScript extends Script {
     }
 
     private boolean isInitialInventorySetupPending() {
-        if (config.togglePrayerPotions()) return false;
+        if (config.togglePrayerPotions() || initialInventorySetupComplete) return false;
 
         int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
         boolean overloadPending = useOverload && Rs2Inventory.hasItem("overload") && hitpoints > 50;
@@ -531,7 +556,12 @@ public class NmzScript extends Script {
                 || Rs2Inventory.hasItem(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE));
         boolean absorptionPending = Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS) < minAbsorption
                 && Rs2Inventory.hasItem("absorption");
-        return overloadPending || selfHarmPending || absorptionPending;
+        boolean pending = overloadPending || selfHarmPending || absorptionPending;
+        if (!pending) {
+            initialInventorySetupComplete = true;
+            Microbot.log("NMZ initial inventory setup: complete");
+        }
+        return pending;
     }
 
     private void returnToPrayerTabIfSetupComplete(String reason) {

@@ -55,7 +55,7 @@ public class NmzOverlay extends OverlayPanel {
             WorldPoint location = Microbot.getClient().getLocalPlayer() == null
                     ? null : Microbot.getClient().getLocalPlayer().getWorldLocation();
             add("Location", location == null ? "Unknown" : location.getX() + "," + location.getY() + "," + location.getPlane());
-            add("Area", location == null ? "Unknown" : location.getY() > 4500 ? "NMZ instance" : "NMZ lobby/outside");
+            add("Area", location == null ? "Unknown" : script.isOutside() ? "NMZ lobby/outside" : "NMZ instance");
             add("Tab", tabName(Rs2Tab.getCurrentTab()));
             add("HP", skill(Skill.HITPOINTS));
             add("Prayer", skill(Skill.PRAYER));

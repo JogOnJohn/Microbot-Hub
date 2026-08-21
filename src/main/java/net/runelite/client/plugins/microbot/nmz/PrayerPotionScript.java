@@ -11,8 +11,10 @@ import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import javax.inject.Singleton;
 
 /** The plugin-owned, single prayer-restoration controller. */
+@Singleton
 public class PrayerPotionScript extends Script {
     private static final int DRINK_THRESHOLD_PERCENT = 30;
     private volatile boolean actionInFlight;
