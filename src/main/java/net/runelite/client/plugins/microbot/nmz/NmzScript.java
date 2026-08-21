@@ -48,6 +48,14 @@ import java.util.concurrent.TimeUnit;
 @Singleton
 public class NmzScript extends Script {
 
+    private enum RumblePreparationPhase {
+        WAITING_FOR_ENTRY,
+        ABSORPTION,
+        OVERLOAD,
+        ROCK_CAKE,
+        COMPLETE
+    }
+
     private NmzConfig config;
     private NmzPlugin plugin;
 
@@ -62,7 +70,9 @@ public class NmzScript extends Script {
     @Setter
     private static boolean hasSurge = false;
     private boolean initialized = false;
-    private boolean initialInventorySetupComplete = false;
+    private RumblePreparationPhase rumblePreparationPhase = RumblePreparationPhase.WAITING_FOR_ENTRY;
+    private boolean wasOutsideNmz = true;
+    private int initialAbsorptionTarget;
     private long lastCombatTime = 0;
     private boolean specialAttemptedForCurrentSurge;
     private boolean specialActionInFlight;
@@ -130,7 +140,8 @@ public class NmzScript extends Script {
                     // Skip inventory setup and lobby walk if already inside the NMZ instance
                     boolean isInNmzInstance = Microbot.getClientThread().runOnClientThreadOptional(() ->
                             Microbot.getClient().getLocalPlayer() != null
-                                    && Microbot.getClient().getLocalPlayer().getWorldLocation().getY() > 4500
+                                    && (Microbot.getClient().getLocalPlayer().getWorldLocation().getPlane() == 3
+                                    || Microbot.getClient().getLocalPlayer().getWorldLocation().getY() > 4500)
                     ).orElse(false);
                     if (!isInNmzInstance) {
                         if (config.inventorySetupon()) {
@@ -156,10 +167,16 @@ public class NmzScript extends Script {
                 boolean isOutsideNmz = isOutside();
                 useOverload = Microbot.getClient().getBoostedSkillLevel(Skill.RANGED) == Microbot.getClient().getRealSkillLevel(Skill.RANGED) && config.overloadPotionAmount() > 0;
                 if (isOutsideNmz) {
+                    wasOutsideNmz = true;
+                    rumblePreparationPhase = RumblePreparationPhase.WAITING_FOR_ENTRY;
                     updateOverlayState("NMZ lobby", "Prepare supplies or enter dream");
                     Rs2Walker.setTarget(null);
                     handleOutsideNmz();
                 } else {
+                    if (wasOutsideNmz || rumblePreparationPhase == RumblePreparationPhase.WAITING_FOR_ENTRY) {
+                        beginRumblePreparation();
+                    }
+                    wasOutsideNmz = false;
                     handleInsideNmz();
                 }
             } catch (Exception ex) {
@@ -175,7 +192,8 @@ public class NmzScript extends Script {
         Rs2Antiban.deactivateAntiban();
         Rs2Antiban.resetAntibanSettings();
         initialized = false;
-        initialInventorySetupComplete = false;
+        wasOutsideNmz = true;
+        rumblePreparationPhase = RumblePreparationPhase.WAITING_FOR_ENTRY;
     }
 
     public boolean isOutside() {
@@ -211,6 +229,8 @@ public class NmzScript extends Script {
     }
 
     public void handleInsideNmz() {
+        if (handleRumblePreparation()) return;
+
         updateOverlayIdle("Evaluate combat, power-ups and supplies");
         if (Rs2Player.isInCombat()) {
             lastCombatTime = System.currentTimeMillis();
@@ -264,6 +284,159 @@ public class NmzScript extends Script {
         if (config.useZapper() && interactWithObject(ObjectID.NZONE_POWERUP_ZAPPER)) return true;
         if (config.useReccurentDamage() && interactWithObject(ObjectID.NZONE_POWERUP_DAMAGEMULTIPLIER)) return true;
         return config.usePowerSurge() && interactWithObject(ObjectID.NZONE_POWERUP_SPECIALATTACK);
+    }
+
+    private void beginRumblePreparation() {
+        if (config.togglePrayerPotions()) {
+            rumblePreparationPhase = RumblePreparationPhase.COMPLETE;
+            return;
+        }
+        initialAbsorptionTarget = Rs2Random.between(200, 300);
+        rumblePreparationPhase = RumblePreparationPhase.ABSORPTION;
+        maxHealth = 1;
+        Microbot.log("NMZ preparation: new rumble, absorption target=" + initialAbsorptionTarget);
+        updateOverlayAction("Initial preparation", "Drink absorption potions", 1000);
+    }
+
+    private boolean handleRumblePreparation() {
+        if (config.togglePrayerPotions() || rumblePreparationPhase == RumblePreparationPhase.COMPLETE) return false;
+
+        switch (rumblePreparationPhase) {
+            case ABSORPTION:
+                prepareInitialAbsorption();
+                return true;
+            case OVERLOAD:
+                prepareInitialOverload();
+                return true;
+            case ROCK_CAKE:
+                prepareInitialRockCake();
+                return true;
+            case WAITING_FOR_ENTRY:
+                beginRumblePreparation();
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void prepareInitialAbsorption() {
+        updateOverlayState("Initial preparation - absorption", "Reach " + initialAbsorptionTarget + " absorption");
+        if (!switchToTab(InterfaceTab.INVENTORY, "initial absorption")) return;
+
+        int absorption = Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS);
+        int attempts = 0;
+        while (absorption < initialAbsorptionTarget && attempts++ < 8 && Rs2Inventory.hasItem("absorption")) {
+            int previousAbsorption = absorption;
+            if (!Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("absorption"), "drink")) break;
+            sleepUntil(() -> Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS) > previousAbsorption, 1800);
+            absorption = Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS);
+            if (absorption <= previousAbsorption) break;
+        }
+
+        if (absorption >= initialAbsorptionTarget || !Rs2Inventory.hasItem("absorption")) {
+            Microbot.log("NMZ preparation: absorption complete at " + absorption + " after " + attempts + " attempt(s)");
+            rumblePreparationPhase = RumblePreparationPhase.OVERLOAD;
+            updateOverlayAction("Initial absorption ready", "Drink overload", 1000);
+        } else {
+            Microbot.log("NMZ preparation: absorption retry at " + absorption + "/" + initialAbsorptionTarget);
+        }
+    }
+
+    private void prepareInitialOverload() {
+        updateOverlayState("Initial preparation - overload", "Drink overload and wait for damage");
+        if (config.overloadPotionAmount() <= 0 || !Rs2Inventory.hasItem("overload")) {
+            Microbot.log("NMZ preparation: no overload configured or available; continuing to self-damage");
+            rumblePreparationPhase = RumblePreparationPhase.ROCK_CAKE;
+            return;
+        }
+        if (Microbot.getClient().getBoostedSkillLevel(Skill.RANGED)
+                > Microbot.getClient().getRealSkillLevel(Skill.RANGED)) {
+            Microbot.log("NMZ preparation: overload boost already active; continuing to self-damage");
+            rumblePreparationPhase = RumblePreparationPhase.ROCK_CAKE;
+            return;
+        }
+        if (!switchToTab(InterfaceTab.INVENTORY, "initial overload")) return;
+
+        int hitpointsBefore = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        int rangedBefore = Microbot.getClient().getBoostedSkillLevel(Skill.RANGED);
+        if (!Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("overload"), "drink")) {
+            Microbot.log("NMZ preparation: overload interaction not acknowledged; retrying");
+            return;
+        }
+
+        sleepUntil(() -> Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS) < hitpointsBefore
+                || Microbot.getClient().getBoostedSkillLevel(Skill.RANGED) > rangedBefore, 3500);
+        int currentHitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        boolean acknowledged = currentHitpoints < hitpointsBefore
+                || Microbot.getClient().getBoostedSkillLevel(Skill.RANGED) > rangedBefore;
+        if (!acknowledged) {
+            Microbot.log("NMZ preparation: overload produced no HP or stat change; retrying");
+            return;
+        }
+
+        updateOverlayAction("Initial overload damage", "Wait for damage ticks to stop", 7000);
+        long deadline = System.currentTimeMillis() + 12000;
+        long lastDamageAt = System.currentTimeMillis();
+        int lastHitpoints = currentHitpoints;
+        while (Microbot.isLoggedIn()
+                && !Thread.currentThread().isInterrupted()
+                && !isOutside()
+                && System.currentTimeMillis() < deadline
+                && System.currentTimeMillis() - lastDamageAt < 2400) {
+            sleep(200);
+            int observedHitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+            if (observedHitpoints < lastHitpoints) {
+                lastHitpoints = observedHitpoints;
+                lastDamageAt = System.currentTimeMillis();
+            }
+        }
+        Microbot.log("NMZ preparation: overload damage complete at hp=" + lastHitpoints);
+        rumblePreparationPhase = RumblePreparationPhase.ROCK_CAKE;
+    }
+
+    private void prepareInitialRockCake() {
+        int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        updateOverlayState("Initial preparation - rock cake", "Guzzle continuously from " + hitpoints + " HP to 1 HP");
+        if (hitpoints <= 1) {
+            finishRumblePreparation();
+            return;
+        }
+        if (!Rs2Inventory.hasItem(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE)) {
+            Microbot.log("NMZ preparation: rock cake missing at hp=" + hitpoints);
+            updateOverlayState("Initial preparation blocked", "Rock cake required to reach 1 HP");
+            return;
+        }
+        if (!switchToTab(InterfaceTab.INVENTORY, "initial rock cake")) return;
+
+        int attempts = 0;
+        long deadline = System.currentTimeMillis() + 90000;
+        while (Microbot.isLoggedIn()
+                && !Thread.currentThread().isInterrupted()
+                && !isOutside()
+                && hitpoints > 1
+                && attempts++ < 80
+                && System.currentTimeMillis() < deadline) {
+            int previousHitpoints = hitpoints;
+            if (!Rs2Inventory.interact(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE, "guzzle")) break;
+            sleepUntil(() -> Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS) < previousHitpoints, 1800);
+            hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+            if (hitpoints >= previousHitpoints) break;
+        }
+
+        Microbot.log("NMZ preparation: initial rock cake hp=" + hitpoints + " attempts=" + attempts);
+        if (hitpoints <= 1) finishRumblePreparation();
+    }
+
+    private void finishRumblePreparation() {
+        rumblePreparationPhase = RumblePreparationPhase.COMPLETE;
+        maxHealth = Rs2Random.between(2, 4);
+        minAbsorption = Rs2Random.between(100, 300);
+        updateOverlayAction("Initial preparation complete", "Begin normal NMZ maintenance", 2000);
+        Microbot.log("NMZ preparation: complete at hp="
+                + Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS)
+                + " absorption=" + Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS));
+        switchToTab(InterfaceTab.PRAYER, "initial preparation complete");
+        Rs2Antiban.moveMouseOffScreen(80);
     }
 
     public boolean interactWithObject(int objectId) {
@@ -547,21 +720,8 @@ public class NmzScript extends Script {
     }
 
     private boolean isInitialInventorySetupPending() {
-        if (config.togglePrayerPotions() || initialInventorySetupComplete) return false;
-
-        int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
-        boolean overloadPending = useOverload && Rs2Inventory.hasItem("overload") && hitpoints > 50;
-        boolean selfHarmPending = hitpoints > 1
-                && (Rs2Inventory.hasItem(ItemID.DS2_ORB)
-                || Rs2Inventory.hasItem(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE));
-        boolean absorptionPending = Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS) < minAbsorption
-                && Rs2Inventory.hasItem("absorption");
-        boolean pending = overloadPending || selfHarmPending || absorptionPending;
-        if (!pending) {
-            initialInventorySetupComplete = true;
-            Microbot.log("NMZ initial inventory setup: complete");
-        }
-        return pending;
+        return !config.togglePrayerPotions()
+                && rumblePreparationPhase != RumblePreparationPhase.COMPLETE;
     }
 
     private void returnToPrayerTabIfSetupComplete(String reason) {
