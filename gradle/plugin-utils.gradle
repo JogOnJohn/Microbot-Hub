@@ -257,6 +257,16 @@ ext {
             dependsOn tasks.named("compile${plugin.sourceSetName.capitalize()}Java")
 
             def version = pluginVersionFromPluginJson(plugin.dir)
+            def buildCommit = 'unknown'
+            def buildBranch = 'unknown'
+            def buildDirty = 'unknown'
+            try {
+                buildCommit = ['git', 'rev-parse', '--short=12', 'HEAD'].execute(null, rootDir).text.trim()
+                buildBranch = ['git', 'branch', '--show-current'].execute(null, rootDir).text.trim()
+                buildDirty = ['git', 'status', '--porcelain'].execute(null, rootDir).text.trim().isEmpty() ? 'false' : 'true'
+            } catch (Exception ignored) {
+                logger.warn("Unable to read Git metadata for ${plugin.name}")
+            }
             archiveFileName.set("${plugin.name}-${version}.jar")
             archiveBaseName.set(plugin.name)
             archiveVersion.set(version)
@@ -277,6 +287,9 @@ ext {
                 attributes(
                         'Implementation-Title': plugin.name,
                         'Implementation-Version': version,
+                        'Build-Commit': buildCommit ?: 'unknown',
+                        'Build-Branch': buildBranch ?: 'detached',
+                        'Build-Dirty': buildDirty,
                         'Built-By': 'microbot-build',
                         'Created-By': 'Gradle Shadow Plugin'
                 )
