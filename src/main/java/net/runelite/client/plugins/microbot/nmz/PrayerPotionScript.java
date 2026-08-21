@@ -3,8 +3,10 @@ package net.runelite.client.plugins.microbot.nmz;
 import net.runelite.api.Skill;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
+import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
+import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -29,6 +31,12 @@ public class PrayerPotionScript extends Script {
                 for (Rs2ItemModel potion : potions) {
                     if (!isPrayerRestore(potion)) continue;
                     actionInFlight = true;
+                    if (!Rs2Tab.switchTo(InterfaceTab.INVENTORY)) {
+                        Microbot.log("NMZ prayer: could not open inventory for " + potion.getName());
+                        actionInFlight = false;
+                        nextActionAt = System.currentTimeMillis() + 3000;
+                        break;
+                    }
                     int prayerBefore = Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER);
                     Microbot.log("NMZ prayer: drinking " + potion.getName());
                     boolean initiated = Rs2Inventory.interact(potion, "drink");
@@ -42,6 +50,7 @@ public class PrayerPotionScript extends Script {
                         nextActionAt = System.currentTimeMillis() + 3000;
                         Microbot.log("NMZ prayer: drink was not acknowledged; delaying retry");
                     }
+                    Rs2Tab.switchTo(InterfaceTab.PRAYER);
                     actionInFlight = false;
                     break;
                 }

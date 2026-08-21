@@ -133,10 +133,28 @@ public interface NmzConfig extends Config {
     default String specWeapon() { return ""; }
 
     @ConfigItem(
+            keyName = "Main weapon",
+            name = "Main weapon",
+            description = "Optional exact weapon name to restore after a special. Blank snapshots the currently equipped weapon.",
+            position = 7,
+            section = generalSection
+    )
+    default String mainWeapon() { return ""; }
+
+    @ConfigItem(
+            keyName = "Off-hand",
+            name = "Off-hand",
+            description = "Optional exact off-hand name to restore after a special. Blank snapshots the currently equipped off-hand.",
+            position = 8,
+            section = generalSection
+    )
+    default String offhand() { return ""; }
+
+    @ConfigItem(
             keyName = "Use ancient mace",
             name = "Use ancient mace",
             description = "Always use Ancient mace as the Power Surge special weapon instead of the user-defined weapon.",
-            position = 7,
+            position = 9,
             section = generalSection
     )
     default boolean useAncientMace() { return false; }
@@ -145,7 +163,7 @@ public interface NmzConfig extends Config {
             keyName = "Auto Prayer Potion",
             name = "Auto drink prayer potion",
             description = "Automatically drinks prayer potions",
-            position = 8,
+            position = 10,
             section = generalSection
     )
     default boolean togglePrayerPotions()
@@ -156,7 +174,7 @@ public interface NmzConfig extends Config {
             keyName = "Random Mouse Movements",
             name = "Random Mouse Movements",
             description = "Random Mouse Movements",
-            position = 9,
+            position = 11,
             section = generalSection
     )
     default boolean randomMouseMovements()
@@ -167,7 +185,7 @@ public interface NmzConfig extends Config {
             keyName = "Walk to center",
             name = "Walk to center",
             description = "Walk to center of nmz",
-            position = 10,
+            position = 12,
             section = generalSection
     )
     default boolean walkToCenter()
@@ -178,7 +196,7 @@ public interface NmzConfig extends Config {
             keyName = "Randomly trigger rapid heal",
             name = "Randomly trigger rapid heal",
             description = "Will randomly trigger rapid heal",
-            position = 11,
+            position = 13,
             section = generalSection
     )
     default boolean randomlyTriggerRapidHeal()

@@ -2,6 +2,7 @@ package net.runelite.client.plugins.microbot.nmz;
 
 import lombok.Getter;
 import lombok.Setter;
+import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.Skill;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.ItemID;
@@ -25,6 +26,7 @@ import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
+import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
@@ -33,6 +35,8 @@ import net.runelite.client.plugins.microbot.util.prayer.Rs2PrayerEnum;
 import net.runelite.client.plugins.microbot.util.security.Encryption;
 import net.runelite.client.plugins.microbot.util.security.LoginManager;
 import net.runelite.client.plugins.microbot.util.misc.SpecialAttackWeaponEnum;
+import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
+import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
@@ -59,7 +63,10 @@ public class NmzScript extends Script {
     private long lastCombatTime = 0;
     private boolean specialAttemptedForCurrentSurge;
     private boolean specialActionInFlight;
+    private boolean specialAwaitingConsumption;
     private long nextSpecialAttemptAt;
+    private String mainWeaponBeforeSpecial;
+    private String offhandBeforeSpecial;
 
     @Inject
     private Rs2TileObjectCache tileObjectCache;
@@ -93,7 +100,7 @@ public class NmzScript extends Script {
         Rs2AntibanSettings.behavioralVariability = true;
         Rs2AntibanSettings.nonLinearIntervals = true;
         Rs2AntibanSettings.actionCooldownChance = 0.00;
-        Rs2AntibanSettings.moveMouseOffScreenChance = 1.00;
+        Rs2AntibanSettings.moveMouseOffScreenChance = 0.80;
 
 
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
@@ -260,10 +267,19 @@ public class NmzScript extends Script {
     }
 
     private void useManualSpecialAfterSurge() {
+        if (specialAwaitingConsumption) {
+            if (Rs2Combat.getSpecState() && hasSurge) return;
+            if (Rs2Combat.getSpecState()) Rs2Combat.setSpecState(false);
+            restoreMainEquipment();
+            specialAwaitingConsumption = false;
+            specialAttemptedForCurrentSurge = true;
+        }
         if (!hasSurge) {
             specialAttemptedForCurrentSurge = false;
             specialActionInFlight = false;
             nextSpecialAttemptAt = 0;
+            mainWeaponBeforeSpecial = null;
+            offhandBeforeSpecial = null;
             return;
         }
         if (specialAttemptedForCurrentSurge || specialActionInFlight || prayerPotionScript.isActionInFlight()
@@ -284,6 +300,12 @@ public class NmzScript extends Script {
         if (specialEnergy < 1000) return;
 
         specialActionInFlight = true;
+        snapshotMainEquipment();
+        if (!switchToTab(InterfaceTab.INVENTORY, "special weapon")) {
+            specialActionInFlight = false;
+            nextSpecialAttemptAt = System.currentTimeMillis() + 3000;
+            return;
+        }
         if (!Rs2Equipment.isWearing(weapon.getName())) {
             Microbot.log("NMZ special: equipping " + weapon.getName() + " at 100% energy");
             boolean equipRequested = Rs2Inventory.wear(weapon.getName());
@@ -296,15 +318,60 @@ public class NmzScript extends Script {
             }
         }
 
+        if (!switchToTab(InterfaceTab.COMBAT, "special attack")) {
+            specialActionInFlight = false;
+            nextSpecialAttemptAt = System.currentTimeMillis() + 3000;
+            return;
+        }
         boolean armed = Rs2Combat.setSpecState(true, 1000);
         if (armed) {
-            specialAttemptedForCurrentSurge = true;
+            specialAwaitingConsumption = true;
             Microbot.log("NMZ special: armed " + weapon.getName() + " once at 100% energy");
         } else {
             Microbot.log("NMZ special: could not arm " + weapon.getName() + "; delaying retry");
             nextSpecialAttemptAt = System.currentTimeMillis() + 3000;
         }
         specialActionInFlight = false;
+    }
+
+    private void snapshotMainEquipment() {
+        if (mainWeaponBeforeSpecial != null || offhandBeforeSpecial != null) return;
+        mainWeaponBeforeSpecial = configuredOrEquipped(config.mainWeapon(), EquipmentInventorySlot.WEAPON);
+        offhandBeforeSpecial = configuredOrEquipped(config.offhand(), EquipmentInventorySlot.SHIELD);
+        Microbot.log("NMZ special: restore target main=" + valueOrNone(mainWeaponBeforeSpecial)
+                + " offhand=" + valueOrNone(offhandBeforeSpecial));
+    }
+
+    private String configuredOrEquipped(String configured, EquipmentInventorySlot slot) {
+        if (configured != null && !configured.trim().isEmpty()) return configured.trim();
+        Rs2ItemModel equipped = Rs2Equipment.get(slot);
+        return equipped == null ? null : equipped.getName();
+    }
+
+    private void restoreMainEquipment() {
+        switchToTab(InterfaceTab.INVENTORY, "restore equipment");
+        boolean mainRestored = restoreEquipmentItem(mainWeaponBeforeSpecial);
+        boolean offhandRestored = restoreEquipmentItem(offhandBeforeSpecial);
+        Microbot.log("NMZ special: restore " + (mainRestored && offhandRestored ? "acknowledged" : "incomplete")
+                + " main=" + valueOrNone(mainWeaponBeforeSpecial) + " offhand=" + valueOrNone(offhandBeforeSpecial));
+        switchToTab(InterfaceTab.PRAYER, "post-special prayer readiness");
+    }
+
+    private boolean restoreEquipmentItem(String itemName) {
+        if (itemName == null || itemName.isEmpty() || Rs2Equipment.isWearing(itemName)) return true;
+        return Rs2Inventory.hasItem(itemName)
+                && Rs2Inventory.wear(itemName)
+                && sleepUntil(() -> Rs2Equipment.isWearing(itemName), 3000);
+    }
+
+    private String valueOrNone(String value) {
+        return value == null || value.isEmpty() ? "none" : value;
+    }
+
+    private boolean switchToTab(InterfaceTab tab, String reason) {
+        boolean switched = Rs2Tab.switchTo(tab);
+        if (!switched) Microbot.log("NMZ tab: failed to open " + tab.getName() + " for " + reason);
+        return switched;
     }
 
     private SpecialAttackWeaponEnum resolveConfiguredSpecialWeapon() {
@@ -359,12 +426,17 @@ public class NmzScript extends Script {
             maxHealth = 1;
 
             if (Rs2Inventory.hasItem(ItemID.DS2_ORB)) {
+                switchToTab(InterfaceTab.INVENTORY, "locator orb");
                 Rs2Inventory.interact(ItemID.DS2_ORB, "feel");
                 Rs2Antiban.actionCooldown();
             } else if (Rs2Inventory.hasItem(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE)) {
+                switchToTab(InterfaceTab.INVENTORY, "rock cake");
                 Rs2Inventory.interact(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE, "guzzle");
                 Rs2Antiban.actionCooldown();
             }
+
+            switchToTab(InterfaceTab.PRAYER, "post-self-harm rapid heal readiness");
+            Rs2Antiban.moveMouseOffScreen(80);
 
             if (currentHP == 1) {
                 maxHealth = Rs2Random.between(2, 4);
@@ -381,27 +453,32 @@ public class NmzScript extends Script {
             int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
             int prayer = Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER);
             Microbot.log("NMZ rapid heal: trigger at hp=" + hitpoints + " prayer=" + prayer);
-            boolean enabled = Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, true);
+            boolean prayerTabOpen = switchToTab(InterfaceTab.PRAYER, "rapid heal");
+            boolean enabled = prayerTabOpen && Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, true, true);
             sleep(300, 600);
-            boolean disabled = Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, false);
+            boolean disabled = enabled && Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, false, true);
             Microbot.log("NMZ rapid heal: " + (enabled && disabled ? "cycle acknowledged" : "cycle not acknowledged"));
         }
     }
 
     public void useOverloadPotion() {
         if (useOverload && Rs2Inventory.hasItem("overload") && Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS) > 50) {
+            if (!switchToTab(InterfaceTab.INVENTORY, "overload potion")) return;
             Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("overload"), "drink");
             sleep(10000);
+            switchToTab(InterfaceTab.PRAYER, "post-overload prayer readiness");
         }
     }
 
     public void useAbsorptionPotion() {
         if (Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS) < minAbsorption && Rs2Inventory.hasItem("absorption")) {
+            if (!switchToTab(InterfaceTab.INVENTORY, "absorption potion")) return;
             for (int i = 0; i < Rs2Random.between(4, 8); i++) {
                 Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("absorption"), "drink");
                 sleep(600, 1000);
             }
             minAbsorption = Rs2Random.between(100, 300);
+            switchToTab(InterfaceTab.PRAYER, "post-absorption prayer readiness");
         }
     }
 
