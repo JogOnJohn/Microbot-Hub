@@ -115,28 +115,37 @@ public interface NmzConfig extends Config {
         return false;
     }
     @ConfigItem(
-            keyName = "Primary spec weapon",
-            name = "Primary spec weapon",
-            description = "Exact special-attack weapon name (for example: Ancient mace). Used after a Power Surge when prayer does not need restoring.",
+            keyName = "Use spec weapon",
+            name = "Use spec weapon",
+            description = "Enable the configured special weapon. Leave the weapon field blank to disable special attacks.",
             position = 5,
             section = generalSection
     )
-    default String primarySpecWeapon() { return ""; }
+    default boolean useSpecWeapon() { return false; }
 
     @ConfigItem(
-            keyName = "Second spec weapon",
-            name = "Second spec weapon",
-            description = "Optional exact fallback special-attack weapon name. Used when the primary weapon is unavailable.",
+            keyName = "Spec weapon",
+            name = "Spec weapon",
+            description = "Exact special-attack weapon name, for example Burning claws. Blank means no special weapon.",
             position = 6,
             section = generalSection
     )
-    default String secondSpecWeapon() { return ""; }
+    default String specWeapon() { return ""; }
+
+    @ConfigItem(
+            keyName = "Use ancient mace for low prayer",
+            name = "Use ancient mace for low prayer",
+            description = "When prayer is below 20 points, prefer Ancient mace over the configured weapon, including during Power Surge.",
+            position = 7,
+            section = generalSection
+    )
+    default boolean useAncientMaceForLowPrayer() { return false; }
 
     @ConfigItem(
             keyName = "Auto Prayer Potion",
             name = "Auto drink prayer potion",
             description = "Automatically drinks prayer potions",
-            position = 7,
+            position = 8,
             section = generalSection
     )
     default boolean togglePrayerPotions()
@@ -147,7 +156,7 @@ public interface NmzConfig extends Config {
             keyName = "Random Mouse Movements",
             name = "Random Mouse Movements",
             description = "Random Mouse Movements",
-            position = 8,
+            position = 9,
             section = generalSection
     )
     default boolean randomMouseMovements()
@@ -158,7 +167,7 @@ public interface NmzConfig extends Config {
             keyName = "Walk to center",
             name = "Walk to center",
             description = "Walk to center of nmz",
-            position = 9,
+            position = 10,
             section = generalSection
     )
     default boolean walkToCenter()
@@ -169,7 +178,7 @@ public interface NmzConfig extends Config {
             keyName = "Randomly trigger rapid heal",
             name = "Randomly trigger rapid heal",
             description = "Will randomly trigger rapid heal",
-            position = 10,
+            position = 11,
             section = generalSection
     )
     default boolean randomlyTriggerRapidHeal()

@@ -261,7 +261,9 @@ public class NmzScript extends Script {
             specialAttemptedForCurrentSurge = false;
             return;
         }
-        if (specialAttemptedForCurrentSurge || prayerPotionScript.isPrayerRestoreDue() || prayerPotionScript.isActionInFlight()) return;
+        if (specialAttemptedForCurrentSurge || prayerPotionScript.isActionInFlight()) return;
+        if (!config.useSpecWeapon() || config.specWeapon() == null || config.specWeapon().trim().isEmpty()) return;
+        if (prayerPotionScript.isPrayerRestoreDue() && !shouldUseAncientMaceForLowPrayer()) return;
         specialAttemptedForCurrentSurge = true;
         SpecialAttackWeaponEnum weapon = resolveConfiguredSpecialWeapon();
         if (weapon == null) return;
@@ -278,9 +280,17 @@ public class NmzScript extends Script {
     }
 
     private SpecialAttackWeaponEnum resolveConfiguredSpecialWeapon() {
-        SpecialAttackWeaponEnum primary = findSpecialWeapon(config.primarySpecWeapon());
-        if (primary != null && (Rs2Inventory.hasItem(primary.getName()) || net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment.isWearing(primary.getName()))) return primary;
-        return findSpecialWeapon(config.secondSpecWeapon());
+        if (shouldUseAncientMaceForLowPrayer()) {
+            SpecialAttackWeaponEnum ancientMace = SpecialAttackWeaponEnum.ANCIENT_MACE;
+            if (Rs2Inventory.hasItem(ancientMace.getName()) || net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment.isWearing(ancientMace.getName())) return ancientMace;
+            Microbot.log("NMZ special: Ancient mace requested for low prayer but unavailable");
+        }
+        return findSpecialWeapon(config.specWeapon());
+    }
+
+    private boolean shouldUseAncientMaceForLowPrayer() {
+        return config.useAncientMaceForLowPrayer()
+                && Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER) < 20;
     }
 
     private SpecialAttackWeaponEnum findSpecialWeapon(String configuredName) {
