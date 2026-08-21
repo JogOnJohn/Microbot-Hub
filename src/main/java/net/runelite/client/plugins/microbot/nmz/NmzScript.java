@@ -148,7 +148,10 @@ public class NmzScript extends Script {
     }
 
     public boolean isOutside() {
-        WorldPoint loc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
+        WorldPoint loc = Microbot.getClientThread().invoke(() -> {
+            if (Microbot.getClient().getLocalPlayer() == null) return null;
+            return Microbot.getClient().getLocalPlayer().getWorldLocation();
+        });
         return loc != null && loc.distanceTo(new WorldPoint(2602, 3116, 0)) < 20;
     }
 
