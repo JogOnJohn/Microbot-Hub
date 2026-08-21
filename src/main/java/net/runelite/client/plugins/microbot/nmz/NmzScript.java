@@ -99,7 +99,10 @@ public class NmzScript extends Script {
                 if (!initialized) {
                     initialized = true;
                     // Skip inventory setup and lobby walk if already inside the NMZ instance
-                    boolean isInNmzInstance = Microbot.getClient().getLocalPlayer().getWorldLocation().getY() > 4500;
+                    boolean isInNmzInstance = Microbot.getClientThread().runOnClientThreadOptional(() ->
+                            Microbot.getClient().getLocalPlayer() != null
+                                    && Microbot.getClient().getLocalPlayer().getWorldLocation().getY() > 4500
+                    ).orElse(false);
                     if (!isInNmzInstance) {
                         if (config.inventorySetupon()) {
                             if (config.inventorySetup() != null) {
