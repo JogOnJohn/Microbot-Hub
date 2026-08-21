@@ -489,7 +489,7 @@ public class NmzScript extends Script {
     }
 
     public void randomlyToggleRapidHeal() {
-        if (Rs2Random.between(1, 40) == 2) {
+        if (Rs2Random.between(1, 33) == 2) {
             int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
             int prayer = Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER);
             Microbot.log("NMZ rapid heal: trigger at hp=" + hitpoints + " prayer=" + prayer);
