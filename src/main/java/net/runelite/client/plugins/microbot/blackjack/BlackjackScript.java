@@ -5,11 +5,11 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Menu;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
+import net.runelite.api.ObjectComposition;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
 import net.runelite.api.Point;
 import net.runelite.api.Skill;
-import net.runelite.api.TileObject;
 import net.runelite.api.coords.WorldArea;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.AnimationID;
@@ -17,10 +17,11 @@ import net.runelite.api.gameval.ItemID;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
+import net.runelite.client.plugins.microbot.api.tileobject.Rs2TileObjectQueryable;
+import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
-import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
@@ -33,9 +34,11 @@ import java.awt.Shape;
 import java.awt.event.KeyEvent;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -56,6 +59,8 @@ public class BlackjackScript extends Script
     private static final int COINS_ID = 995;
     private static final int WINE_HEAL_AMOUNT = 11;
     private static final int WINE_EXCHANGE_COST = 5;
+    private static final int EARLY_WINE_RESTOCK_HITPOINTS = 40;
+    private static final int EARLY_WINE_RESTOCK_MAX_WINES = 1;
 
     private static final long FAILED_KNOCKOUT_RETRY_MS = 450;
     private static final long PICKPOCKET_BURST_TIMEOUT_MS = 2_800;
@@ -577,7 +582,7 @@ public class BlackjackScript extends Script
 
         if (readyForInteraction(80))
         {
-            if (!naturalMoveAndClick(anchor, true))
+            if (!naturalMoveAndClick(target, anchor, true))
             {
                 nextAction = "Wait for natural mouse";
                 return;
@@ -634,7 +639,7 @@ public class BlackjackScript extends Script
                     target != null && isPlayerInteractingWithTarget(target));
             if (!clickMenuPoint("Knock-Out", menuPoint))
             {
-                nextAction = "Wait for natural mouse";
+                recoverKnockoutMenu("menu click could not be verified");
                 return;
             }
             long now = System.currentTimeMillis();
@@ -674,10 +679,7 @@ public class BlackjackScript extends Script
 
         if (elapsedInState() >= KNOCKOUT_MENU_TIMEOUT_MS)
         {
-            knockoutMenuMisses++;
-            lastOutcome = "Knock-Out menu missed";
-            log.warn("Knock-Out menu entry was not available; retrying right-click");
-            transition(BlackjackState.KNOCKING_OUT, "Retry Knock-Out menu");
+            recoverKnockoutMenu("menu entry was not available before timeout");
         }
     }
 
@@ -922,11 +924,12 @@ public class BlackjackScript extends Script
             return false;
         }
 
-        boolean emergency = wines == 0 && hitpoints < config.healBelowPercent();
+        boolean emergency = wines <= EARLY_WINE_RESTOCK_MAX_WINES
+                && hitpoints < EARLY_WINE_RESTOCK_HITPOINTS;
         boolean projectedDepletion = healingRequired
                 && projectedWinesNeeded > 0
                 && wines <= projectedWinesNeeded;
-        if (!wineRestockPending && wines > 0 && !projectedDepletion)
+        if (!wineRestockPending && wines > 0 && !projectedDepletion && !emergency)
         {
             return false;
         }
@@ -936,7 +939,7 @@ public class BlackjackScript extends Script
             wineRestockPending = true;
             emergencyWineExit = emergency;
             restockTargetWineCount = Math.max(1,
-                    wines + Rs2Inventory.count(ItemID.JUG_EMPTY) + Rs2Inventory.getEmptySlots());
+                    wines + Rs2Inventory.count(ItemID.JUG_EMPTY) + Rs2Inventory.emptySlotCount());
             log.info("Wine restock latched: wines={}, needed={}, hp={}, targetWines={}, emergency={}",
                     wines, projectedWinesNeeded, hitpoints, restockTargetWineCount, emergencyWineExit);
         }
@@ -954,7 +957,7 @@ public class BlackjackScript extends Script
         {
             restockAfterCombatReset = false;
             waitingForRestockKnockout = false;
-            transition(BlackjackState.EXITING_FOR_WINE, "Emergency exit: no wine below minimum HP");
+            transition(BlackjackState.EXITING_FOR_WINE, "Emergency exit: low wine reserve below minimum HP");
             return true;
         }
 
@@ -1018,7 +1021,7 @@ public class BlackjackScript extends Script
             return;
         }
 
-        TileObject closedDoor = findWineDoor("Open");
+        Rs2TileObjectModel closedDoor = findWineDoor("Open");
         if (closedDoor != null)
         {
             interactWithWineDoor(closedDoor, "Open", "Open east door");
@@ -1056,7 +1059,7 @@ public class BlackjackScript extends Script
             return;
         }
 
-        TileObject openDoor = findWineDoor("Close");
+        Rs2TileObjectModel openDoor = findWineDoor("Close");
         if (openDoor != null)
         {
             interactWithWineDoor(openDoor, "Close", "Close east door behind player");
@@ -1106,7 +1109,7 @@ public class BlackjackScript extends Script
             return;
         }
 
-        if (Rs2Inventory.getEmptySlots() == 0)
+        if (Rs2Inventory.emptySlotCount() == 0)
         {
             fail("No safe inventory space for wine");
             return;
@@ -1162,7 +1165,7 @@ public class BlackjackScript extends Script
             return;
         }
 
-        TileObject closedDoor = findWineDoor("Open");
+        Rs2TileObjectModel closedDoor = findWineDoor("Open");
         if (closedDoor != null)
         {
             interactWithWineDoor(closedDoor, "Open", "Open east door to re-enter");
@@ -1188,7 +1191,7 @@ public class BlackjackScript extends Script
             return;
         }
 
-        TileObject openDoor = findWineDoor("Close");
+        Rs2TileObjectModel openDoor = findWineDoor("Close");
         if (openDoor != null)
         {
             interactWithWineDoor(openDoor, "Close", "Close east door behind player");
@@ -1220,26 +1223,35 @@ public class BlackjackScript extends Script
         }
     }
 
-    private TileObject findWineDoor(String action)
+    private Rs2TileObjectModel findWineDoor(String action)
     {
-        return Rs2GameObject.getAll((TileObject object) -> {
-            WorldPoint location = object.getWorldLocation();
-            return location != null
-                    && location.distanceTo2D(WINE_DOOR_INSIDE_TILE) <= 1
-                    && Rs2GameObject.getCompositionName(object)
-                            .map(name -> name.equalsIgnoreCase("Door"))
-                            .orElse(false)
-                    && Rs2GameObject.hasAction(object, action);
-        }, WINE_DOOR_INSIDE_TILE, 2).stream().findFirst().orElse(null);
+        return new Rs2TileObjectQueryable()
+                .withName("Door")
+                .where(object -> {
+                    WorldPoint location = object.getWorldLocation();
+                    return location != null
+                            && location.distanceTo2D(WINE_DOOR_INSIDE_TILE) <= 1
+                            && hasObjectAction(object, action);
+                })
+                .first();
     }
 
-    private void interactWithWineDoor(TileObject door, String action, String description)
+    private boolean hasObjectAction(Rs2TileObjectModel object, String action)
+    {
+        ObjectComposition composition = object.getObjectComposition();
+        return composition != null
+                && Arrays.stream(composition.getActions())
+                        .filter(Objects::nonNull)
+                        .anyMatch(candidate -> candidate.equalsIgnoreCase(action));
+    }
+
+    private void interactWithWineDoor(Rs2TileObjectModel door, String action, String description)
     {
         if (!readyForInteraction(DOOR_INTERACTION_DELAY_MS))
         {
             return;
         }
-        if (Rs2GameObject.interact(door, action))
+        if (door.click(action))
         {
             lastInteractionAt = System.currentTimeMillis();
             nextAction = description;
@@ -1259,7 +1271,7 @@ public class BlackjackScript extends Script
     {
         if (Rs2Dialogue.hasSelectAnOption())
         {
-            int option = Rs2Inventory.getEmptySlots() > 1 ? 2 : 1;
+            int option = Rs2Inventory.emptySlotCount() > 1 ? 2 : 1;
             Rs2Dialogue.keyPressForDialogueOption(option);
             lastInteractionAt = System.currentTimeMillis();
             nextAction = option == 2 ? "Exchange all notes" : "Exchange one note";
@@ -1297,9 +1309,11 @@ public class BlackjackScript extends Script
 
         if (readyForInteraction(700))
         {
-            Rs2Inventory.useItemOnNpc(NOTED_WINE_ID, merchant.getNpc());
-            lastInteractionAt = System.currentTimeMillis();
-            nextAction = "Choose note quantity";
+            if (Rs2Inventory.use(NOTED_WINE_ID) && merchant.click())
+            {
+                lastInteractionAt = System.currentTimeMillis();
+                nextAction = "Choose note quantity";
+            }
         }
     }
 
@@ -1557,12 +1571,20 @@ public class BlackjackScript extends Script
                 && Math.abs(current.getX() - anchor.getX()) <= 2
                 && Math.abs(current.getY() - anchor.getY()) <= 2)
         {
+            if (!isInsideTargetHull(target, current))
+            {
+                log.warn("Refusing target click outside NPC hull: expected={} actual={} targetIndex={}",
+                        anchor, current, targetIndex);
+                burstClickPoint = null;
+                nextAction = "Reacquire safe NPC click point";
+                return false;
+            }
             Microbot.getMouse().click(current);
             burstClickPoint = anchor;
         }
         else
         {
-            if (!naturalMoveAndClick(anchor, false))
+            if (!naturalMoveAndClick(target, anchor, false))
             {
                 nextAction = "Wait for natural mouse";
                 return false;
@@ -1572,7 +1594,7 @@ public class BlackjackScript extends Script
         return true;
     }
 
-    private boolean naturalMoveAndClick(Point point, boolean rightClick)
+    private boolean naturalMoveAndClick(Rs2NpcModel target, Point point, boolean rightClick)
     {
         if (Microbot.naturalMouse == null)
         {
@@ -1586,8 +1608,36 @@ public class BlackjackScript extends Script
         {
             current = point;
         }
+        if (!isInsideTargetHull(target, current))
+        {
+            log.warn("Natural mouse ended outside NPC hull; refusing {} click: expected={} actual={} targetIndex={}",
+                    rightClick ? "right" : "left", point, current, targetIndex);
+            return false;
+        }
         Microbot.getMouse().click(current, rightClick);
         return true;
+    }
+
+    private boolean isInsideTargetHull(Rs2NpcModel target, Point point)
+    {
+        return target != null && point != null
+                && Microbot.getClientThread().runOnClientThreadOptional(() -> {
+                    NPC npc = target.getNpc();
+                    Shape hull = npc == null ? null : npc.getConvexHull();
+                    return hull != null && hull.contains(point.getX(), point.getY());
+                }).orElse(false);
+    }
+
+    private void recoverKnockoutMenu(String reason)
+    {
+        knockoutMenuMisses++;
+        burstClickPoint = null;
+        knockoutMenuSelectAt = 0;
+        prearmedKnockoutSelectAt = 0;
+        Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
+        lastOutcome = "Knock-Out menu recovery";
+        log.warn("Knock-Out menu recovery: {}. Clearing stale menu and reacquiring target hull.", reason);
+        transition(BlackjackState.KNOCKING_OUT, "Recover Knock-Out menu");
     }
 
     private Point findTargetMenuOptionPoint(String option)
@@ -1836,7 +1886,7 @@ public class BlackjackScript extends Script
     {
         Rs2NpcModel target = currentTarget();
         Point anchor = target == null ? null : targetAnchor(target, null);
-        if (anchor == null || !naturalMoveAndClick(anchor, true))
+        if (anchor == null || !naturalMoveAndClick(target, anchor, true))
         {
             nextHumanizerMistakeAt = scheduleFromNow(System.currentTimeMillis(),
                     HUMANIZER_MISTAKE_MIN_INTERVAL_MS, HUMANIZER_MISTAKE_MAX_INTERVAL_MS);
@@ -2258,7 +2308,7 @@ public class BlackjackScript extends Script
             {
                 return false;
             }
-            MenuEntry[] entries = Microbot.getClient().getMenuEntries();
+            MenuEntry[] entries = Microbot.getClient().getMenu().getMenuEntries();
             if (entries == null)
             {
                 return false;
