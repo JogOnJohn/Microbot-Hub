@@ -471,7 +471,7 @@ public class NmzScript extends Script {
                 Rs2Antiban.actionCooldown();
             }
 
-            switchToTab(InterfaceTab.PRAYER, "post-self-harm rapid heal readiness");
+            returnToPrayerTabIfSetupComplete("post-self-harm rapid heal readiness");
             Rs2Antiban.moveMouseOffScreen(80);
 
             if (currentHP == 1) {
@@ -479,7 +479,7 @@ public class NmzScript extends Script {
             }
         }
 
-        if (config.randomlyTriggerRapidHeal()) {
+        if (config.randomlyTriggerRapidHeal() && !isInitialInventorySetupPending()) {
             randomlyToggleRapidHeal();
         }
     }
@@ -504,7 +504,7 @@ public class NmzScript extends Script {
             if (!switchToTab(InterfaceTab.INVENTORY, "overload potion")) return;
             Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("overload"), "drink");
             sleep(10000);
-            switchToTab(InterfaceTab.PRAYER, "post-overload prayer readiness");
+            returnToPrayerTabIfSetupComplete("post-overload prayer readiness");
         }
     }
 
@@ -517,8 +517,29 @@ public class NmzScript extends Script {
                 sleep(600, 1000);
             }
             minAbsorption = Rs2Random.between(100, 300);
-            switchToTab(InterfaceTab.PRAYER, "post-absorption prayer readiness");
+            returnToPrayerTabIfSetupComplete("post-absorption prayer readiness");
         }
+    }
+
+    private boolean isInitialInventorySetupPending() {
+        if (config.togglePrayerPotions()) return false;
+
+        int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        boolean overloadPending = useOverload && Rs2Inventory.hasItem("overload") && hitpoints > 50;
+        boolean selfHarmPending = hitpoints > 1
+                && (Rs2Inventory.hasItem(ItemID.DS2_ORB)
+                || Rs2Inventory.hasItem(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE));
+        boolean absorptionPending = Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS) < minAbsorption
+                && Rs2Inventory.hasItem("absorption");
+        return overloadPending || selfHarmPending || absorptionPending;
+    }
+
+    private void returnToPrayerTabIfSetupComplete(String reason) {
+        if (isInitialInventorySetupPending()) {
+            updateOverlayState("Initial inventory setup", "Finish overload, absorption and self-damage");
+            return;
+        }
+        switchToTab(InterfaceTab.PRAYER, reason);
     }
 
     private void updateOverlayState(String state, String nextAction) {
@@ -601,9 +622,13 @@ public class NmzScript extends Script {
         int overloadAmt = Microbot.getVarbitValue(VarbitID.NZONE_POTION_3);
         int absorptionAmt = Microbot.getVarbitValue(VarbitID.NZONE_POTION_4);
 
-        // Varbits are in doses; config is in 4-dose potions
-        int overloadDosesNeeded = Math.max(0, config.overloadPotionAmount() * 4 - overloadAmt);
-        int absorptionDosesNeeded = Math.max(0, config.absorptionPotionAmount() * 4 - absorptionAmt);
+        // Varbits are in doses; config is in 4-dose potions. Keep the reserve at
+        // approximately one overload for every three absorptions so a restock
+        // cannot consume all available points on overloads alone.
+        int overloadTarget = config.overloadPotionAmount();
+        int absorptionTarget = Math.max(config.absorptionPotionAmount(), overloadTarget * 3);
+        int overloadDosesNeeded = Math.max(0, overloadTarget * 4 - overloadAmt);
+        int absorptionDosesNeeded = Math.max(0, absorptionTarget * 4 - absorptionAmt);
 
         if (overloadDosesNeeded == 0 && absorptionDosesNeeded == 0) return;
 
@@ -644,19 +669,36 @@ public class NmzScript extends Script {
             }, 3000);
         }
 
-        for (int i = 0; i < overloadToBuy; i++) {
-            Widget nmzRewardShop = Rs2Widget.getWidget(206, 6);
-            if (nmzRewardShop == null) break;
-            Rs2Widget.clickWidgetFast(nmzRewardShop.getChild(6), 6, 4);
-            sleep(600, 1000);
-        }
+        Microbot.log("NMZ restock: buying overload=" + overloadToBuy
+                + " absorption=" + absorptionToBuy
+                + " (target ratio 1:3, cost=" + totalCost + ")");
 
-        for (int i = 0; i < absorptionToBuy; i++) {
-            Widget nmzRewardShop = Rs2Widget.getWidget(206, 6);
-            if (nmzRewardShop == null) break;
-            Rs2Widget.clickWidgetFast(nmzRewardShop.getChild(9), 9, 4);
-            sleep(600, 1000);
+        // Buy absorptions first in each batch. If the interface closes or the
+        // action is interrupted, the reserve cannot be left overload-heavy.
+        while (overloadToBuy > 0 || absorptionToBuy > 0) {
+            for (int i = 0; i < 3 && absorptionToBuy > 0; i++) {
+                if (!buyRewardPotion(9, 9)) return;
+                absorptionToBuy--;
+            }
+            if (overloadToBuy > 0) {
+                if (!buyRewardPotion(6, 6)) return;
+                overloadToBuy--;
+            }
+            if (overloadToBuy == 0) {
+                while (absorptionToBuy > 0) {
+                    if (!buyRewardPotion(9, 9)) return;
+                    absorptionToBuy--;
+                }
+            }
         }
+    }
+
+    private boolean buyRewardPotion(int childIndex, int actionIndex) {
+        Widget nmzRewardShop = Rs2Widget.getWidget(206, 6);
+        if (nmzRewardShop == null || nmzRewardShop.getChild(childIndex) == null) return false;
+        Rs2Widget.clickWidgetFast(nmzRewardShop.getChild(childIndex), actionIndex, 4);
+        sleep(600, 1000);
+        return true;
     }
 
 }
