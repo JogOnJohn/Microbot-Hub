@@ -23,6 +23,7 @@ import net.runelite.client.plugins.microbot.util.antiban.enums.ActivityIntensity
 import net.runelite.client.plugins.microbot.util.antiban.enums.PlayStyle;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
+import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.math.Rs2Random;
@@ -57,6 +58,8 @@ public class NmzScript extends Script {
     private boolean initialized = false;
     private long lastCombatTime = 0;
     private boolean specialAttemptedForCurrentSurge;
+    private boolean specialActionInFlight;
+    private long nextSpecialAttemptAt;
 
     @Inject
     private Rs2TileObjectCache tileObjectCache;
@@ -259,38 +262,54 @@ public class NmzScript extends Script {
     private void useManualSpecialAfterSurge() {
         if (!hasSurge) {
             specialAttemptedForCurrentSurge = false;
+            specialActionInFlight = false;
+            nextSpecialAttemptAt = 0;
             return;
         }
-        if (specialAttemptedForCurrentSurge || prayerPotionScript.isActionInFlight()) return;
-        if (!config.useSpecWeapon() || config.specWeapon() == null || config.specWeapon().trim().isEmpty()) return;
-        if (prayerPotionScript.isPrayerRestoreDue() && !shouldUseAncientMaceForLowPrayer()) return;
-        specialAttemptedForCurrentSurge = true;
+        if (specialAttemptedForCurrentSurge || specialActionInFlight || prayerPotionScript.isActionInFlight()
+                || System.currentTimeMillis() < nextSpecialAttemptAt) return;
+        if (!config.useAncientMace()
+                && (!config.useSpecWeapon() || config.specWeapon() == null || config.specWeapon().trim().isEmpty())) return;
         SpecialAttackWeaponEnum weapon = resolveConfiguredSpecialWeapon();
-        if (weapon == null) return;
-        if (!Rs2Inventory.hasItem(weapon.getName()) && !net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment.isWearing(weapon.getName())) {
-            Microbot.log("NMZ special: configured weapon unavailable: " + weapon.getName());
+        if (weapon == null) {
+            specialAttemptedForCurrentSurge = true;
             return;
         }
-        Microbot.getSpecialAttackConfigs()
-                .setSpecialAttack(true)
-                .setSpecialAttackWeapon(weapon)
-                .setMinimumSpecEnergy(weapon.getEnergyRequired());
-        boolean initiated = Microbot.getSpecialAttackConfigs().useSpecWeapon();
-        Microbot.log("NMZ special: " + weapon.getName() + (initiated ? " initiated" : " unavailable or not acknowledged"));
+        if (!Rs2Inventory.hasItem(weapon.getName()) && !Rs2Equipment.isWearing(weapon.getName())) {
+            Microbot.log("NMZ special: configured weapon unavailable: " + weapon.getName());
+            specialAttemptedForCurrentSurge = true;
+            return;
+        }
+        int specialEnergy = Rs2Combat.getSpecEnergy();
+        if (specialEnergy < 1000) return;
+
+        specialActionInFlight = true;
+        if (!Rs2Equipment.isWearing(weapon.getName())) {
+            Microbot.log("NMZ special: equipping " + weapon.getName() + " at 100% energy");
+            boolean equipRequested = Rs2Inventory.wear(weapon.getName());
+            boolean equipped = equipRequested && sleepUntil(() -> Rs2Equipment.isWearing(weapon.getName()), 3000);
+            if (!equipped) {
+                Microbot.log("NMZ special: equip not acknowledged for " + weapon.getName());
+                specialActionInFlight = false;
+                nextSpecialAttemptAt = System.currentTimeMillis() + 3000;
+                return;
+            }
+        }
+
+        boolean armed = Rs2Combat.setSpecState(true, 1000);
+        if (armed) {
+            specialAttemptedForCurrentSurge = true;
+            Microbot.log("NMZ special: armed " + weapon.getName() + " once at 100% energy");
+        } else {
+            Microbot.log("NMZ special: could not arm " + weapon.getName() + "; delaying retry");
+            nextSpecialAttemptAt = System.currentTimeMillis() + 3000;
+        }
+        specialActionInFlight = false;
     }
 
     private SpecialAttackWeaponEnum resolveConfiguredSpecialWeapon() {
-        if (shouldUseAncientMaceForLowPrayer()) {
-            SpecialAttackWeaponEnum ancientMace = SpecialAttackWeaponEnum.ANCIENT_MACE;
-            if (Rs2Inventory.hasItem(ancientMace.getName()) || net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment.isWearing(ancientMace.getName())) return ancientMace;
-            Microbot.log("NMZ special: Ancient mace requested for low prayer but unavailable");
-        }
+        if (config.useAncientMace()) return SpecialAttackWeaponEnum.ANCIENT_MACE;
         return findSpecialWeapon(config.specWeapon());
-    }
-
-    private boolean shouldUseAncientMaceForLowPrayer() {
-        return config.useAncientMaceForLowPrayer()
-                && Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER) < 20;
     }
 
     private SpecialAttackWeaponEnum findSpecialWeapon(String configuredName) {
@@ -359,9 +378,13 @@ public class NmzScript extends Script {
 
     public void randomlyToggleRapidHeal() {
         if (Rs2Random.between(1, 50) == 2) {
-            Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, true);
+            int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+            int prayer = Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER);
+            Microbot.log("NMZ rapid heal: trigger at hp=" + hitpoints + " prayer=" + prayer);
+            boolean enabled = Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, true);
             sleep(300, 600);
-            Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, false);
+            boolean disabled = Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, false);
+            Microbot.log("NMZ rapid heal: " + (enabled && disabled ? "cycle acknowledged" : "cycle not acknowledged"));
         }
     }
 

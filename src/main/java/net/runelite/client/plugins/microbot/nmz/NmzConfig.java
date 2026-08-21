@@ -133,13 +133,13 @@ public interface NmzConfig extends Config {
     default String specWeapon() { return ""; }
 
     @ConfigItem(
-            keyName = "Use ancient mace for low prayer",
-            name = "Use ancient mace for low prayer",
-            description = "When prayer is below 20 points, prefer Ancient mace over the configured weapon, including during Power Surge.",
+            keyName = "Use ancient mace",
+            name = "Use ancient mace",
+            description = "Always use Ancient mace as the Power Surge special weapon instead of the user-defined weapon.",
             position = 7,
             section = generalSection
     )
-    default boolean useAncientMaceForLowPrayer() { return false; }
+    default boolean useAncientMace() { return false; }
 
     @ConfigItem(
             keyName = "Auto Prayer Potion",
