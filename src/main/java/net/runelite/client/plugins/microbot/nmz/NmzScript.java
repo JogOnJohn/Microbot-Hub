@@ -67,6 +67,21 @@ public class NmzScript extends Script {
     private long nextSpecialAttemptAt;
     private String mainWeaponBeforeSpecial;
     private String offhandBeforeSpecial;
+    @Getter
+    private volatile String overlayState = "Starting";
+    @Getter
+    private volatile String overlayNextAction = "Initialize NMZ controller";
+    @Getter
+    private volatile String overlayLastAction = "None";
+    @Getter
+    private volatile String overlayPowerUp = "None";
+    @Getter
+    private volatile String overlaySpecial = "Inactive";
+    @Getter
+    private volatile long overlayActionGeneration;
+    @Getter
+    private volatile long overlayStateChangedAt = System.currentTimeMillis();
+    private volatile long overlayStateHoldUntil;
 
     @Inject
     private Rs2TileObjectCache tileObjectCache;
@@ -107,6 +122,7 @@ public class NmzScript extends Script {
             try {
                 if (!Microbot.isLoggedIn()) return;
                 if (!initialized) {
+                    updateOverlayState("Initializing", "Detect NMZ location and setup");
                     initialized = true;
                     // Skip inventory setup and lobby walk if already inside the NMZ instance
                     boolean isInNmzInstance = Microbot.getClientThread().runOnClientThreadOptional(() ->
@@ -137,6 +153,7 @@ public class NmzScript extends Script {
                 boolean isOutsideNmz = isOutside();
                 useOverload = Microbot.getClient().getBoostedSkillLevel(Skill.RANGED) == Microbot.getClient().getRealSkillLevel(Skill.RANGED) && config.overloadPotionAmount() > 0;
                 if (isOutsideNmz) {
+                    updateOverlayState("NMZ lobby", "Prepare supplies or enter dream");
                     Rs2Walker.setTarget(null);
                     handleOutsideNmz();
                 } else {
@@ -190,6 +207,7 @@ public class NmzScript extends Script {
     }
 
     public void handleInsideNmz() {
+        updateOverlayIdle("Evaluate combat, power-ups and supplies");
         if (Rs2Player.isInCombat()) {
             lastCombatTime = System.currentTimeMillis();
         }
@@ -197,6 +215,7 @@ public class NmzScript extends Script {
         if (!Rs2Player.isInCombat() && System.currentTimeMillis() - lastCombatTime > 20000) {
             Rs2NpcModel closestNpc = npcCache.query().nearest();
             if (closestNpc != null) {
+                updateOverlayAction("Attack " + closestNpc.getName(), "Wait for combat", 2500);
                 if (closestNpc.click("Attack")) {
                     Rs2Antiban.actionCooldown();
                 }
@@ -216,6 +235,7 @@ public class NmzScript extends Script {
 
     private void walkToCenter() {
         if (center.distanceTo(Rs2Player.getWorldLocation()) > 4) {
+            updateOverlayAction("Walk to NMZ center", "Resume combat", 2500);
             Rs2Walker.walkTo(center, 6);
         }
     }
@@ -245,6 +265,8 @@ public class NmzScript extends Script {
     public boolean interactWithObject(int objectId) {
         Rs2TileObjectModel obj = tileObjectCache.query().withId(objectId).nearest();
         if (obj != null) {
+            overlayPowerUp = obj.getName() == null ? String.valueOf(objectId) : obj.getName();
+            updateOverlayAction("Activate " + overlayPowerUp, "Confirm power-up despawn", 4000);
             WorldPoint playerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
             if (playerLoc != null && playerLoc.distanceTo(obj.getWorldLocation()) >= 15) {
                 Rs2Walker.walkFastLocal(obj.getLocalLocation());
@@ -260,6 +282,7 @@ public class NmzScript extends Script {
             // The despawn is the only common acknowledgement for all three power-ups.
             boolean acknowledged = sleepUntil(() -> tileObjectCache.query().withId(objectId).nearest() == null, 3000);
             Microbot.log("NMZ power-up: object " + objectId + (acknowledged ? " activated" : " activation timed out"));
+            overlayPowerUp += acknowledged ? " (activated)" : " (timed out)";
             if (acknowledged) Rs2Antiban.actionCooldown();
             return acknowledged;
         }
@@ -280,6 +303,7 @@ public class NmzScript extends Script {
             nextSpecialAttemptAt = 0;
             mainWeaponBeforeSpecial = null;
             offhandBeforeSpecial = null;
+            overlaySpecial = "Waiting for Power Surge";
             return;
         }
         if (specialAttemptedForCurrentSurge || specialActionInFlight || prayerPotionScript.isActionInFlight()
@@ -297,7 +321,10 @@ public class NmzScript extends Script {
             return;
         }
         int specialEnergy = Rs2Combat.getSpecEnergy();
-        if (specialEnergy < 1000) return;
+        if (specialEnergy < 1000) {
+            overlaySpecial = weapon.getName() + " waiting at " + (specialEnergy / 10) + "%";
+            return;
+        }
 
         specialActionInFlight = true;
         snapshotMainEquipment();
@@ -307,6 +334,8 @@ public class NmzScript extends Script {
             return;
         }
         if (!Rs2Equipment.isWearing(weapon.getName())) {
+            overlaySpecial = "Equipping " + weapon.getName();
+            updateOverlayAction("Equip " + weapon.getName(), "Verify equipment", 3500);
             Microbot.log("NMZ special: equipping " + weapon.getName() + " at 100% energy");
             boolean equipRequested = Rs2Inventory.wear(weapon.getName());
             boolean equipped = equipRequested && sleepUntil(() -> Rs2Equipment.isWearing(weapon.getName()), 3000);
@@ -326,6 +355,8 @@ public class NmzScript extends Script {
         boolean armed = Rs2Combat.setSpecState(true, 1000);
         if (armed) {
             specialAwaitingConsumption = true;
+            overlaySpecial = weapon.getName() + " armed; awaiting attack";
+            updateOverlayAction("Arm " + weapon.getName() + " special", "Wait for special attack", 3000);
             Microbot.log("NMZ special: armed " + weapon.getName() + " once at 100% energy");
         } else {
             Microbot.log("NMZ special: could not arm " + weapon.getName() + "; delaying retry");
@@ -349,12 +380,15 @@ public class NmzScript extends Script {
     }
 
     private void restoreMainEquipment() {
+        overlaySpecial = "Restoring combat equipment";
+        updateOverlayAction("Restore main equipment", "Verify weapon and off-hand", 4000);
         switchToTab(InterfaceTab.INVENTORY, "restore equipment");
         boolean mainRestored = restoreEquipmentItem(mainWeaponBeforeSpecial);
         boolean offhandRestored = restoreEquipmentItem(offhandBeforeSpecial);
         Microbot.log("NMZ special: restore " + (mainRestored && offhandRestored ? "acknowledged" : "incomplete")
                 + " main=" + valueOrNone(mainWeaponBeforeSpecial) + " offhand=" + valueOrNone(offhandBeforeSpecial));
         switchToTab(InterfaceTab.PRAYER, "post-special prayer readiness");
+        overlaySpecial = mainRestored && offhandRestored ? "Combat equipment restored" : "Equipment restore incomplete";
     }
 
     private boolean restoreEquipmentItem(String itemName) {
@@ -426,10 +460,12 @@ public class NmzScript extends Script {
             maxHealth = 1;
 
             if (Rs2Inventory.hasItem(ItemID.DS2_ORB)) {
+                updateOverlayAction("Use locator orb", "Check hitpoints", 1500);
                 switchToTab(InterfaceTab.INVENTORY, "locator orb");
                 Rs2Inventory.interact(ItemID.DS2_ORB, "feel");
                 Rs2Antiban.actionCooldown();
             } else if (Rs2Inventory.hasItem(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE)) {
+                updateOverlayAction("Guzzle rock cake", "Return to Prayer tab", 1500);
                 switchToTab(InterfaceTab.INVENTORY, "rock cake");
                 Rs2Inventory.interact(ItemID.HUNDRED_DWARF_COOL_ROCKCAKE, "guzzle");
                 Rs2Antiban.actionCooldown();
@@ -453,6 +489,7 @@ public class NmzScript extends Script {
             int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
             int prayer = Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER);
             Microbot.log("NMZ rapid heal: trigger at hp=" + hitpoints + " prayer=" + prayer);
+            updateOverlayAction("Click Rapid Heal on/off", "Wait for next random trigger", 2000);
             boolean prayerTabOpen = switchToTab(InterfaceTab.PRAYER, "rapid heal");
             boolean enabled = prayerTabOpen && Rs2Prayer.toggle(Rs2PrayerEnum.RAPID_HEAL, true, true);
             sleep(300, 600);
@@ -463,6 +500,7 @@ public class NmzScript extends Script {
 
     public void useOverloadPotion() {
         if (useOverload && Rs2Inventory.hasItem("overload") && Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS) > 50) {
+            updateOverlayAction("Drink overload", "Wait for overload effect", 10500);
             if (!switchToTab(InterfaceTab.INVENTORY, "overload potion")) return;
             Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("overload"), "drink");
             sleep(10000);
@@ -472,6 +510,7 @@ public class NmzScript extends Script {
 
     public void useAbsorptionPotion() {
         if (Microbot.getVarbitValue(VarbitID.NZONE_ABSORB_POTION_EFFECTS) < minAbsorption && Rs2Inventory.hasItem("absorption")) {
+            updateOverlayAction("Drink absorption potions", "Reach absorption target", 6000);
             if (!switchToTab(InterfaceTab.INVENTORY, "absorption potion")) return;
             for (int i = 0; i < Rs2Random.between(4, 8); i++) {
                 Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("absorption"), "drink");
@@ -480,6 +519,28 @@ public class NmzScript extends Script {
             minAbsorption = Rs2Random.between(100, 300);
             switchToTab(InterfaceTab.PRAYER, "post-absorption prayer readiness");
         }
+    }
+
+    private void updateOverlayState(String state, String nextAction) {
+        if (System.currentTimeMillis() < overlayStateHoldUntil) return;
+        if (!state.equals(overlayState) || !nextAction.equals(overlayNextAction)) {
+            overlayState = state;
+            overlayNextAction = nextAction;
+            overlayStateChangedAt = System.currentTimeMillis();
+        }
+    }
+
+    private void updateOverlayIdle(String nextAction) {
+        updateOverlayState("Idle - waiting for next action", nextAction);
+    }
+
+    private void updateOverlayAction(String action, String nextAction, long holdMillis) {
+        overlayActionGeneration++;
+        overlayLastAction = action;
+        overlayState = action;
+        overlayNextAction = nextAction;
+        overlayStateChangedAt = System.currentTimeMillis();
+        overlayStateHoldUntil = System.currentTimeMillis() + holdMillis;
     }
 
     private void storePotions(int objectId, String itemName, int requiredAmount) {
