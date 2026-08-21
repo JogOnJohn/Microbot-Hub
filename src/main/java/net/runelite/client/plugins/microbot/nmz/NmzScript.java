@@ -31,10 +31,12 @@ import net.runelite.client.plugins.microbot.util.prayer.Rs2Prayer;
 import net.runelite.client.plugins.microbot.util.prayer.Rs2PrayerEnum;
 import net.runelite.client.plugins.microbot.util.security.Encryption;
 import net.runelite.client.plugins.microbot.util.security.LoginManager;
+import net.runelite.client.plugins.microbot.util.misc.SpecialAttackWeaponEnum;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import javax.inject.Inject;
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
 public class NmzScript extends Script {
@@ -43,8 +45,6 @@ public class NmzScript extends Script {
     private NmzPlugin plugin;
 
     public static boolean useOverload = false;
-
-    public static PrayerPotionScript prayerPotionScript;
 
     public static int maxHealth = Rs2Random.between(2, 8);
     public static int minAbsorption = Rs2Random.between(100, 300);
@@ -56,11 +56,14 @@ public class NmzScript extends Script {
     private static boolean hasSurge = false;
     private boolean initialized = false;
     private long lastCombatTime = 0;
+    private boolean specialAttemptedForCurrentSurge;
 
     @Inject
     private Rs2TileObjectCache tileObjectCache;
     @Inject
     private Rs2NpcCache npcCache;
+    @Inject
+    private PrayerPotionScript prayerPotionScript;
 
     public boolean canStartNmz() {
         return Rs2Inventory.count("overload (4)") == config.overloadPotionAmount() ||
@@ -75,8 +78,6 @@ public class NmzScript extends Script {
 
 
     public boolean run() {
-        prayerPotionScript = new PrayerPotionScript();
-        Microbot.getSpecialAttackConfigs().setSpecialAttack(true);
         Rs2Antiban.resetAntibanSettings();
         Rs2Antiban.setActivity(Activity.GENERAL_COMBAT);
         Rs2Antiban.setActivityIntensity(ActivityIntensity.LOW);
@@ -185,10 +186,11 @@ public class NmzScript extends Script {
                 }
             }
         }
-        prayerPotionScript.run();
         if (config.togglePrayerPotions())
             Rs2Prayer.toggle(Rs2PrayerEnum.PROTECT_MELEE, true);
-        if (!useOrbs() && config.walkToCenter()) {
+        boolean usedPowerUp = useOrbs();
+        useManualSpecialAfterSurge();
+        if (!usedPowerUp && config.walkToCenter()) {
             walkToCenter();
         }
         useOverloadPotion();
@@ -219,25 +221,14 @@ public class NmzScript extends Script {
     }
 
     public boolean useOrbs() {
-        boolean orbHasSpawned = false;
-        if (config.useZapper()) {
-            orbHasSpawned = interactWithObject(ObjectID.NZONE_POWERUP_ZAPPER);
-        }
-        if (config.useReccurentDamage()) {
-            orbHasSpawned = interactWithObject(ObjectID.NZONE_POWERUP_DAMAGEMULTIPLIER);
-        }
-
-        if (config.usePowerSurge()) {
-            orbHasSpawned = interactWithObject(ObjectID.NZONE_POWERUP_SPECIALATTACK);
-        }
-
-        return orbHasSpawned;
+        if (config.useZapper() && interactWithObject(ObjectID.NZONE_POWERUP_ZAPPER)) return true;
+        if (config.useReccurentDamage() && interactWithObject(ObjectID.NZONE_POWERUP_DAMAGEMULTIPLIER)) return true;
+        return config.usePowerSurge() && interactWithObject(ObjectID.NZONE_POWERUP_SPECIALATTACK);
     }
 
     public boolean interactWithObject(int objectId) {
         Rs2TileObjectModel obj = tileObjectCache.query().withId(objectId).nearest();
         if (obj != null) {
-            sleep(1000, 15000);
             WorldPoint playerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
             if (playerLoc != null && playerLoc.distanceTo(obj.getWorldLocation()) >= 15) {
                 Rs2Walker.walkFastLocal(obj.getLocalLocation());
@@ -246,12 +237,55 @@ public class NmzScript extends Script {
                     return loc != null && loc.distanceTo(obj.getWorldLocation()) < 15;
                 }, 10000);
             }
-            obj.click();
-            // Wait for the power-up to despawn to prevent repeated clicks on the same orb
-            sleepUntil(() -> tileObjectCache.query().withId(objectId).nearest() == null, 3000);
-            return true;
+            if (!obj.click("Activate")) {
+                Microbot.log("NMZ power-up: could not activate object " + objectId);
+                return false;
+            }
+            // The despawn is the only common acknowledgement for all three power-ups.
+            boolean acknowledged = sleepUntil(() -> tileObjectCache.query().withId(objectId).nearest() == null, 3000);
+            Microbot.log("NMZ power-up: object " + objectId + (acknowledged ? " activated" : " activation timed out"));
+            if (acknowledged) Rs2Antiban.actionCooldown();
+            return acknowledged;
         }
         return false;
+    }
+
+    private void useManualSpecialAfterSurge() {
+        if (!hasSurge) {
+            specialAttemptedForCurrentSurge = false;
+            return;
+        }
+        if (specialAttemptedForCurrentSurge || prayerPotionScript.isPrayerRestoreDue() || prayerPotionScript.isActionInFlight()) return;
+        specialAttemptedForCurrentSurge = true;
+        SpecialAttackWeaponEnum weapon = resolveConfiguredSpecialWeapon();
+        if (weapon == null) return;
+        if (!Rs2Inventory.hasItem(weapon.getName()) && !net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment.isWearing(weapon.getName())) {
+            Microbot.log("NMZ special: configured weapon unavailable: " + weapon.getName());
+            return;
+        }
+        Microbot.getSpecialAttackConfigs()
+                .setSpecialAttack(true)
+                .setSpecialAttackWeapon(weapon)
+                .setMinimumSpecEnergy(weapon.getEnergyRequired());
+        boolean initiated = Microbot.getSpecialAttackConfigs().useSpecWeapon();
+        Microbot.log("NMZ special: " + weapon.getName() + (initiated ? " initiated" : " unavailable or not acknowledged"));
+    }
+
+    private SpecialAttackWeaponEnum resolveConfiguredSpecialWeapon() {
+        SpecialAttackWeaponEnum primary = findSpecialWeapon(config.primarySpecWeapon());
+        if (primary != null && (Rs2Inventory.hasItem(primary.getName()) || net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment.isWearing(primary.getName()))) return primary;
+        return findSpecialWeapon(config.secondSpecWeapon());
+    }
+
+    private SpecialAttackWeaponEnum findSpecialWeapon(String configuredName) {
+        if (configuredName == null || configuredName.trim().isEmpty()) return null;
+        return Arrays.stream(SpecialAttackWeaponEnum.values())
+                .filter(weapon -> weapon.getName().equalsIgnoreCase(configuredName.trim()))
+                .findFirst()
+                .orElseGet(() -> {
+                    Microbot.log("NMZ special: unsupported weapon '" + configuredName + "'");
+                    return null;
+                });
     }
 
     private void fetchOverloadPotions(int objectId, String itemName, int requiredAmount) {
