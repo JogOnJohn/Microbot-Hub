@@ -72,7 +72,10 @@ public class NmzScript extends Script {
     private boolean initialized = false;
     private RumblePreparationPhase rumblePreparationPhase = RumblePreparationPhase.WAITING_FOR_ENTRY;
     private boolean wasOutsideNmz = true;
+    private boolean observedLobbySinceStart;
+    private boolean preparationEnteredFromLobby;
     private int initialAbsorptionTarget;
+    private long nextLobbyVialLogAt;
     private long lastCombatTime = 0;
     private boolean specialAttemptedForCurrentSurge;
     private boolean specialActionInFlight;
@@ -168,13 +171,14 @@ public class NmzScript extends Script {
                 useOverload = Microbot.getClient().getBoostedSkillLevel(Skill.RANGED) == Microbot.getClient().getRealSkillLevel(Skill.RANGED) && config.overloadPotionAmount() > 0;
                 if (isOutsideNmz) {
                     wasOutsideNmz = true;
+                    observedLobbySinceStart = true;
                     rumblePreparationPhase = RumblePreparationPhase.WAITING_FOR_ENTRY;
                     updateOverlayState("NMZ lobby", "Prepare supplies or enter dream");
                     Rs2Walker.setTarget(null);
                     handleOutsideNmz();
                 } else {
                     if (wasOutsideNmz || rumblePreparationPhase == RumblePreparationPhase.WAITING_FOR_ENTRY) {
-                        beginRumblePreparation();
+                        beginRumblePreparation(wasOutsideNmz && observedLobbySinceStart);
                     }
                     wasOutsideNmz = false;
                     handleInsideNmz();
@@ -193,6 +197,8 @@ public class NmzScript extends Script {
         Rs2Antiban.resetAntibanSettings();
         initialized = false;
         wasOutsideNmz = true;
+        observedLobbySinceStart = false;
+        preparationEnteredFromLobby = false;
         rumblePreparationPhase = RumblePreparationPhase.WAITING_FOR_ENTRY;
     }
 
@@ -286,15 +292,17 @@ public class NmzScript extends Script {
         return config.usePowerSurge() && interactWithObject(ObjectID.NZONE_POWERUP_SPECIALATTACK);
     }
 
-    private void beginRumblePreparation() {
+    private void beginRumblePreparation(boolean enteredFromLobby) {
         if (config.togglePrayerPotions()) {
             rumblePreparationPhase = RumblePreparationPhase.COMPLETE;
             return;
         }
+        preparationEnteredFromLobby = enteredFromLobby;
         initialAbsorptionTarget = Rs2Random.between(200, 300);
         rumblePreparationPhase = RumblePreparationPhase.ABSORPTION;
         maxHealth = 1;
-        Microbot.log("NMZ preparation: new rumble, absorption target=" + initialAbsorptionTarget);
+        Microbot.log("NMZ preparation: " + (enteredFromLobby ? "lobby entry" : "mid-rumble startup")
+                + ", absorption target=" + initialAbsorptionTarget);
         updateOverlayAction("Initial preparation", "Drink absorption potions", 1000);
     }
 
@@ -312,7 +320,7 @@ public class NmzScript extends Script {
                 prepareInitialRockCake();
                 return true;
             case WAITING_FOR_ENTRY:
-                beginRumblePreparation();
+                beginRumblePreparation(false);
                 return true;
             default:
                 return false;
@@ -349,9 +357,10 @@ public class NmzScript extends Script {
             rumblePreparationPhase = RumblePreparationPhase.ROCK_CAKE;
             return;
         }
-        if (Microbot.getClient().getBoostedSkillLevel(Skill.RANGED)
+        if (!preparationEnteredFromLobby
+                && Microbot.getClient().getBoostedSkillLevel(Skill.RANGED)
                 > Microbot.getClient().getRealSkillLevel(Skill.RANGED)) {
-            Microbot.log("NMZ preparation: overload boost already active; continuing to self-damage");
+            Microbot.log("NMZ preparation: mid-rumble overload boost already active; continuing to self-damage");
             rumblePreparationPhase = RumblePreparationPhase.ROCK_CAKE;
             return;
         }
@@ -791,20 +800,40 @@ public class NmzScript extends Script {
     }
 
     public void consumeEmptyVial() {
-        if (Microbot.getClientThread().runOnClientThreadOptional(() ->
-                Rs2Widget.getWidget(129, 6) == null || Rs2Widget.getWidget(129, 6).isHidden())
-                .orElse(false)) {
+        boolean confirmationHidden = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Widget confirmation = Rs2Widget.getWidget(129, 6);
+            return confirmation == null || confirmation.isHidden();
+        }).orElse(true);
+        if (confirmationHidden) {
             Rs2TileObjectModel vial = tileObjectCache.query().withId(ObjectID.NZONE_LOBBY_VIAL).nearest();
-            if (vial != null) vial.click("drink");
+            if (vial == null || !vial.click("drink")) {
+                updateOverlayState("NMZ lobby", "Wait for dream potion to become drinkable");
+                logLobbyVialRetry("drink action unavailable; retrying after interface settles");
+                sleep(2000, 4000);
+                return;
+            }
+            nextLobbyVialLogAt = 0;
         }
         sleep(2000, 4000);
         Widget widget = Rs2Widget.getWidget(129, 6);
-        if (!Microbot.getClientThread().runOnClientThreadOptional(widget::isHidden).orElse(false)) {
+        if (widget == null) {
+            updateOverlayState("NMZ lobby", "Wait for dream confirmation");
+            logLobbyVialRetry("confirmation widget not available; retrying");
+            return;
+        }
+        if (!Microbot.getClientThread().runOnClientThreadOptional(widget::isHidden).orElse(true)) {
             Rs2Widget.clickWidget(widget.getId());
             sleep(300);
             Rs2Widget.clickWidget(widget.getId());
         }
         sleep(2000, 4000);
+    }
+
+    private void logLobbyVialRetry(String message) {
+        long now = System.currentTimeMillis();
+        if (now < nextLobbyVialLogAt) return;
+        Microbot.log("NMZ lobby vial: " + message);
+        nextLobbyVialLogAt = now + 10000;
     }
 
     public void handleStore() {
