@@ -48,6 +48,9 @@ import java.util.concurrent.TimeUnit;
 @Singleton
 public class NmzScript extends Script {
 
+    private static final long OVERLOAD_DURATION_MS = 300000;
+    private static final long OVERLOAD_READY_LEAD_MS = 8000;
+
     private enum RumblePreparationPhase {
         WAITING_FOR_ENTRY,
         ABSORPTION,
@@ -76,6 +79,10 @@ public class NmzScript extends Script {
     private boolean preparationEnteredFromLobby;
     private int initialAbsorptionTarget;
     private long nextLobbyVialLogAt;
+    private long nextOverloadExpiryAt;
+    private long nextMaintenanceOverloadAttemptAt;
+    private long nextMaintenanceOverloadLogAt;
+    private boolean maintenanceOverloadPending;
     private long lastCombatTime = 0;
     private boolean specialAttemptedForCurrentSurge;
     private boolean specialActionInFlight;
@@ -165,7 +172,7 @@ public class NmzScript extends Script {
                     }
                 }
                 if (!super.run()) return;
-                if (Rs2AntibanSettings.actionCooldownActive) return;
+                if (Rs2AntibanSettings.actionCooldownActive && !isMaintenanceOverloadWindow()) return;
                 Rs2Combat.setAutoRetaliate(true);
                 boolean isOutsideNmz = isOutside();
                 useOverload = Microbot.getClient().getBoostedSkillLevel(Skill.RANGED) == Microbot.getClient().getRealSkillLevel(Skill.RANGED) && config.overloadPotionAmount() > 0;
@@ -173,6 +180,8 @@ public class NmzScript extends Script {
                     wasOutsideNmz = true;
                     observedLobbySinceStart = true;
                     rumblePreparationPhase = RumblePreparationPhase.WAITING_FOR_ENTRY;
+                    nextOverloadExpiryAt = 0;
+                    maintenanceOverloadPending = false;
                     updateOverlayState("NMZ lobby", "Prepare supplies or enter dream");
                     Rs2Walker.setTarget(null);
                     handleOutsideNmz();
@@ -200,6 +209,8 @@ public class NmzScript extends Script {
         observedLobbySinceStart = false;
         preparationEnteredFromLobby = false;
         rumblePreparationPhase = RumblePreparationPhase.WAITING_FOR_ENTRY;
+        nextOverloadExpiryAt = 0;
+        maintenanceOverloadPending = false;
     }
 
     public boolean isOutside() {
@@ -236,6 +247,7 @@ public class NmzScript extends Script {
 
     public void handleInsideNmz() {
         if (handleRumblePreparation()) return;
+        if (handleMaintenanceOverload()) return;
 
         updateOverlayIdle("Evaluate combat, power-ups and supplies");
         if (Rs2Player.isInCombat()) {
@@ -258,7 +270,6 @@ public class NmzScript extends Script {
         if (!usedPowerUp && config.walkToCenter()) {
             walkToCenter();
         }
-        useOverloadPotion();
         manageSelfHarm();
         useAbsorptionPotion();
     }
@@ -298,6 +309,8 @@ public class NmzScript extends Script {
             return;
         }
         preparationEnteredFromLobby = enteredFromLobby;
+        nextOverloadExpiryAt = 0;
+        maintenanceOverloadPending = false;
         initialAbsorptionTarget = Rs2Random.between(200, 300);
         rumblePreparationPhase = RumblePreparationPhase.ABSORPTION;
         maxHealth = 1;
@@ -368,6 +381,7 @@ public class NmzScript extends Script {
 
         int hitpointsBefore = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
         int rangedBefore = Microbot.getClient().getBoostedSkillLevel(Skill.RANGED);
+        long overloadClickedAt = System.currentTimeMillis();
         if (!Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("overload"), "drink")) {
             Microbot.log("NMZ preparation: overload interaction not acknowledged; retrying");
             return;
@@ -382,6 +396,7 @@ public class NmzScript extends Script {
             Microbot.log("NMZ preparation: overload produced no HP or stat change; retrying");
             return;
         }
+        recordOverloadDose(overloadClickedAt, "initial");
 
         updateOverlayAction("Initial overload damage", "Wait for damage ticks to stop", 7000);
         long deadline = System.currentTimeMillis() + 12000;
@@ -401,6 +416,115 @@ public class NmzScript extends Script {
         }
         Microbot.log("NMZ preparation: overload damage complete at hp=" + lastHitpoints);
         rumblePreparationPhase = RumblePreparationPhase.ROCK_CAKE;
+    }
+
+    private boolean handleMaintenanceOverload() {
+        if (config.togglePrayerPotions()
+                || config.overloadPotionAmount() <= 0
+                || !Rs2Inventory.hasItem("overload")) {
+            maintenanceOverloadPending = false;
+            return false;
+        }
+
+        long now = System.currentTimeMillis();
+        int hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        boolean trackedExpiryApproaching = nextOverloadExpiryAt > 0
+                && now >= nextOverloadExpiryAt - OVERLOAD_READY_LEAD_MS;
+        boolean untrackedOverloadDue = nextOverloadExpiryAt == 0 && useOverload && hitpoints > 50;
+        if (!maintenanceOverloadPending && !trackedExpiryApproaching && !untrackedOverloadDue) return false;
+
+        maintenanceOverloadPending = true;
+        updateOverlayState("Re-overload pending", "Hold Inventory and wait for HP restoration");
+        if (!switchToTab(InterfaceTab.INVENTORY, "maintenance overload readiness")) return true;
+
+        long readinessDeadline = Math.max(now + 3000,
+                nextOverloadExpiryAt > 0 ? nextOverloadExpiryAt + 8000 : now + 8000);
+        while (Microbot.isLoggedIn()
+                && !Thread.currentThread().isInterrupted()
+                && !isOutside()
+                && System.currentTimeMillis() < readinessDeadline) {
+            hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+            boolean statsReset = Microbot.getClient().getBoostedSkillLevel(Skill.RANGED)
+                    <= Microbot.getClient().getRealSkillLevel(Skill.RANGED);
+            boolean expectedExpiryReached = nextOverloadExpiryAt == 0
+                    || System.currentTimeMillis() >= nextOverloadExpiryAt;
+            if (hitpoints > 50 && (statsReset || expectedExpiryReached)) break;
+            sleep(100);
+        }
+
+        hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        if (hitpoints <= 50) {
+            logMaintenanceOverload("waiting for HP above 50; current hp=" + hitpoints);
+            return true;
+        }
+        if (System.currentTimeMillis() < nextMaintenanceOverloadAttemptAt) return true;
+
+        int hitpointsBefore = hitpoints;
+        int rangedBefore = Microbot.getClient().getBoostedSkillLevel(Skill.RANGED);
+        long overloadClickedAt = System.currentTimeMillis();
+        updateOverlayAction("Drink maintenance overload", "Verify dose and damage", 5000);
+        if (!Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("overload"), "drink")) {
+            nextMaintenanceOverloadAttemptAt = System.currentTimeMillis() + 2000;
+            logMaintenanceOverload("drink interaction not acknowledged; retrying");
+            return true;
+        }
+
+        sleepUntil(() -> Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS) < hitpointsBefore
+                || Microbot.getClient().getBoostedSkillLevel(Skill.RANGED) > rangedBefore, 3500);
+        int currentHitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+        boolean acknowledged = currentHitpoints < hitpointsBefore
+                || Microbot.getClient().getBoostedSkillLevel(Skill.RANGED) > rangedBefore;
+        if (!acknowledged) {
+            nextMaintenanceOverloadAttemptAt = System.currentTimeMillis() + 2000;
+            logMaintenanceOverload("dose produced no HP or stat change; retrying");
+            return true;
+        }
+
+        recordOverloadDose(overloadClickedAt, "maintenance");
+        waitForOverloadDamageToStop(currentHitpoints);
+        maintenanceOverloadPending = false;
+        switchToTab(InterfaceTab.PRAYER, "post-maintenance overload readiness");
+        return true;
+    }
+
+    private boolean isMaintenanceOverloadWindow() {
+        return maintenanceOverloadPending
+                || (nextOverloadExpiryAt > 0
+                && System.currentTimeMillis() >= nextOverloadExpiryAt - OVERLOAD_READY_LEAD_MS);
+    }
+
+    private void recordOverloadDose(long consumedAt, String context) {
+        nextOverloadExpiryAt = consumedAt + OVERLOAD_DURATION_MS;
+        nextMaintenanceOverloadAttemptAt = 0;
+        nextMaintenanceOverloadLogAt = 0;
+        Microbot.log("NMZ overload: " + context + " dose acknowledged; next expiry in 300s");
+    }
+
+    private void waitForOverloadDamageToStop(int startingHitpoints) {
+        updateOverlayAction("Maintenance overload damage", "Wait for damage ticks to stop", 7000);
+        long deadline = System.currentTimeMillis() + 12000;
+        long lastDamageAt = System.currentTimeMillis();
+        int lastHitpoints = startingHitpoints;
+        while (Microbot.isLoggedIn()
+                && !Thread.currentThread().isInterrupted()
+                && !isOutside()
+                && System.currentTimeMillis() < deadline
+                && System.currentTimeMillis() - lastDamageAt < 2400) {
+            sleep(200);
+            int observedHitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
+            if (observedHitpoints < lastHitpoints) {
+                lastHitpoints = observedHitpoints;
+                lastDamageAt = System.currentTimeMillis();
+            }
+        }
+        Microbot.log("NMZ overload: maintenance damage complete at hp=" + lastHitpoints);
+    }
+
+    private void logMaintenanceOverload(String message) {
+        long now = System.currentTimeMillis();
+        if (now < nextMaintenanceOverloadLogAt) return;
+        Microbot.log("NMZ overload: " + message);
+        nextMaintenanceOverloadLogAt = now + 10000;
     }
 
     private void prepareInitialRockCake() {
@@ -703,16 +827,6 @@ public class NmzScript extends Script {
             hitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
         }
         Microbot.log("NMZ rapid heal: post-cycle rock cake hp=" + hitpoints + " attempts=" + attempts);
-    }
-
-    public void useOverloadPotion() {
-        if (useOverload && Rs2Inventory.hasItem("overload") && Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS) > 50) {
-            updateOverlayAction("Drink overload", "Wait for overload effect", 10500);
-            if (!switchToTab(InterfaceTab.INVENTORY, "overload potion")) return;
-            Rs2Inventory.interact(x -> x.getName().toLowerCase().contains("overload"), "drink");
-            sleep(10000);
-            returnToPrayerTabIfSetupComplete("post-overload prayer readiness");
-        }
     }
 
     public void useAbsorptionPotion() {
