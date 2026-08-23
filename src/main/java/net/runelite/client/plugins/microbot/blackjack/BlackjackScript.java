@@ -639,17 +639,6 @@ public class BlackjackScript extends Script
                 nextAction = "Hold pre-armed Knock-Out for second pickpocket confirmation";
                 return;
             }
-            boolean confirmedSecondPickpocketComplete = nextKnockoutArmedAt != 0
-                    && picksThisKnockout >= 2
-                    && secondPickpocketInteractionComplete;
-            if (target != null
-                    && knockoutResult == KnockoutResult.SUCCESS
-                    && target.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS
-                    && !confirmedSecondPickpocketComplete)
-            {
-                nextAction = "Hold pre-armed Knock-Out until target stands";
-                return;
-            }
             if (picksThisKnockout >= 2
                     && !secondPickpocketInteractionComplete
                     && !allowSecondPickpocketInteractionFallback(target))
