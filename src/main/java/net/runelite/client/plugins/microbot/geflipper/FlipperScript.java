@@ -392,32 +392,25 @@ public class FlipperScript extends Script {
 
 		// If it's time to set price/quantity
 
-		Widget setPriceWidget = Rs2Widget.findWidget("Set a price for each item:", null, true);
-		Widget setQuantityWidget = Rs2Widget.findWidget("How many do you wish to ", null, false);
-		boolean settingPrice = setPriceWidget != null && Rs2Widget.isWidgetVisible(setPriceWidget.getId());
-		boolean settingQuantity = setQuantityWidget != null && Rs2Widget.isWidgetVisible(setQuantityWidget.getId());
+		Widget chatbox = Rs2Widget.getWidget(InterfaceID.Chatbox.MES_LAYER);
+		if (chatbox == null) return false;
+		Widget copilotAction = Rs2Widget.findWidget("Set price", List.of(chatbox), true);
+		if (copilotAction == null) copilotAction = Rs2Widget.findWidget("Set quantity", List.of(chatbox), true);
+		if (copilotAction == null) return false;
 
-        if (settingPrice || settingQuantity) {
-			Widget chatbox = Rs2Widget.getWidget(InterfaceID.Chatbox.MES_LAYER);
-			Widget copilotAction = chatbox == null ? null : Rs2Widget.findWidget(settingPrice ? "Set price" : "Set quantity", List.of(chatbox), true);
-			if (copilotAction == null) return false;
-
-			log.info("Using Copilot action for chat widget '{}'.", settingPrice ? setPriceWidget.getId() : setQuantityWidget.getId());
-			Rs2Widget.clickWidget(copilotAction);
-			if (!sleepUntil(() -> {
-				Widget input = Rs2Widget.getWidget(InterfaceID.Chatbox.MES_TEXT2);
-				return input != null && input.getText() != null && input.getText().endsWith("*");
-			})) {
-				log.warn("Copilot did not populate the price/quantity input.");
-				return true;
-			}
-			Rs2Keyboard.keyPress(KeyEvent.VK_ENTER);
-			lastActionTime = System.currentTimeMillis();
-			actionCooldown = Rs2Random.randomGaussian(DEFAULT_ACTION_COOLDOWN, ACTION_COOLDOWN_VARIANCE);
+		log.info("Using Copilot action widget '{}'.", copilotAction.getId());
+		Rs2Widget.clickWidget(copilotAction);
+		if (!sleepUntil(() -> {
+			Widget input = Rs2Widget.getWidget(InterfaceID.Chatbox.MES_TEXT2);
+			return input != null && input.getText() != null && input.getText().endsWith("*");
+		})) {
+			log.warn("Copilot did not populate the price/quantity input.");
 			return true;
-        }
-
-		return false;
+		}
+		Rs2Keyboard.keyPress(KeyEvent.VK_ENTER);
+		lastActionTime = System.currentTimeMillis();
+		actionCooldown = Rs2Random.randomGaussian(DEFAULT_ACTION_COOLDOWN, ACTION_COOLDOWN_VARIANCE);
+		return true;
     }
 
     private boolean checkAndClickHighlightedWidgets()
