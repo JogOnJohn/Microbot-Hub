@@ -45,8 +45,6 @@ public class FlipperScript extends Script {
 	private static final int INTERACTION_TIMEOUT_VARIANCE = 11000;
 	private static final int INVENTORY_WAIT_TIMEOUT = 5000;
 	private static final int SCHEDULE_INTERVAL_MS = 600;
-	private static final int KEY_PRESS_DELAY_MIN = 250;
-	private static final int KEY_PRESS_DELAY_MAX = 400;
 
 	private final WorldArea grandExchangeArea = new WorldArea(3136, 3465, 61, 54, 0);
     State state = State.GOING_TO_GE;
@@ -396,13 +394,23 @@ public class FlipperScript extends Script {
 
 		Widget setPriceWidget = Rs2Widget.findWidget("Set a price for each item:", null, true);
 		Widget setQuantityWidget = Rs2Widget.findWidget("How many do you wish to ", null, false);
+		boolean settingPrice = setPriceWidget != null && Rs2Widget.isWidgetVisible(setPriceWidget.getId());
+		boolean settingQuantity = setQuantityWidget != null && Rs2Widget.isWidgetVisible(setQuantityWidget.getId());
 
-        if ((setPriceWidget != null && Rs2Widget.isWidgetVisible(setPriceWidget.getId())) || 
-		(setQuantityWidget != null && Rs2Widget.isWidgetVisible(setQuantityWidget.getId()))) {
-			// 3. Press E then Enter (setting price/quantity)
-			log.info("Found chat widget (price/quantity) '{}'.", setPriceWidget != null ? setPriceWidget.getId() : setQuantityWidget.getId());
-			Rs2Keyboard.keyPress(KeyEvent.VK_E);
-			sleep(KEY_PRESS_DELAY_MIN, KEY_PRESS_DELAY_MAX);
+        if (settingPrice || settingQuantity) {
+			Widget chatbox = Rs2Widget.getWidget(InterfaceID.Chatbox.MES_LAYER);
+			Widget copilotAction = chatbox == null ? null : Rs2Widget.findWidget(settingPrice ? "Set price" : "Set quantity", List.of(chatbox), true);
+			if (copilotAction == null) return false;
+
+			log.info("Using Copilot action for chat widget '{}'.", settingPrice ? setPriceWidget.getId() : setQuantityWidget.getId());
+			Rs2Widget.clickWidget(copilotAction);
+			if (!sleepUntil(() -> {
+				Widget input = Rs2Widget.getWidget(InterfaceID.Chatbox.MES_TEXT2);
+				return input != null && input.getText() != null && input.getText().endsWith("*");
+			})) {
+				log.warn("Copilot did not populate the price/quantity input.");
+				return true;
+			}
 			Rs2Keyboard.keyPress(KeyEvent.VK_ENTER);
 			lastActionTime = System.currentTimeMillis();
 			actionCooldown = Rs2Random.randomGaussian(DEFAULT_ACTION_COOLDOWN, ACTION_COOLDOWN_VARIANCE);
