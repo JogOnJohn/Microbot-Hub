@@ -51,7 +51,7 @@ public class BlackjackScript extends Script
     private static final WorldPoint COMBAT_STAGING_TILE = new WorldPoint(3359, 2995, 0);
     private static final WorldPoint COMBAT_SAFE_TILE = new WorldPoint(3360, 2993, 0);
     private static final WorldPoint WINE_DOOR_INSIDE_TILE = COMBAT_SAFE_TILE;
-    private static final WorldPoint WINE_DOOR_OUTSIDE_TILE = new WorldPoint(3361, 2993, 0);
+    private static final WorldPoint WINE_DOOR_OUTSIDE_TILE = new WorldPoint(3362, 2993, 0);
     private static final WorldPoint WINE_MERCHANT_TILE = new WorldPoint(3359, 2990, 0);
     private static final String WINE_EXIT_OBJECT_NAME = "Curtain";
 
