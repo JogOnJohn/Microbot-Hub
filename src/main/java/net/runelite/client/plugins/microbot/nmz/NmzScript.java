@@ -481,7 +481,7 @@ public class NmzScript extends Script {
         }
 
         recordOverloadDose(overloadClickedAt, "maintenance");
-        waitForOverloadDamageToStop(currentHitpoints);
+        waitForOverloadDamageToStop(hitpointsBefore, currentHitpoints);
         maintenanceOverloadPending = false;
         switchToTab(InterfaceTab.PRAYER, "post-maintenance overload readiness");
         return true;
@@ -500,22 +500,27 @@ public class NmzScript extends Script {
         Microbot.log("NMZ overload: " + context + " dose acknowledged; next expiry in 300s");
     }
 
-    private void waitForOverloadDamageToStop(int startingHitpoints) {
-        updateOverlayAction("Maintenance overload damage", "Wait for damage ticks to stop", 7000);
+    private void waitForOverloadDamageToStop(int hitpointsBeforeDose, int startingHitpoints) {
+        updateOverlayAction("Maintenance overload damage", "Wait for damage ticks to stop", 12000);
         long deadline = System.currentTimeMillis() + 12000;
-        long lastDamageAt = System.currentTimeMillis();
         int lastHitpoints = startingHitpoints;
+        boolean damageStarted = startingHitpoints < hitpointsBeforeDose;
+        long lastDamageAt = damageStarted ? System.currentTimeMillis() : 0;
         while (Microbot.isLoggedIn()
                 && !Thread.currentThread().isInterrupted()
                 && !isOutside()
-                && System.currentTimeMillis() < deadline
-                && System.currentTimeMillis() - lastDamageAt < 2400) {
+                && System.currentTimeMillis() < deadline) {
             sleep(200);
             int observedHitpoints = Microbot.getClient().getBoostedSkillLevel(Skill.HITPOINTS);
             if (observedHitpoints < lastHitpoints) {
                 lastHitpoints = observedHitpoints;
+                damageStarted = true;
                 lastDamageAt = System.currentTimeMillis();
             }
+            if (damageStarted && System.currentTimeMillis() - lastDamageAt >= 2400) break;
+        }
+        if (!damageStarted) {
+            Microbot.log("NMZ overload: no maintenance damage observed before guard timeout; hp=" + lastHitpoints);
         }
         Microbot.log("NMZ overload: maintenance damage complete at hp=" + lastHitpoints);
     }
