@@ -70,8 +70,6 @@ public class BlackjackScript extends Script
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MIN_MS = 550;
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MAX_MS = 676;
     private static final long SECOND_PICKPOCKET_INTERACTION_TIMEOUT_MS = 2_400;
-    private static final int PREARMED_KNOCKOUT_DELAY_MIN_MS = 35;
-    private static final int PREARMED_KNOCKOUT_DELAY_MAX_MS = 71;
     private static final int KNOCKOUT_MENU_DWELL_MIN_MS = 180;
     private static final int KNOCKOUT_MENU_DWELL_MAX_MS = 261;
     private static final int FIRST_PICKPOCKET_DELAY_MIN_MS = 30;
@@ -200,7 +198,6 @@ public class BlackjackScript extends Script
     private long lastPickpocketClickAt;
     private long nextKnockoutArmedAt;
     private long knockoutFailedAt;
-    private long prearmedKnockoutSelectAt;
     private boolean secondPickpocketInteractionSeen;
     private boolean secondPickpocketInteractionComplete;
     private long pendingInventoryFullAt;
@@ -268,7 +265,6 @@ public class BlackjackScript extends Script
         lastPickpocketClickAt = 0;
         nextKnockoutArmedAt = 0;
         knockoutFailedAt = 0;
-        prearmedKnockoutSelectAt = 0;
         secondPickpocketInteractionSeen = false;
         secondPickpocketInteractionComplete = false;
         pendingInventoryFullAt = 0;
@@ -549,6 +545,7 @@ public class BlackjackScript extends Script
 
         if (knockoutResult == KnockoutResult.SUCCESS
                 && picksThisKnockout < 2
+                && nextKnockoutArmedAt == 0
                 && target.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS)
         {
             pickpocketBurstStartedAt = System.currentTimeMillis();
@@ -564,13 +561,28 @@ public class BlackjackScript extends Script
             return;
         }
 
-        if (picksThisKnockout >= 2)
+        if (nextKnockoutArmedAt != 0)
         {
             observeSecondPickpocketInteraction(target);
-            if (!secondPickpocketInteractionSeen && !allowSecondPickpocketInteractionFallback(target))
+            if (!secondPickpocketInteractionSeen)
             {
-                nextAction = "Wait for second pickpocket interaction";
-                return;
+                if (picksThisKnockout < 2
+                        && System.currentTimeMillis() - nextKnockoutArmedAt
+                        >= SECOND_PICKPOCKET_INTERACTION_TIMEOUT_MS)
+                {
+                    cancelSecondPickpocketPrearm("second pickpocket interaction was not observed");
+                    transition(BlackjackState.PICKPOCKETING, "Resume unresolved pickpocket burst");
+                    return;
+                }
+                if (picksThisKnockout >= 2 && allowSecondPickpocketInteractionFallback(target))
+                {
+                    // The confirmed second pickpocket can safely use the bounded interaction fallback.
+                }
+                else
+                {
+                    nextAction = "Wait for second pickpocket interaction";
+                    return;
+                }
             }
         }
 
@@ -599,10 +611,12 @@ public class BlackjackScript extends Script
     private void selectKnockoutMenuEntry()
     {
         Rs2NpcModel target = currentTarget();
-        if (picksThisKnockout >= 2)
+        if (nextKnockoutArmedAt != 0)
         {
             observeSecondPickpocketInteraction(target);
-            if (secondPickpocketInteractionComplete && isHumanizerEventDue(System.currentTimeMillis()))
+            if (picksThisKnockout >= 2
+                    && secondPickpocketInteractionComplete
+                    && isHumanizerEventDue(System.currentTimeMillis()))
             {
                 Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
                 burstClickPoint = null;
@@ -615,9 +629,23 @@ public class BlackjackScript extends Script
 
         if (menuPoint != null)
         {
+            if (nextKnockoutArmedAt != 0 && !secondPickpocketInteractionComplete)
+            {
+                nextAction = "Hold pre-armed Knock-Out for second pickpocket interaction";
+                return;
+            }
+            if (nextKnockoutArmedAt != 0 && picksThisKnockout < 2)
+            {
+                nextAction = "Hold pre-armed Knock-Out for second pickpocket confirmation";
+                return;
+            }
+            boolean confirmedSecondPickpocketComplete = nextKnockoutArmedAt != 0
+                    && picksThisKnockout >= 2
+                    && secondPickpocketInteractionComplete;
             if (target != null
                     && knockoutResult == KnockoutResult.SUCCESS
-                    && target.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS)
+                    && target.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS
+                    && !confirmedSecondPickpocketComplete)
             {
                 nextAction = "Hold pre-armed Knock-Out until target stands";
                 return;
@@ -629,7 +657,7 @@ public class BlackjackScript extends Script
                 nextAction = "Finish second pickpocket interaction";
                 return;
             }
-            if (System.currentTimeMillis() < Math.max(knockoutMenuSelectAt, prearmedKnockoutSelectAt))
+            if (System.currentTimeMillis() < knockoutMenuSelectAt)
             {
                 nextAction = "Pause over Knock-Out menu";
                 return;
@@ -658,7 +686,6 @@ public class BlackjackScript extends Script
             nextKnockoutArmedAt = 0;
             knockoutFailedAt = 0;
             knockoutRetryAt = 0;
-            prearmedKnockoutSelectAt = 0;
             secondPickpocketInteractionSeen = false;
             secondPickpocketInteractionComplete = false;
             knockoutResult = KnockoutResult.PENDING;
@@ -783,6 +810,12 @@ public class BlackjackScript extends Script
             lastPickpocketClickAt = now;
             nextPickpocketClickAt = now + randomPickpocketDelay(false);
             pickpocketClicks++;
+            if (picksThisKnockout == 1 && nextKnockoutArmedAt == 0)
+            {
+                armNextKnockout(target);
+                transition(BlackjackState.KNOCKING_OUT, "Pre-arm next Knock-Out after second pickpocket click");
+                return;
+            }
             nextAction = "Confirm pickpocket " + (picksThisKnockout + 1) + "/2";
         }
     }
@@ -1384,7 +1417,7 @@ public class BlackjackScript extends Script
                             knockoutDispatchAge(knockoutFailedAt));
                     break;
                 case PICKPOCKET_SUCCESS:
-                    if (state == BlackjackState.PICKPOCKETING)
+                    if (state == BlackjackState.PICKPOCKETING || isSecondPickpocketPrearmPending())
                     {
                         successfulPickpockets++;
                         picksThisKnockout++;
@@ -1401,10 +1434,15 @@ public class BlackjackScript extends Script
                     break;
                 case PICKPOCKET_FAILED:
                 case STUNNED:
-                    if (state != BlackjackState.PICKPOCKETING)
+                    if (state != BlackjackState.PICKPOCKETING && !isSecondPickpocketPrearmPending())
                     {
                         log.debug("Ignoring stale pickpocket failure/stun in state {}", state);
                         break;
+                    }
+                    if (isSecondPickpocketPrearmPending())
+                    {
+                        cancelSecondPickpocketPrearm("second pickpocket failed or stunned");
+                        transition(BlackjackState.PICKPOCKETING, "Resume unresolved pickpocket burst");
                     }
                     nextAction = "Continue pickpocket attempts while stunned";
                     lastOutcome = "Pickpocket failed/stunned";
@@ -1634,7 +1672,6 @@ public class BlackjackScript extends Script
         knockoutMenuMisses++;
         burstClickPoint = null;
         knockoutMenuSelectAt = 0;
-        prearmedKnockoutSelectAt = 0;
         Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
         lastOutcome = "Knock-Out menu recovery";
         log.warn("Knock-Out menu recovery: {}. Clearing stale menu and reacquiring target hull.", reason);
@@ -2070,15 +2107,6 @@ public class BlackjackScript extends Script
         return delay;
     }
 
-    private int randomPrearmedKnockoutDelay()
-    {
-        if (!config.humanizerEnabled())
-        {
-            return randomBetween(PREARMED_KNOCKOUT_DELAY_MIN_MS, PREARMED_KNOCKOUT_DELAY_MAX_MS);
-        }
-        return randomBetween(30, 111);
-    }
-
     private int randomFailedKnockoutRetry()
     {
         return config.humanizerEnabled()
@@ -2500,13 +2528,27 @@ public class BlackjackScript extends Script
         }
 
         nextKnockoutArmedAt = System.currentTimeMillis();
-        prearmedKnockoutSelectAt = 0;
         secondPickpocketInteractionSeen = isPlayerInteractingWithTarget(target);
         secondPickpocketInteractionComplete = false;
         if (secondPickpocketInteractionSeen)
         {
             log.info("Second pickpocket interaction observed; pre-arming Knock-Out");
         }
+    }
+
+    private boolean isSecondPickpocketPrearmPending()
+    {
+        return nextKnockoutArmedAt != 0 && picksThisKnockout < 2;
+    }
+
+    private void cancelSecondPickpocketPrearm(String reason)
+    {
+        Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
+        nextKnockoutArmedAt = 0;
+        secondPickpocketInteractionSeen = false;
+        secondPickpocketInteractionComplete = false;
+        nextPickpocketClickAt = System.currentTimeMillis() + randomPickpocketDelay(false);
+        log.info("Cancelling pre-armed Knock-Out: {}", reason);
     }
 
     private void observeSecondPickpocketInteraction(Rs2NpcModel target)
@@ -2530,7 +2572,6 @@ public class BlackjackScript extends Script
         if (!interacting)
         {
             secondPickpocketInteractionComplete = true;
-            prearmedKnockoutSelectAt = System.currentTimeMillis() + randomPrearmedKnockoutDelay();
             log.info("Second pickpocket interaction completed; selecting Knock-Out");
         }
     }
@@ -2552,7 +2593,6 @@ public class BlackjackScript extends Script
         }
 
         secondPickpocketInteractionComplete = true;
-        prearmedKnockoutSelectAt = System.currentTimeMillis() + randomPrearmedKnockoutDelay();
         log.warn("Second pickpocket interaction signal timed out after {}ms; player is idle, allowing Knock-Out fallback",
                 System.currentTimeMillis() - nextKnockoutArmedAt);
         return true;
