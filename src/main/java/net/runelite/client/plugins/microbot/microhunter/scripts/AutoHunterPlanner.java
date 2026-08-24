@@ -56,6 +56,21 @@ public final class AutoHunterPlanner {
         return result;
     }
 
+    public static List<WorldPoint> fiveDotLayout(WorldPoint center, int trapLimit) {
+        List<WorldPoint> result = new ArrayList<>(Math.min(5, Math.max(0, trapLimit)));
+        if (center == null || trapLimit <= 0) return result;
+
+        result.add(center.dx(-1).dy(1));
+        if (trapLimit == 1) return result;
+        result.add(center.dx(1).dy(1));
+        if (trapLimit == 2) return result;
+        result.add(center.dx(1).dy(-1));
+        if (trapLimit == 3) return result;
+        result.add(center.dx(-1).dy(-1));
+        if (trapLimit >= 5) result.add(center);
+        return result;
+    }
+
     public static List<WorldPoint> placementGrid(WorldPoint center, int radius) {
         List<WorldPoint> result = new ArrayList<>((radius * 2 + 1) * (radius * 2 + 1));
         for (int dx = -radius; dx <= radius; dx++) {

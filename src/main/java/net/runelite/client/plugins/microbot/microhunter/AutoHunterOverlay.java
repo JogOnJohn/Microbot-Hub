@@ -35,12 +35,12 @@ public class AutoHunterOverlay extends OverlayPanel {
             AutoChinScript script = plugin.getAutoChinScript();
             addLine("State", script.getCurrentState().name());
             addLine("Next", script.getNextAction());
-            addLine("Traps", script.getActiveTrapCount() + "/" + script.getManagedTrapCount()
-                    + " managed (limit " + script.getTrapLimit() + ")");
+            addLine("Active traps", script.getActiveTrapCount() + "/" + script.getTrapLimit());
+            addLine("Owned slots", script.getManagedTrapCount() + "/" + script.getTrapLimit());
             addLine("Catches / resets", script.getCatches() + " / " + script.getResets());
             addLine("Free slots", String.valueOf(Rs2Inventory.emptySlotCount()));
             addLine("Best spawn", script.getSpawnSummary());
-            addLine("Safe ring tile", String.valueOf(script.getBestRingTile()));
+            addLine("Layout center", String.valueOf(script.getLayoutCenter()));
             if (!script.getStopReason().isEmpty()) addLine("Stopped", script.getStopReason());
 
 

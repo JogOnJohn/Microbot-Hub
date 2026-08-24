@@ -7,7 +7,7 @@ import net.runelite.client.config.ConfigItem;
 import net.runelite.client.config.Range;
 
 @ConfigGroup("AutoHunter")
-@ConfigInformation("Red-chinchompa box traps only. Spawn-ring placement remains opt-in until live data is verified.")
+@ConfigInformation("Red-chinchompa box traps only. Builds and maintains a compact five-dot trap layout.")
 public interface AutoHunterConfig extends Config {
     @ConfigItem(
             position = 1,
@@ -23,8 +23,8 @@ public interface AutoHunterConfig extends Config {
     @ConfigItem(
             position = 2,
             keyName = "useSpawnRing",
-            name = "Use verified spawn ring",
-            description = "Place on scored spawn-ring tiles; leave disabled until the overlay candidates are manually verified"
+            name = "Center on best spawn",
+            description = "Center the five-dot layout on the best observed red-chinchompa spawn tile"
     )
     default boolean useSpawnRing() {
         return false;

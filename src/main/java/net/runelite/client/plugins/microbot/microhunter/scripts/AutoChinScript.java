@@ -18,11 +18,12 @@ import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.player.Rs2PlayerModel;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
-import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 
 import java.awt.Rectangle;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 public class AutoChinScript extends Script {
     public enum State {
         IDLE,
+        BUILDING_LAYOUT,
         MOVING,
         WAITING_FOR_CONFIRMATION,
         BREAK_PENDING,
@@ -57,6 +59,7 @@ public class AutoChinScript extends Script {
     private static final long MOUSE_WANDER_MIN_INTERVAL_MS = 45_000;
     private static final long MOUSE_WANDER_MAX_INTERVAL_MS = 120_001;
     private final Set<WorldPoint> managedTiles = ConcurrentHashMap.newKeySet();
+    private final List<WorldPoint> layoutSlots = new ArrayList<>();
     private final Map<WorldPoint, SpawnObservation> spawnObservations = new ConcurrentHashMap<>();
     private final Map<WorldPoint, String> observedTrapSignatures = new ConcurrentHashMap<>();
     private volatile State currentState = State.IDLE;
@@ -74,6 +77,7 @@ public class AutoChinScript extends Script {
     private volatile PendingAction pending;
     private volatile WorldPoint moveTarget;
     private WorldPoint startTile;
+    private WorldPoint layoutCenter;
     private long baselineUntil;
     private long nextRingEvaluationAt;
     private long nextMouseWanderAt;
@@ -95,6 +99,7 @@ public class AutoChinScript extends Script {
 
     private void resetSession() {
         managedTiles.clear();
+        layoutSlots.clear();
         spawnObservations.clear();
         observedTrapSignatures.clear();
         currentState = State.IDLE;
@@ -109,6 +114,7 @@ public class AutoChinScript extends Script {
         pending = null;
         moveTarget = null;
         startTile = Rs2Player.getWorldLocation();
+        layoutCenter = null;
         baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
         nextRingEvaluationAt = 0;
         nextMouseWanderAt = scheduleFromNow(System.currentTimeMillis(),
@@ -166,12 +172,14 @@ public class AutoChinScript extends Script {
                 return;
             }
 
-            if (interactWithManagedTrap(AutoHunterPlanner.TrapState.CAUGHT, Action.CHECK)) return;
-            if (interactWithManagedTrap(AutoHunterPlanner.TrapState.FAILED, Action.RESET)) return;
+            // Restore an empty layout slot before servicing occupied traps. A
+            // fallen trap is the only owned state with an item-expiry clock.
             if (recoverFallenManagedTrap()) return;
             if (layMissingManagedTrap()) return;
+            if (interactWithManagedTrap(AutoHunterPlanner.TrapState.CAUGHT, Action.CHECK)) return;
+            if (interactWithManagedTrap(AutoHunterPlanner.TrapState.FAILED, Action.RESET)) return;
             if (runIdleMouseWander(config)) return;
-            transition(State.IDLE, "Monitoring owned traps");
+            transition(State.IDLE, "Monitoring four-trap layout");
         } catch (Exception ex) {
             Microbot.logStackTrace(getClass().getSimpleName(), ex);
         }
@@ -225,9 +233,18 @@ public class AutoChinScript extends Script {
             transition(State.IDLE, "Need a box trap in inventory");
             return;
         }
-        WorldPoint target = config.useSpawnRing() ? bestRingTile : findNearbyPlacementTile();
+        if (!ensureLayout(config)) {
+            transition(State.BUILDING_LAYOUT, setupProgress() + ": waiting for a clear reachable layout");
+            return;
+        }
+        WorldPoint player = Rs2Player.getWorldLocation();
+        WorldPoint target = layoutSlots.stream()
+                .filter(tile -> !managedTiles.contains(tile))
+                .filter(tile -> isSafePlacementTile(tile, false))
+                .min(Comparator.comparingInt(player::distanceTo))
+                .orElse(null);
         if (target == null) {
-            transition(State.IDLE, setupProgress() + ": waiting for a verified spawn-ring candidate");
+            transition(State.BUILDING_LAYOUT, setupProgress() + ": layout slot is temporarily blocked");
             return;
         }
         if (!isSafePlacementTile(target, false)) {
@@ -235,7 +252,38 @@ public class AutoChinScript extends Script {
             return;
         }
         moveTarget = target;
-        transition(State.MOVING, setupProgress() + ": move to lay box trap at " + target);
+        transition(State.BUILDING_LAYOUT, setupProgress() + ": move to lay box trap at " + target);
+    }
+
+    private boolean ensureLayout(AutoHunterConfig config) {
+        if (layoutCenter != null && layoutSlots.size() == trapLimit) return true;
+
+        WorldPoint preferredCenter = config.useSpawnRing() ? bestSpawnTile : startTile;
+        if (preferredCenter == null) return false;
+
+        List<WorldPoint> candidateCenters = new ArrayList<>();
+        candidateCenters.add(preferredCenter);
+        if (!config.useSpawnRing()) {
+            AutoHunterPlanner.placementGrid(preferredCenter, 2).stream()
+                    .filter(center -> !center.equals(preferredCenter))
+                    .sorted(Comparator.comparingInt(preferredCenter::distanceTo))
+                    .forEach(candidateCenters::add);
+        }
+
+        for (WorldPoint center : candidateCenters) {
+            List<WorldPoint> candidateSlots = AutoHunterPlanner.fiveDotLayout(center, trapLimit);
+            if (candidateSlots.size() == trapLimit
+                    && candidateSlots.stream().allMatch(tile -> managedTiles.contains(tile)
+                    || isSafePlacementTile(tile, false))) {
+                layoutCenter = center;
+                layoutSlots.clear();
+                layoutSlots.addAll(candidateSlots);
+                bestRingTile = candidateSlots.get(0);
+                Microbot.log("AutoHunter layout: center=" + layoutCenter + " slots=" + layoutSlots);
+                return true;
+            }
+        }
+        return false;
     }
 
     private String setupProgress() {
@@ -456,7 +504,7 @@ public class AutoChinScript extends Script {
             if (!signature.equals(previous)) {
                 Microbot.log("AutoHunter trap: " + tile + " -> " + signature);
             }
-            if (trap != null) count++;
+            if (classify(trap) == AutoHunterPlanner.TrapState.ACTIVE) count++;
         }
         return count;
     }
@@ -496,9 +544,10 @@ public class AutoChinScript extends Script {
         spawnSummary = best == null ? "none" : bestSpawnTile + " x" + best.getValue().appearances
                 + " score=" + Math.round(AutoHunterPlanner.spawnScore(best.getValue().appearances,
                 now - best.getValue().lastSeen, player.distanceTo(bestSpawnTile)));
-        bestRingTile = bestSpawnTile == null ? null : AutoHunterPlanner.ring(bestSpawnTile).stream()
-                .filter(tile -> isSafePlacementTile(tile, false))
-                .min(Comparator.comparingInt(player::distanceTo)).orElse(null);
+        if (config.useSpawnRing() && layoutCenter == null && bestSpawnTile != null) {
+            List<WorldPoint> preferredLayout = AutoHunterPlanner.fiveDotLayout(bestSpawnTile, trapLimit);
+            bestRingTile = preferredLayout.isEmpty() ? null : preferredLayout.get(0);
+        }
     }
 
     private boolean isSafePlacementTile(WorldPoint tile, boolean allowManagedTile) {
@@ -510,17 +559,7 @@ public class AutoChinScript extends Script {
         Rs2PlayerModel localPlayer = Rs2Player.getLocalPlayer();
         if (Rs2Player.getPlayers(player -> tile.equals(player.getWorldLocation())
                 && (localPlayer == null || player.getId() != localPlayer.getId())).findAny().isPresent()) return false;
-        return Rs2Tile.isWalkable(tile) && Rs2Walker.canReach(tile);
-    }
-
-    private WorldPoint findNearbyPlacementTile() {
-        WorldPoint player = Rs2Player.getWorldLocation();
-        WorldPoint anchor = startTile == null ? player : startTile;
-        int searchRadius = Math.min(2, huntingRadius);
-        return AutoHunterPlanner.placementGrid(anchor, searchRadius).stream()
-                .filter(tile -> isSafePlacementTile(tile, false))
-                .min(Comparator.comparingInt(player::distanceTo))
-                .orElse(null);
+        return Rs2Tile.isWalkable(tile) && Rs2Tile.isTileReachable(tile);
     }
 
     private void stopSafely(String reason) {
@@ -544,10 +583,12 @@ public class AutoChinScript extends Script {
     public void shutdown() {
         super.shutdown();
         managedTiles.clear();
+        layoutSlots.clear();
         spawnObservations.clear();
         observedTrapSignatures.clear();
         pending = null;
         moveTarget = null;
+        layoutCenter = null;
         clearDelayedAction();
     }
 
@@ -562,6 +603,7 @@ public class AutoChinScript extends Script {
     public WorldPoint getBestSpawnTile() { return bestSpawnTile; }
     public WorldPoint getBestRingTile() { return bestRingTile; }
     public String getSpawnSummary() { return spawnSummary; }
+    public WorldPoint getLayoutCenter() { return layoutCenter; }
 
     private static final class PendingAction {
         private final Action action;

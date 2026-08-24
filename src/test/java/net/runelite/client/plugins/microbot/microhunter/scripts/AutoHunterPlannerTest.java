@@ -3,6 +3,8 @@ package net.runelite.client.plugins.microbot.microhunter.scripts;
 import net.runelite.api.coords.WorldPoint;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -42,6 +44,24 @@ class AutoHunterPlannerTest {
         WorldPoint center = new WorldPoint(3200, 3200, 0);
         assertEquals(8, AutoHunterPlanner.ring(center).stream().distinct().count());
         assertTrue(AutoHunterPlanner.ring(center).stream().noneMatch(center::equals));
+    }
+
+    @Test
+    void fourTrapLayoutUsesDieCornersWithOneTileBetweenThem() {
+        WorldPoint center = new WorldPoint(3200, 3200, 0);
+        assertEquals(List.of(
+                new WorldPoint(3199, 3201, 0),
+                new WorldPoint(3201, 3201, 0),
+                new WorldPoint(3201, 3199, 0),
+                new WorldPoint(3199, 3199, 0)
+        ), AutoHunterPlanner.fiveDotLayout(center, 4));
+    }
+
+    @Test
+    void fifthTrapOccupiesTheLayoutCenter() {
+        WorldPoint center = new WorldPoint(3200, 3200, 0);
+        assertEquals(center, AutoHunterPlanner.fiveDotLayout(center, 5).get(4));
+        assertEquals(5, AutoHunterPlanner.fiveDotLayout(center, 5).stream().distinct().count());
     }
 
     @Test
