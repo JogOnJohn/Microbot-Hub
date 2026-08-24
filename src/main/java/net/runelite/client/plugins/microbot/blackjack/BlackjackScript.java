@@ -217,6 +217,7 @@ public class BlackjackScript extends Script
     private boolean emergencyWineExit;
     private boolean wineInventoryPrepared;
     private int restockTargetWineCount;
+    private long wineExitCurtainOpenedAt;
     private long nextHumanizerMouseAt;
     private long humanizerMouseRecoverAt;
     private long nextHumanizerMistakeAt;
@@ -284,6 +285,7 @@ public class BlackjackScript extends Script
         emergencyWineExit = false;
         wineInventoryPrepared = false;
         restockTargetWineCount = 0;
+        wineExitCurtainOpenedAt = 0;
         long now = System.currentTimeMillis();
         nextHumanizerMouseAt = scheduleFromNow(now,
                 HUMANIZER_MOUSE_MIN_INTERVAL_MS, HUMANIZER_MOUSE_MAX_INTERVAL_MS);
@@ -1044,6 +1046,7 @@ public class BlackjackScript extends Script
     {
         if (!isInsideHouse())
         {
+            wineExitCurtainOpenedAt = 0;
             transition(BlackjackState.SECURING_WINE_EXIT, "Close east door behind player");
             return;
         }
@@ -1060,10 +1063,24 @@ public class BlackjackScript extends Script
             return;
         }
 
+        if (wineExitCurtainOpenedAt != 0)
+        {
+            if (readyForInteraction(350))
+            {
+                Rs2Walker.walkFastCanvas(WINE_DOOR_OUTSIDE_TILE);
+                lastInteractionAt = System.currentTimeMillis();
+                nextAction = "Step outside east door";
+            }
+            return;
+        }
+
         Rs2TileObjectModel closedDoor = findWineDoor("Open");
         if (closedDoor != null)
         {
-            interactWithWineDoor(closedDoor, "Open", "Open east door");
+            if (interactWithWineDoor(closedDoor, "Open", "Open east door"))
+            {
+                wineExitCurtainOpenedAt = System.currentTimeMillis();
+            }
             return;
         }
 
@@ -1284,17 +1301,19 @@ public class BlackjackScript extends Script
                         .anyMatch(candidate -> candidate.equalsIgnoreCase(action));
     }
 
-    private void interactWithWineDoor(Rs2TileObjectModel door, String action, String description)
+    private boolean interactWithWineDoor(Rs2TileObjectModel door, String action, String description)
     {
         if (!readyForInteraction(DOOR_INTERACTION_DELAY_MS))
         {
-            return;
+            return false;
         }
         if (door.click(action))
         {
             lastInteractionAt = System.currentTimeMillis();
             nextAction = description;
+            return true;
         }
+        return false;
     }
 
     private void waitForWineDoor(String action)
