@@ -29,4 +29,14 @@ public interface AutoHunterConfig extends Config {
     default boolean useSpawnRing() {
         return false;
     }
+
+    @ConfigItem(
+            position = 3,
+            keyName = "humanizerEnabled",
+            name = "Humanizer",
+            description = "Use short varied reaction delays and occasional idle mouse wandering"
+    )
+    default boolean humanizerEnabled() {
+        return true;
+    }
 }

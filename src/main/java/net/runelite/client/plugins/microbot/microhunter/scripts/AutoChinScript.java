@@ -20,6 +20,7 @@ import java.util.Comparator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 public class AutoChinScript extends Script {
@@ -47,6 +48,8 @@ public class AutoChinScript extends Script {
     private static final long ACTION_TIMEOUT_MS = 6_000;
     private static final long SCENE_BASELINE_MS = 10_000;
     private static final long SPAWN_EXPIRY_MS = 600_000;
+    private static final long MOUSE_WANDER_MIN_INTERVAL_MS = 45_000;
+    private static final long MOUSE_WANDER_MAX_INTERVAL_MS = 120_001;
     private final Set<WorldPoint> managedTiles = ConcurrentHashMap.newKeySet();
     private final Map<WorldPoint, SpawnObservation> spawnObservations = new ConcurrentHashMap<>();
     private final Map<WorldPoint, String> observedTrapSignatures = new ConcurrentHashMap<>();
@@ -61,11 +64,17 @@ public class AutoChinScript extends Script {
     private volatile int activeTraps;
     private volatile int trapLimit = 1;
     private volatile int huntingRadius = 6;
+    private volatile boolean humanizerEnabled = true;
     private volatile PendingAction pending;
     private volatile WorldPoint moveTarget;
     private WorldPoint startTile;
     private long baselineUntil;
     private long nextRingEvaluationAt;
+    private long nextMouseWanderAt;
+    private long mouseWanderPauseUntil;
+    private Action delayedAction;
+    private WorldPoint delayedActionTile;
+    private long delayedActionReadyAt;
 
     public boolean run(AutoHunterConfig config) {
         resetSession();
@@ -94,6 +103,10 @@ public class AutoChinScript extends Script {
         startTile = Rs2Player.getWorldLocation();
         baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
         nextRingEvaluationAt = 0;
+        nextMouseWanderAt = scheduleFromNow(System.currentTimeMillis(),
+                MOUSE_WANDER_MIN_INTERVAL_MS, MOUSE_WANDER_MAX_INTERVAL_MS);
+        mouseWanderPauseUntil = 0;
+        clearDelayedAction();
     }
 
     private void pulse(AutoHunterConfig config) {
@@ -107,6 +120,7 @@ public class AutoChinScript extends Script {
             }
 
             huntingRadius = Math.max(1, config.huntingRadius());
+            humanizerEnabled = config.humanizerEnabled();
             trapLimit = AutoHunterPlanner.normalBoxTrapLimit(Rs2Player.getRealSkillLevel(Skill.HUNTER));
             expireSpawnObservations();
             updateSpawnRing(config);
@@ -137,6 +151,7 @@ public class AutoChinScript extends Script {
             if (interactWithManagedTrap(AutoHunterPlanner.TrapState.FAILED, Action.RESET)) return;
             if (recoverFallenManagedTrap()) return;
             if (layMissingManagedTrap()) return;
+            if (runIdleMouseWander(config)) return;
             if (managedTiles.size() < trapLimit) prepareNewTrap(config);
             else transition(State.IDLE, "Monitoring owned traps");
         } catch (Exception ex) {
@@ -148,10 +163,13 @@ public class AutoChinScript extends Script {
         for (WorldPoint tile : managedTiles) {
             Rs2TileObjectModel trap = trapAt(tile);
             if (trap == null || classify(trap) != targetState) continue;
+            if (!readyForHumanizedAction(action, tile)) return true;
             if (trap.click(action.menuAction)) {
+                clearDelayedAction();
                 beginPending(action, tile, trapSignature(trap));
                 return true;
             }
+            clearDelayedAction();
         }
         return false;
     }
@@ -159,10 +177,14 @@ public class AutoChinScript extends Script {
     private boolean recoverFallenManagedTrap() {
         for (WorldPoint tile : managedTiles) {
             if (hasAnyObjectAt(tile)) continue;
+            if (Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP).within(tile, 0).count() == 0) continue;
+            if (!readyForHumanizedAction(Action.TAKE, tile)) return true;
             if (Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP).within(tile, 0).interact("Take")) {
+                clearDelayedAction();
                 beginPending(Action.TAKE, tile, "ground-item");
                 return true;
             }
+            clearDelayedAction();
         }
         return false;
     }
@@ -208,14 +230,103 @@ public class AutoChinScript extends Script {
         moveTarget = null;
         if (!isSafePlacementTile(layTile, managedTiles.contains(layTile))
                 || !Rs2Inventory.contains(ItemID.BOX_TRAP)) {
+            clearDelayedAction();
             transition(State.IDLE, "Lay tile became unavailable");
             return;
         }
+        if (!readyForHumanizedAction(Action.LAY, layTile)) {
+            moveTarget = layTile;
+            return;
+        }
         if (Rs2Inventory.interact(ItemID.BOX_TRAP, "Lay")) {
+            clearDelayedAction();
             beginPending(Action.LAY, layTile, "empty");
         } else {
+            clearDelayedAction();
             transition(State.IDLE, "Lay interaction was not dispatched");
         }
+    }
+
+    private boolean readyForHumanizedAction(Action action, WorldPoint tile) {
+        long now = System.currentTimeMillis();
+        if (delayedAction != action || !tile.equals(delayedActionTile)) {
+            delayedAction = action;
+            delayedActionTile = tile;
+            delayedActionReadyAt = now + randomActionDelay(action);
+        }
+        if (now < delayedActionReadyAt) {
+            transition(State.IDLE, "Reacting to " + action.menuAction.toLowerCase() + " at " + tile);
+            return false;
+        }
+        return true;
+    }
+
+    private int randomActionDelay(Action action) {
+        if (!humanizerEnabled) return 0;
+        int delay;
+        switch (action) {
+            case CHECK:
+            case RESET:
+                delay = randomBetween(120, 421);
+                break;
+            case TAKE:
+                delay = randomBetween(180, 521);
+                break;
+            default:
+                delay = randomBetween(240, 701);
+        }
+        return ThreadLocalRandom.current().nextInt(100) < 7
+                ? delay + randomBetween(100, 351) : delay;
+    }
+
+    private boolean runIdleMouseWander(AutoHunterConfig config) {
+        long now = System.currentTimeMillis();
+        if (!config.humanizerEnabled()) {
+            mouseWanderPauseUntil = 0;
+            nextMouseWanderAt = scheduleFromNow(now,
+                    MOUSE_WANDER_MIN_INTERVAL_MS, MOUSE_WANDER_MAX_INTERVAL_MS);
+            return false;
+        }
+        if (mouseWanderPauseUntil > 0) {
+            if (now < mouseWanderPauseUntil) {
+                transition(State.IDLE, "Brief pause after mouse wander");
+                return true;
+            }
+            mouseWanderPauseUntil = 0;
+            nextMouseWanderAt = scheduleFromNow(now,
+                    MOUSE_WANDER_MIN_INTERVAL_MS, MOUSE_WANDER_MAX_INTERVAL_MS);
+            return false;
+        }
+        if (now < nextMouseWanderAt || Microbot.naturalMouse == null
+                || Microbot.getClient().isMenuOpen() || Rs2Player.isMoving()) return false;
+
+        net.runelite.api.Point current = Microbot.getClient().getMouseCanvasPosition();
+        int width = Microbot.getClient().getCanvasWidth();
+        int height = Microbot.getClient().getCanvasHeight();
+        int originX = current == null ? width / 2 : current.getX();
+        int originY = current == null ? height / 2 : current.getY();
+        int dx = randomBetween(70, 201) * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1);
+        int dy = randomBetween(35, 141) * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1);
+        int x = Math.max(8, Math.min(width - 8, originX + dx));
+        int y = Math.max(8, Math.min(height - 8, originY + dy));
+        Microbot.naturalMouse.moveTo(x, y);
+        mouseWanderPauseUntil = now + randomBetween(250, 901);
+        transition(State.IDLE, "Mouse wandered while monitoring traps");
+        return true;
+    }
+
+    private void clearDelayedAction() {
+        delayedAction = null;
+        delayedActionTile = null;
+        delayedActionReadyAt = 0;
+    }
+
+    private static int randomBetween(int minimumInclusive, int maximumExclusive) {
+        return ThreadLocalRandom.current().nextInt(minimumInclusive, maximumExclusive);
+    }
+
+    private static long scheduleFromNow(long now, long minimumDelay, long maximumDelay) {
+        return now + ThreadLocalRandom.current().nextLong(minimumDelay, maximumDelay);
     }
 
     private void beginPending(Action action, WorldPoint tile, String beforeSignature) {
@@ -366,6 +477,7 @@ public class AutoChinScript extends Script {
         stopReason = reason;
         pending = null;
         moveTarget = null;
+        clearDelayedAction();
         transition(State.STOPPED, reason);
         Microbot.log("AutoHunter stopped: " + reason);
     }
@@ -386,6 +498,7 @@ public class AutoChinScript extends Script {
         observedTrapSignatures.clear();
         pending = null;
         moveTarget = null;
+        clearDelayedAction();
     }
 
     public State getCurrentState() { return currentState; }
