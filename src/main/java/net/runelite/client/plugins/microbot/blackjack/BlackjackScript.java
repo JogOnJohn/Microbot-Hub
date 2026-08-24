@@ -579,6 +579,15 @@ public class BlackjackScript extends Script
                     transition(BlackjackState.PICKPOCKETING, "Resume unresolved pickpocket burst");
                     return;
                 }
+                if (picksThisKnockout >= 2 && allowSecondPickpocketInteractionFallback(target))
+                {
+                    // The confirmed second pickpocket can safely use the bounded interaction fallback.
+                }
+                else
+                {
+                    nextAction = "Wait for second pickpocket interaction";
+                    return;
+                }
             }
             if (secondPickpocketInteractionSeen && !secondPickpocketInteractionComplete)
             {
