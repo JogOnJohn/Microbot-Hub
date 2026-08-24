@@ -6,12 +6,12 @@ import net.runelite.api.Skill;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
-import net.runelite.client.plugins.microbot.api.player.models.Rs2PlayerModel;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
 import net.runelite.client.plugins.microbot.microhunter.AutoHunterConfig;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
+import net.runelite.client.plugins.microbot.util.player.Rs2PlayerModel;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 
@@ -150,7 +150,7 @@ public class AutoChinScript extends Script {
         for (WorldPoint tile : managedTiles) {
             Rs2TileObjectModel trap = trapAt(tile);
             if (trap == null || classify(trap) != targetState) continue;
-            if (trap.interact(action.menuAction)) {
+            if (trap.click(action.menuAction)) {
                 beginPending(action, tile, trapSignature(trap));
                 return true;
             }
