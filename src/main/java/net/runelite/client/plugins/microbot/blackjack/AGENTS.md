@@ -4,18 +4,20 @@
 
 - Healing has priority over blackjacking. Never drop empty jugs; a full inventory prevents combat after failed pickpockets.
 - Operate only in the supported marked Pollnivneach house and against the selected level-appropriate bandit.
-- Use target-specific `Knock-Out` menu entries. Verify the live menu row and cursor hitbox before clicking.
+- Configure target-specific Menu Entry Swapper actions: normal left-click is `Pickpocket` and Shift+left-click is `Knock-Out`. Verify the live top option and cursor hull before clicking.
 - Do not issue another Knock-Out while the target is unconscious or while the current two-pickpocket burst remains unresolved.
 - Release pickpocket bursts from success/failure signals, with only a bounded safety fallback for missing events.
 - Cursor anchors and wander points must remain inside the live NPC convex hull. Avoid curtain/door menu entries.
-- Combat reset stages at `3359,2995,0`, then moves behind the bed to `3360,2993,0`. Confirm the target is north of the safespot.
+- Combat reset first unequips the blackjack, attempts Shift+left-click `Knock-Out`, and re-equips when an inventory slot is available. A full inventory must retain the staged safespot fallback at `3359,2995,0` then `3360,2993,0`.
 
 ## Runtime Signals
 
 Prioritize these `client.log` messages during smoke tests:
 
 - `Starting BlackjackPlugin version=`
-- `Clicking verified menu option`
+- `Configured Menu Entry Swapper`
+- `Shift-click Knock-Out dispatched`
+- `Disarmed combat-reset Knock-Out`
 - `Knock-Out dispatched`
 - `Knock-Out confirmed`
 - `Knock-Out failure signal`
