@@ -67,6 +67,8 @@ public class BlackjackScript extends Script
     private static final long PICKPOCKET_BURST_TIMEOUT_MS = 2_800;
     private static final long KNOCKOUT_MENU_TIMEOUT_MS = 1_200;
     private static final long KNOCKOUT_CONFIRM_TIMEOUT_MS = 1_500;
+    private static final int KNOCKOUT_MENU_RECOVERY_MIN_MS = 450;
+    private static final int KNOCKOUT_MENU_RECOVERY_MAX_MS = 701;
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MIN_MS = 550;
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MAX_MS = 676;
     private static final long SECOND_PICKPOCKET_INTERACTION_TIMEOUT_MS = 2_400;
@@ -316,7 +318,7 @@ public class BlackjackScript extends Script
                 }
 
                 processOutcomes();
-                if (state == BlackjackState.ERROR || state == BlackjackState.STOPPED)
+                if (shutdownRequested || state == BlackjackState.ERROR || state == BlackjackState.STOPPED)
                 {
                     return;
                 }
@@ -575,15 +577,11 @@ public class BlackjackScript extends Script
                     transition(BlackjackState.PICKPOCKETING, "Resume unresolved pickpocket burst");
                     return;
                 }
-                if (picksThisKnockout >= 2 && allowSecondPickpocketInteractionFallback(target))
-                {
-                    // The confirmed second pickpocket can safely use the bounded interaction fallback.
-                }
-                else
-                {
-                    nextAction = "Wait for second pickpocket interaction";
-                    return;
-                }
+            }
+            if (secondPickpocketInteractionSeen && !secondPickpocketInteractionComplete)
+            {
+                prepositionPrearmedKnockoutCursor(target);
+                return;
             }
         }
 
@@ -596,12 +594,20 @@ public class BlackjackScript extends Script
 
         if (readyForInteraction(80))
         {
-            if (!naturalMoveAndClick(target, anchor, true))
+            boolean prearmed = nextKnockoutArmedAt != 0;
+            if (prearmed && clickPrearmedKnockoutCursor(target))
+            {
+                burstClickPoint = Microbot.getClient().getMouseCanvasPosition();
+            }
+            else if (!naturalMoveAndClick(target, anchor, true))
             {
                 nextAction = "Wait for natural mouse";
                 return;
             }
-            burstClickPoint = anchor;
+            else
+            {
+                burstClickPoint = anchor;
+            }
             long now = System.currentTimeMillis();
             lastInteractionAt = now;
             knockoutMenuSelectAt = now + randomKnockoutMenuDwell();
@@ -642,7 +648,9 @@ public class BlackjackScript extends Script
 
         if (menuPoint != null)
         {
-            if (nextKnockoutArmedAt != 0 && !secondPickpocketInteractionComplete)
+            if (nextKnockoutArmedAt != 0
+                    && !secondPickpocketInteractionComplete
+                    && !allowSecondPickpocketInteractionFallback(target))
             {
                 nextAction = "Hold pre-armed Knock-Out for second pickpocket interaction";
                 return;
@@ -1654,6 +1662,45 @@ public class BlackjackScript extends Script
         return true;
     }
 
+    private void prepositionPrearmedKnockoutCursor(Rs2NpcModel target)
+    {
+        Point current = Microbot.getClient().getMouseCanvasPosition();
+        if (isInsideTargetHull(target, current))
+        {
+            nextAction = "Pre-arm Knock-Out cursor";
+            return;
+        }
+
+        Point anchor = targetAnchor(target, burstClickPoint);
+        if (anchor == null || Microbot.naturalMouse == null)
+        {
+            nextAction = "Wait for safe pre-armed Knock-Out cursor";
+            return;
+        }
+
+        Microbot.naturalMouse.moveTo(anchor.getX(), anchor.getY());
+        Point actual = Microbot.getClient().getMouseCanvasPosition();
+        if (!isInsideTargetHull(target, actual))
+        {
+            log.warn("Pre-armed Knock-Out cursor ended outside NPC hull: expected={} actual={} targetIndex={}",
+                    anchor, actual, targetIndex);
+            return;
+        }
+        burstClickPoint = actual;
+        nextAction = "Pre-arm Knock-Out cursor";
+    }
+
+    private boolean clickPrearmedKnockoutCursor(Rs2NpcModel target)
+    {
+        Point current = Microbot.getClient().getMouseCanvasPosition();
+        if (!isInsideTargetHull(target, current))
+        {
+            return false;
+        }
+        Microbot.getMouse().click(current, true);
+        return true;
+    }
+
     private boolean isInsideTargetHull(Rs2NpcModel target, Point point)
     {
         return target != null && point != null
@@ -1672,10 +1719,18 @@ public class BlackjackScript extends Script
         nextKnockoutArmedAt = 0;
         secondPickpocketInteractionSeen = false;
         secondPickpocketInteractionComplete = false;
-        Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
+        if (Microbot.getClient().isMenuOpen())
+        {
+            Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
+        }
+        long now = System.currentTimeMillis();
+        lastInteractionAt = now;
+        targetClearReason = "stale Knock-Out menu";
+        targetClearRecheckAt = now + randomBetween(
+                KNOCKOUT_MENU_RECOVERY_MIN_MS, KNOCKOUT_MENU_RECOVERY_MAX_MS);
         lastOutcome = "Knock-Out menu recovery";
-        log.warn("Knock-Out menu recovery: {}. Clearing stale menu and reacquiring target hull.", reason);
-        transition(BlackjackState.KNOCKING_OUT, "Recover Knock-Out menu");
+        log.warn("Knock-Out menu recovery: {}. Clearing stale menu before retrying target hull.", reason);
+        transition(BlackjackState.WAITING_FOR_TARGET_CLEAR, "Wait after Knock-Out menu recovery");
     }
 
     private Point findTargetMenuOptionPoint(String option)
@@ -2383,6 +2438,11 @@ public class BlackjackScript extends Script
 
     private void waitForTargetClear()
     {
+        if ("stale Knock-Out menu".equals(targetClearReason) && Microbot.getClient().isMenuOpen())
+        {
+            nextAction = "Wait for Knock-Out menu to close";
+            return;
+        }
         if (Rs2Player.isMoving())
         {
             nextAction = "Wait for movement to stop";
