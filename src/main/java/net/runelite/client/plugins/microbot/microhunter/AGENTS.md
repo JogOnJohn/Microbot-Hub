@@ -19,6 +19,19 @@
 - A full red-chinchompa inventory is a safe stop condition. Never drop catches
   to make room unless an explicit policy says otherwise.
 
+## Spawn-Ring Rules
+
+- Learn candidate respawn tiles from target `NpcSpawned` events, not a static
+  coordinate list. De-duplicate by world tile, score recent reappearances, and
+  expire stale entries.
+- Ignore scene-load spawn noise until a stable baseline is established. Surface
+  candidate tiles in diagnostics before using them to reposition traps.
+- Generate ring tiles only after checking collision, reachability, occupancy,
+  player position, and existing managed traps. Preserve the Hunter trap limit.
+- Stray-target killing is disabled by default and separate from trap handling.
+  It needs an explicit weapon, line-of-sight, combat, and pending-trap-action
+  guard. Never assume Hunter's spear or a specific red-chin area.
+
 ## Diagnostics And Validation
 
 - Log state changes, interaction dispatches, confirmations, bounded timeouts,
