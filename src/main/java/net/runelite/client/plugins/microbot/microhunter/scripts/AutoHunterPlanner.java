@@ -1,0 +1,57 @@
+package net.runelite.client.plugins.microbot.microhunter.scripts;
+
+import net.runelite.api.coords.WorldPoint;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/** Pure decision helpers kept separate from live client state. */
+public final class AutoHunterPlanner {
+    public enum TrapState {
+        CAUGHT,
+        FAILED,
+        ACTIVE,
+        UNKNOWN
+    }
+
+    private AutoHunterPlanner() {
+    }
+
+    public static int normalBoxTrapLimit(int hunterLevel) {
+        if (hunterLevel >= 80) return 5;
+        if (hunterLevel >= 60) return 4;
+        if (hunterLevel >= 40) return 3;
+        if (hunterLevel >= 20) return 2;
+        return 1;
+    }
+
+    public static TrapState classifyActions(String[] actions) {
+        if (hasAction(actions, "check")) return TrapState.CAUGHT;
+        if (hasAction(actions, "reset")) return TrapState.FAILED;
+        if (hasAction(actions, "dismantle")) return TrapState.ACTIVE;
+        return TrapState.UNKNOWN;
+    }
+
+    public static boolean hasAction(String[] actions, String expected) {
+        if (actions == null || expected == null) return false;
+        for (String action : actions) {
+            if (action != null && action.equalsIgnoreCase(expected)) return true;
+        }
+        return false;
+    }
+
+    public static List<WorldPoint> ring(WorldPoint center) {
+        List<WorldPoint> result = new ArrayList<>(8);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                if (dx != 0 || dy != 0) result.add(center.dx(dx).dy(dy));
+            }
+        }
+        return result;
+    }
+
+    public static double spawnScore(int appearances, long ageMillis, int distance) {
+        double freshness = Math.max(0.0, 1.0 - (ageMillis / 600_000.0));
+        return appearances * 100.0 + freshness * 20.0 - distance;
+    }
+}
