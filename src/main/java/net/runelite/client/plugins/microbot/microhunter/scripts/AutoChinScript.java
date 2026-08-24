@@ -47,8 +47,6 @@ public class AutoChinScript extends Script {
     private static final long ACTION_TIMEOUT_MS = 6_000;
     private static final long SCENE_BASELINE_MS = 10_000;
     private static final long SPAWN_EXPIRY_MS = 600_000;
-    private static final String TARGET_NAME = "Red chinchompa";
-
     private final Set<WorldPoint> managedTiles = ConcurrentHashMap.newKeySet();
     private final Map<WorldPoint, SpawnObservation> spawnObservations = new ConcurrentHashMap<>();
     private final Map<WorldPoint, String> observedTrapSignatures = new ConcurrentHashMap<>();
@@ -187,7 +185,7 @@ public class AutoChinScript extends Script {
             transition(State.IDLE, "Need a box trap in inventory");
             return;
         }
-        WorldPoint target = config.useSpawnRing() ? bestRingTile : Rs2Player.getWorldLocation();
+        WorldPoint target = config.useSpawnRing() ? bestRingTile : findNearbyPlacementTile();
         if (target == null) {
             transition(State.IDLE, "Waiting for a verified spawn-ring candidate");
             return;
@@ -266,7 +264,14 @@ public class AutoChinScript extends Script {
     }
 
     private boolean hasAnyObjectAt(WorldPoint tile) {
-        return Microbot.getRs2TileObjectCache().query().within(tile, 0).count() > 0;
+        return Microbot.getRs2TileObjectCache().query().within(tile, 0)
+                .where(this::isTrapOrNamedObject).count() > 0;
+    }
+
+    private boolean isTrapOrNamedObject(Rs2TileObjectModel object) {
+        if (classify(object) != AutoHunterPlanner.TrapState.UNKNOWN) return true;
+        String name = object.getName();
+        return name != null && !name.isEmpty() && !"null".equalsIgnoreCase(name);
     }
 
     private AutoHunterPlanner.TrapState classify(Rs2TileObjectModel object) {
@@ -296,7 +301,8 @@ public class AutoChinScript extends Script {
     }
 
     public void onNpcSpawned(NPC npc) {
-        if (npc == null || !TARGET_NAME.equalsIgnoreCase(npc.getName()) || startTile == null) return;
+        if (npc == null || !AutoHunterPlanner.isRedChinchompaTarget(npc.getId(), npc.getName())
+                || startTile == null) return;
         WorldPoint tile = npc.getWorldLocation();
         if (tile == null || tile.getPlane() != startTile.getPlane()) return;
         if (tile.distanceTo(startTile) > huntingRadius || System.currentTimeMillis() < baselineUntil) return;
@@ -339,10 +345,21 @@ public class AutoChinScript extends Script {
         if (startTile == null || tile.getPlane() != startTile.getPlane()
                 || tile.distanceTo(startTile) > huntingRadius) return false;
         if (hasAnyObjectAt(tile)) return false;
+        if (Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP).within(tile, 0).count() > 0) return false;
         Rs2PlayerModel localPlayer = Rs2Player.getLocalPlayer();
         if (Rs2Player.getPlayers(player -> tile.equals(player.getWorldLocation())
                 && (localPlayer == null || player.getId() != localPlayer.getId())).findAny().isPresent()) return false;
         return Rs2Tile.isWalkable(tile) && Rs2Walker.canReach(tile);
+    }
+
+    private WorldPoint findNearbyPlacementTile() {
+        WorldPoint player = Rs2Player.getWorldLocation();
+        WorldPoint anchor = startTile == null ? player : startTile;
+        int searchRadius = Math.min(2, huntingRadius);
+        return AutoHunterPlanner.placementGrid(anchor, searchRadius).stream()
+                .filter(tile -> isSafePlacementTile(tile, false))
+                .min(Comparator.comparingInt(player::distanceTo))
+                .orElse(null);
     }
 
     private void stopSafely(String reason) {

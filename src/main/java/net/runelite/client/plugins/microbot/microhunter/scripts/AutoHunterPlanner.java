@@ -7,6 +7,8 @@ import java.util.List;
 
 /** Pure decision helpers kept separate from live client state. */
 public final class AutoHunterPlanner {
+    private static final int CARNIVOROUS_CHINCHOMPA_ID = 2911;
+
     public enum TrapState {
         CAUGHT,
         FAILED,
@@ -48,6 +50,22 @@ public final class AutoHunterPlanner {
             }
         }
         return result;
+    }
+
+    public static List<WorldPoint> placementGrid(WorldPoint center, int radius) {
+        List<WorldPoint> result = new ArrayList<>((radius * 2 + 1) * (radius * 2 + 1));
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                result.add(center.dx(dx).dy(dy));
+            }
+        }
+        return result;
+    }
+
+    public static boolean isRedChinchompaTarget(int npcId, String npcName) {
+        return npcId == CARNIVOROUS_CHINCHOMPA_ID
+                || "Carnivorous chinchompa".equalsIgnoreCase(npcName)
+                || "Red chinchompa".equalsIgnoreCase(npcName);
     }
 
     public static double spawnScore(int appearances, long ageMillis, int distance) {

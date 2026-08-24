@@ -4,6 +4,7 @@ import net.runelite.api.coords.WorldPoint;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AutoHunterPlannerTest {
@@ -33,6 +34,20 @@ class AutoHunterPlannerTest {
         WorldPoint center = new WorldPoint(3200, 3200, 0);
         assertEquals(8, AutoHunterPlanner.ring(center).stream().distinct().count());
         assertTrue(AutoHunterPlanner.ring(center).stream().noneMatch(center::equals));
+    }
+
+    @Test
+    void recognisesLiveRedChinchompaIdentity() {
+        assertTrue(AutoHunterPlanner.isRedChinchompaTarget(2911, "Carnivorous chinchompa"));
+        assertTrue(AutoHunterPlanner.isRedChinchompaTarget(-1, "Red chinchompa"));
+        assertFalse(AutoHunterPlanner.isRedChinchompaTarget(2910, "Chinchompa"));
+    }
+
+    @Test
+    void producesNearbyPlacementGridIncludingAnchor() {
+        WorldPoint center = new WorldPoint(1316, 3170, 0);
+        assertEquals(25, AutoHunterPlanner.placementGrid(center, 2).stream().distinct().count());
+        assertTrue(AutoHunterPlanner.placementGrid(center, 2).contains(center));
     }
 
     @Test
