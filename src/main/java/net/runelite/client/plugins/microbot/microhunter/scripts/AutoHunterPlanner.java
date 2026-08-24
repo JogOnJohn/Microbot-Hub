@@ -19,6 +19,10 @@ public final class AutoHunterPlanner {
     private AutoHunterPlanner() {
     }
 
+    static boolean shouldBootstrap(int managedTrapCount, int trapLimit) {
+        return managedTrapCount < trapLimit;
+    }
+
     public static int normalBoxTrapLimit(int hunterLevel) {
         if (hunterLevel >= 80) return 5;
         if (hunterLevel >= 60) return 4;

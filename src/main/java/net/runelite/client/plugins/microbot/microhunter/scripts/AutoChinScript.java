@@ -147,13 +147,21 @@ public class AutoChinScript extends Script {
                 return;
             }
 
+            if (AutoHunterPlanner.shouldBootstrap(managedTiles.size(), trapLimit)) {
+                // A fallen owned trap can despawn, so recovering it is the only
+                // maintenance action allowed to interrupt the initial fill.
+                if (recoverFallenManagedTrap()) return;
+                if (layMissingManagedTrap()) return;
+                prepareNewTrap(config);
+                return;
+            }
+
             if (interactWithManagedTrap(AutoHunterPlanner.TrapState.CAUGHT, Action.CHECK)) return;
             if (interactWithManagedTrap(AutoHunterPlanner.TrapState.FAILED, Action.RESET)) return;
             if (recoverFallenManagedTrap()) return;
             if (layMissingManagedTrap()) return;
             if (runIdleMouseWander(config)) return;
-            if (managedTiles.size() < trapLimit) prepareNewTrap(config);
-            else transition(State.IDLE, "Monitoring owned traps");
+            transition(State.IDLE, "Monitoring owned traps");
         } catch (Exception ex) {
             Microbot.logStackTrace(getClass().getSimpleName(), ex);
         }
@@ -195,7 +203,7 @@ public class AutoChinScript extends Script {
             if (!hasAnyObjectAt(tile)
                     && Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP).within(tile, 0).count() == 0) {
                 moveTarget = tile;
-                transition(State.MOVING, "Return to owned trap tile " + tile);
+                transition(State.MOVING, setupProgress() + ": restore owned trap tile " + tile);
                 return true;
             }
         }
@@ -209,7 +217,7 @@ public class AutoChinScript extends Script {
         }
         WorldPoint target = config.useSpawnRing() ? bestRingTile : findNearbyPlacementTile();
         if (target == null) {
-            transition(State.IDLE, "Waiting for a verified spawn-ring candidate");
+            transition(State.IDLE, setupProgress() + ": waiting for a verified spawn-ring candidate");
             return;
         }
         if (!isSafePlacementTile(target, false)) {
@@ -217,7 +225,11 @@ public class AutoChinScript extends Script {
             return;
         }
         moveTarget = target;
-        transition(State.MOVING, "Move to lay box trap at " + target);
+        transition(State.MOVING, setupProgress() + ": move to lay box trap at " + target);
+    }
+
+    private String setupProgress() {
+        return "Initial setup " + managedTiles.size() + "/" + trapLimit;
     }
 
     private void handleMoveTarget() {

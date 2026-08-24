@@ -9,6 +9,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AutoHunterPlannerTest {
     @Test
+    void bootstrapsUntilEveryAllowedTrapHasAnOwnedTile() {
+        assertTrue(AutoHunterPlanner.shouldBootstrap(0, 4));
+        assertTrue(AutoHunterPlanner.shouldBootstrap(3, 4));
+        assertFalse(AutoHunterPlanner.shouldBootstrap(4, 4));
+        assertFalse(AutoHunterPlanner.shouldBootstrap(5, 4));
+    }
+
+    @Test
     void derivesNormalBoxTrapLimit() {
         assertEquals(1, AutoHunterPlanner.normalBoxTrapLimit(19));
         assertEquals(2, AutoHunterPlanner.normalBoxTrapLimit(20));
