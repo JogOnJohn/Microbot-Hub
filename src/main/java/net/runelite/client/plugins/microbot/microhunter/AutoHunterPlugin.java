@@ -27,7 +27,7 @@ import java.awt.*;
 )
 @Slf4j
 public class AutoHunterPlugin extends Plugin {
-    public static final String version = "1.3.1";
+    public static final String version = "1.3.2";
     @Inject
     private AutoHunterConfig config;
 

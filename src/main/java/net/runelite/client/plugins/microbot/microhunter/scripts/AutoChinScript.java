@@ -1,20 +1,26 @@
 package net.runelite.client.plugins.microbot.microhunter.scripts;
 
 import net.runelite.api.ItemID;
+import net.runelite.api.MenuAction;
 import net.runelite.api.NPC;
+import net.runelite.api.Perspective;
+import net.runelite.api.Point;
 import net.runelite.api.Skill;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
 import net.runelite.client.plugins.microbot.microhunter.AutoHunterConfig;
+import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.player.Rs2PlayerModel;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 
+import java.awt.Rectangle;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Map;
@@ -75,6 +81,8 @@ public class AutoChinScript extends Script {
     private Action delayedAction;
     private WorldPoint delayedActionTile;
     private long delayedActionReadyAt;
+    private WorldPoint lastCanvasMoveTile;
+    private long lastCanvasMoveAt;
 
     public boolean run(AutoHunterConfig config) {
         resetSession();
@@ -106,6 +114,8 @@ public class AutoChinScript extends Script {
         nextMouseWanderAt = scheduleFromNow(System.currentTimeMillis(),
                 MOUSE_WANDER_MIN_INTERVAL_MS, MOUSE_WANDER_MAX_INTERVAL_MS);
         mouseWanderPauseUntil = 0;
+        lastCanvasMoveTile = null;
+        lastCanvasMoveAt = 0;
         clearDelayedAction();
     }
 
@@ -235,11 +245,15 @@ public class AutoChinScript extends Script {
     private void handleMoveTarget() {
         WorldPoint player = Rs2Player.getWorldLocation();
         if (!player.equals(moveTarget)) {
-            Rs2Walker.walkTo(moveTarget, 0);
+            if (!clickCanvasTile(moveTarget)) {
+                transition(State.MOVING, "Target tile is not visible on the game canvas: " + moveTarget);
+            }
             return;
         }
         WorldPoint layTile = moveTarget;
         moveTarget = null;
+        lastCanvasMoveTile = null;
+        lastCanvasMoveAt = 0;
         if (!isSafePlacementTile(layTile, managedTiles.contains(layTile))
                 || !Rs2Inventory.contains(ItemID.BOX_TRAP)) {
             clearDelayedAction();
@@ -257,6 +271,30 @@ public class AutoChinScript extends Script {
             clearDelayedAction();
             transition(State.IDLE, "Lay interaction was not dispatched");
         }
+    }
+
+    private boolean clickCanvasTile(WorldPoint tile) {
+        long now = System.currentTimeMillis();
+        if (tile != null && tile.equals(lastCanvasMoveTile) && now - lastCanvasMoveAt < 1_000) return true;
+        if (tile == null || Microbot.getClient().getTopLevelWorldView() == null) return false;
+        LocalPoint localPoint = LocalPoint.fromWorld(Microbot.getClient().getTopLevelWorldView(), tile);
+        if (localPoint == null) return false;
+        Point canvasPoint = Perspective.localToCanvas(Microbot.getClient(), localPoint,
+                Microbot.getClient().getTopLevelWorldView().getPlane());
+        if (canvasPoint == null || canvasPoint.getX() < 0 || canvasPoint.getY() < 0) return false;
+
+        NewMenuEntry entry = new NewMenuEntry()
+                .param0(canvasPoint.getX())
+                .param1(canvasPoint.getY())
+                .type(MenuAction.WALK)
+                .identifier(0)
+                .itemId(0)
+                .option("Walk here");
+        Microbot.doInvoke(entry, new Rectangle(canvasPoint.getX(), canvasPoint.getY(), 1, 1));
+        lastCanvasMoveTile = tile;
+        lastCanvasMoveAt = now;
+        Microbot.log("AutoHunter movement: canvas click " + tile + " at " + canvasPoint);
+        return true;
     }
 
     private boolean readyForHumanizedAction(Action action, WorldPoint tile) {
