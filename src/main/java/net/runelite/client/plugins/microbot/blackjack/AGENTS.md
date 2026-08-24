@@ -2,13 +2,14 @@
 
 ## Safety Invariants
 
-- Healing has priority over blackjacking. Never drop empty jugs; a full inventory prevents combat after failed pickpockets.
+- Healing has priority over blackjacking. Never drop empty jugs inside the house. A disarmed combat reset may temporarily drop exactly one full wine only when healing is not latched, and must re-equip the blackjack and recover that owned wine before continuing.
 - Operate only in the supported marked Pollnivneach house and against the selected level-appropriate bandit.
 - Configure target-specific Menu Entry Swapper actions: normal left-click is `Pickpocket` and Shift+left-click is `Knock-Out`. Verify the live top option and cursor hull before clicking.
 - Do not issue another Knock-Out while the target is unconscious or while the current two-pickpocket burst remains unresolved.
 - Release pickpocket bursts from success/failure signals, with only a bounded safety fallback for missing events.
 - Cursor anchors and wander points must remain inside the live NPC convex hull. Avoid curtain/door menu entries.
-- Combat reset first unequips the blackjack, attempts Shift+left-click `Knock-Out`, and re-equips when an inventory slot is available. A full inventory must retain the staged safespot fallback at `3359,2995,0` then `3360,2993,0`.
+- Combat reset first creates a slot if configured, unequips the blackjack, attempts Shift+left-click `Knock-Out`, re-equips, and recovers any temporarily dropped wine. The staged safespot fallback remains at `3359,2995,0` then `3360,2993,0`.
+- Wine exit and re-entry use the curtain's live `Open`/`Close` action on every retry. Do not trust a previous open timestamp or require exact player-tile equality before interacting.
 
 ## Runtime Signals
 

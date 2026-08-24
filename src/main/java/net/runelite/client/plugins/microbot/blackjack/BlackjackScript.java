@@ -20,6 +20,7 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
+import net.runelite.client.plugins.microbot.api.tileitem.models.Rs2TileItemModel;
 import net.runelite.client.plugins.microbot.api.tileobject.Rs2TileObjectQueryable;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
@@ -98,6 +99,8 @@ public class BlackjackScript extends Script
     private static final long COMBAT_UNEQUIP_TIMEOUT_MS = 1_200;
     private static final long COMBAT_DISARM_KNOCKOUT_TIMEOUT_MS = 1_500;
     private static final long COMBAT_REEQUIP_TIMEOUT_MS = 3_000;
+    private static final long COMBAT_WINE_DROP_TIMEOUT_MS = 1_200;
+    private static final long COMBAT_WINE_RECOVERY_TIMEOUT_MS = 8_000;
     private static final long FAILED_KNOCKOUT_RETALIATION_GRACE_MS = 1_800;
     private static final long SUSTAINED_NPC_ATTACK_MS = 3_000;
     private static final long CAMERA_PIVOT_COOLDOWN_MS = 1_000;
@@ -105,6 +108,8 @@ public class BlackjackScript extends Script
     private static final int CAMERA_PIVOT_STEP = 192;
     private static final long CAMERA_PITCH_COOLDOWN_MS = 1_000;
     private static final long DOOR_INTERACTION_DELAY_MS = 650;
+    private static final long WINE_DOOR_CROSSING_RETRY_MS = 350;
+    private static final long WINE_DOOR_CROSSING_TIMEOUT_MS = 30_000;
     private static final int TOP_DOWN_CAMERA_PITCH = 383;
     private static final int TOP_DOWN_CAMERA_TOLERANCE = 8;
     private static final long HUMANIZER_MOUSE_MIN_INTERVAL_MS = 45_000;
@@ -127,9 +132,11 @@ public class BlackjackScript extends Script
     private enum CombatResetPhase
     {
         UNTRIED,
+        DROPPING_WINE,
         UNEQUIPPING,
         KNOCKING_OUT,
         REEQUIPPING,
+        RECOVERING_WINE,
         FALLBACK
     }
 
@@ -237,6 +244,8 @@ public class BlackjackScript extends Script
     private boolean wineInventoryPrepared;
     private int restockTargetWineCount;
     private long wineExitCurtainOpenedAt;
+    private int wineDoorCrossingAttempts;
+    private long wineDoorCrossingStartedAt;
     private long nextHumanizerMouseAt;
     private long humanizerMouseRecoverAt;
     private long nextHumanizerMistakeAt;
@@ -256,6 +265,8 @@ public class BlackjackScript extends Script
     private long combatResetKnockoutAt;
     private long combatResetClearSince;
     private boolean combatResetKnockoutSucceeded;
+    private boolean combatWineDropped;
+    private WorldPoint combatWineDropTile;
     private boolean humanizerMistakeClicked;
     private String humanizerMistakeOption = "Examine";
     private String humanizerBreakType = "None";
@@ -313,6 +324,8 @@ public class BlackjackScript extends Script
         wineInventoryPrepared = false;
         restockTargetWineCount = 0;
         wineExitCurtainOpenedAt = 0;
+        wineDoorCrossingAttempts = 0;
+        wineDoorCrossingStartedAt = 0;
         long now = System.currentTimeMillis();
         nextHumanizerMouseAt = scheduleFromNow(now,
                 HUMANIZER_MOUSE_MIN_INTERVAL_MS, HUMANIZER_MOUSE_MAX_INTERVAL_MS);
@@ -878,9 +891,24 @@ public class BlackjackScript extends Script
                 }
                 if (Rs2Inventory.emptySlotCount() == 0)
                 {
-                    log.info("Disarmed combat reset unavailable because inventory is full; using safespot fallback");
-                    combatResetPhase = CombatResetPhase.FALLBACK;
-                    return false;
+                    if (!config.dropWineForDisarmedReset()
+                            || healingRequired
+                            || Rs2Inventory.count(WINE_ID) == 0)
+                    {
+                        log.info("Disarmed combat reset cannot create a safe slot: dropEnabled={} healingRequired={} wines={}; using safespot fallback",
+                                config.dropWineForDisarmedReset(), healingRequired, Rs2Inventory.count(WINE_ID));
+                        combatResetPhase = CombatResetPhase.FALLBACK;
+                        return false;
+                    }
+                    if (readyForInteraction(80) && Rs2Inventory.drop(WINE_ID))
+                    {
+                        combatWineDropTile = Rs2Player.getWorldLocation();
+                        lastInteractionAt = now;
+                        startCombatResetPhase(CombatResetPhase.DROPPING_WINE,
+                                "Temporarily drop one wine for blackjack slot");
+                        log.info("Dropping one wine at {} for disarmed combat reset", combatWineDropTile);
+                    }
+                    return true;
                 }
                 if (readyForInteraction(80)
                         && Rs2Equipment.unEquip(EquipmentInventorySlot.WEAPON))
@@ -888,6 +916,27 @@ public class BlackjackScript extends Script
                     lastInteractionAt = now;
                     startCombatResetPhase(CombatResetPhase.UNEQUIPPING,
                             "Unequip blackjack to interrupt combat");
+                }
+                return true;
+            case DROPPING_WINE:
+                if (Rs2Inventory.emptySlotCount() > 0)
+                {
+                    combatWineDropped = true;
+                    if (readyForInteraction(80)
+                            && Rs2Equipment.unEquip(EquipmentInventorySlot.WEAPON))
+                    {
+                        lastInteractionAt = now;
+                        startCombatResetPhase(CombatResetPhase.UNEQUIPPING,
+                                "Unequip blackjack to interrupt combat");
+                    }
+                    return true;
+                }
+                if (now - combatResetPhaseAt >= COMBAT_WINE_DROP_TIMEOUT_MS)
+                {
+                    log.warn("Wine did not leave inventory within {}ms; using safespot fallback",
+                            COMBAT_WINE_DROP_TIMEOUT_MS);
+                    combatResetPhase = CombatResetPhase.FALLBACK;
+                    return false;
                 }
                 return true;
             case UNEQUIPPING:
@@ -909,6 +958,8 @@ public class BlackjackScript extends Script
                 return runUnarmedKnockout(now);
             case REEQUIPPING:
                 return reEquipAfterCombatReset(now);
+            case RECOVERING_WINE:
+                return recoverCombatResetWine(now);
             case FALLBACK:
             default:
                 return false;
@@ -976,18 +1027,13 @@ public class BlackjackScript extends Script
     {
         if (hasBlackjackEquipped())
         {
-            if (combatResetKnockoutSucceeded)
+            if (combatWineDropped)
             {
-                combatClearSince = now;
-                combatSignal = false;
-                npcInteractionSince = 0;
-                ignoreCombatUntil = now + COMBAT_CLEAR_SETTLE_MS;
-                transition(BlackjackState.WAITING_FOR_COMBAT_CLEAR,
-                        "Confirm combat stayed clear after disarmed Knock-Out");
+                startCombatResetPhase(CombatResetPhase.RECOVERING_WINE,
+                        "Recover temporarily dropped wine");
                 return true;
             }
-            combatResetPhase = CombatResetPhase.FALLBACK;
-            return false;
+            return finishCombatResetReequip(now);
         }
 
         if (now - combatResetPhaseAt >= COMBAT_REEQUIP_TIMEOUT_MS)
@@ -1005,6 +1051,75 @@ public class BlackjackScript extends Script
         return true;
     }
 
+    private boolean recoverCombatResetWine(long now)
+    {
+        Rs2TileItemModel wine = findDroppedCombatWine();
+        if (Rs2Inventory.emptySlotCount() == 0 && wine == null)
+        {
+            combatWineDropped = false;
+            combatWineDropTile = null;
+            lastOutcome = "Recovered combat-reset wine";
+            log.info("Recovered temporarily dropped wine after disarmed combat reset");
+            return finishCombatResetReequip(now);
+        }
+
+        if (now - combatResetPhaseAt >= COMBAT_WINE_RECOVERY_TIMEOUT_MS)
+        {
+            fail("Unable to recover temporarily dropped wine");
+            return true;
+        }
+        if (wine != null && readyForInteraction(250) && wine.pickup())
+        {
+            lastInteractionAt = now;
+            nextAction = "Pick up temporarily dropped wine";
+        }
+        else
+        {
+            nextAction = "Wait for temporarily dropped wine";
+        }
+        return true;
+    }
+
+    private Rs2TileItemModel findDroppedCombatWine()
+    {
+        if (!combatWineDropped || combatWineDropTile == null)
+        {
+            return null;
+        }
+        return Microbot.getRs2TileItemCache().query()
+                .withId(WINE_ID)
+                .where(item -> item.isOwned()
+                        && combatWineDropTile.equals(item.getWorldLocation()))
+                .nearestOnClientThread(combatWineDropTile, 0);
+    }
+
+    private boolean finishCombatResetReequip(long now)
+    {
+        if (combatResetKnockoutSucceeded)
+        {
+            combatClearSince = now;
+            combatSignal = false;
+            npcInteractionSince = 0;
+            ignoreCombatUntil = now + COMBAT_CLEAR_SETTLE_MS;
+            transition(BlackjackState.WAITING_FOR_COMBAT_CLEAR,
+                    "Confirm combat stayed clear after disarmed Knock-Out");
+            return true;
+        }
+        combatResetPhase = CombatResetPhase.FALLBACK;
+        return false;
+    }
+
+    private boolean hasPendingCombatEquipmentRecovery()
+    {
+        return state == BlackjackState.POSITIONING_COMBAT_RESET
+                && (combatWineDropped
+                || combatResetPhase == CombatResetPhase.DROPPING_WINE
+                || combatResetPhase == CombatResetPhase.UNEQUIPPING
+                || combatResetPhase == CombatResetPhase.KNOCKING_OUT
+                || combatResetPhase == CombatResetPhase.REEQUIPPING
+                || combatResetPhase == CombatResetPhase.RECOVERING_WINE);
+    }
+
     private void startCombatResetPhase(CombatResetPhase phase, String action)
     {
         combatResetPhase = phase;
@@ -1019,6 +1134,8 @@ public class BlackjackScript extends Script
         combatResetKnockoutAt = 0;
         combatResetClearSince = 0;
         combatResetKnockoutSucceeded = false;
+        combatWineDropped = false;
+        combatWineDropTile = null;
     }
 
     private void escapeCombat()
@@ -1092,6 +1209,15 @@ public class BlackjackScript extends Script
 
     private boolean handleWineRestockPriority()
     {
+        if (hasPendingCombatEquipmentRecovery())
+        {
+            if (wineRestockPending)
+            {
+                restockAfterCombatReset = true;
+            }
+            return true;
+        }
+
         int wines = Rs2Inventory.count(WINE_ID);
         int hitpoints = currentHitpoints();
         projectedWinesNeeded = winesNeededToReach(hitpoints, config.healToPercent());
@@ -1183,36 +1309,35 @@ public class BlackjackScript extends Script
         if (!isInsideHouse())
         {
             wineExitCurtainOpenedAt = 0;
+            wineDoorCrossingAttempts = 0;
+            wineDoorCrossingStartedAt = 0;
             transition(BlackjackState.SECURING_WINE_EXIT, "Close east door behind player");
             return;
         }
 
-        WorldPoint location = Rs2Player.getWorldLocation();
-        if (!WINE_DOOR_INSIDE_TILE.equals(location))
+        Rs2TileObjectModel openDoor = findWineDoor("Close");
+        if (openDoor != null)
         {
-            if (readyForInteraction(450))
+            if (wineExitCurtainOpenedAt == 0)
             {
-                Rs2Walker.walkFastCanvas(WINE_DOOR_INSIDE_TILE);
-                lastInteractionAt = System.currentTimeMillis();
-                nextAction = "Walk to inside door tile";
+                wineExitCurtainOpenedAt = System.currentTimeMillis();
+                log.info("East curtain is open; crossing from {} to {}",
+                        Rs2Player.getWorldLocation(), WINE_DOOR_OUTSIDE_TILE);
             }
-            return;
-        }
-
-        if (wineExitCurtainOpenedAt != 0)
-        {
-            if (readyForInteraction(350))
-            {
-                Rs2Walker.walkFastCanvas(WINE_DOOR_OUTSIDE_TILE);
-                lastInteractionAt = System.currentTimeMillis();
-                nextAction = "Step outside east door";
-            }
+            walkAcrossWineDoor(WINE_DOOR_OUTSIDE_TILE, "Step outside east curtain");
             return;
         }
 
         Rs2TileObjectModel closedDoor = findWineDoor("Open");
         if (closedDoor != null)
         {
+            if (wineExitCurtainOpenedAt != 0)
+            {
+                log.info("East curtain closed again before crossing; reopening");
+                wineExitCurtainOpenedAt = 0;
+                wineDoorCrossingAttempts = 0;
+                wineDoorCrossingStartedAt = 0;
+            }
             if (interactWithWineDoor(closedDoor, "Open", "Open east door"))
             {
                 wineExitCurtainOpenedAt = System.currentTimeMillis();
@@ -1220,11 +1345,14 @@ public class BlackjackScript extends Script
             return;
         }
 
-        if (findWineDoor("Close") != null && readyForInteraction(350))
+        WorldPoint location = Rs2Player.getWorldLocation();
+        if (location != null
+                && location.distanceTo2D(WINE_DOOR_INSIDE_TILE) > 2
+                && readyForInteraction(450))
         {
-            Rs2Walker.walkFastCanvas(WINE_DOOR_OUTSIDE_TILE);
+            Rs2Walker.walkFastCanvas(WINE_DOOR_INSIDE_TILE);
             lastInteractionAt = System.currentTimeMillis();
-            nextAction = "Step outside east door";
+            nextAction = "Approach east curtain";
             return;
         }
 
@@ -1239,18 +1367,6 @@ public class BlackjackScript extends Script
             return;
         }
 
-        WorldPoint location = Rs2Player.getWorldLocation();
-        if (!WINE_DOOR_OUTSIDE_TILE.equals(location))
-        {
-            if (readyForInteraction(450))
-            {
-                Rs2Walker.walkFastCanvas(WINE_DOOR_OUTSIDE_TILE);
-                lastInteractionAt = System.currentTimeMillis();
-                nextAction = "Stand one tile outside east door";
-            }
-            return;
-        }
-
         Rs2TileObjectModel openDoor = findWineDoor("Close");
         if (openDoor != null)
         {
@@ -1260,7 +1376,20 @@ public class BlackjackScript extends Script
 
         if (findWineDoor("Open") != null)
         {
+            wineDoorCrossingAttempts = 0;
+            wineDoorCrossingStartedAt = 0;
             transition(BlackjackState.RESTOCKING_WINE, "Prepare space and exchange wine notes");
+            return;
+        }
+
+        WorldPoint location = Rs2Player.getWorldLocation();
+        if (location != null
+                && location.distanceTo2D(WINE_DOOR_OUTSIDE_TILE) > 2
+                && readyForInteraction(450))
+        {
+            Rs2Walker.walkFastCanvas(WINE_DOOR_OUTSIDE_TILE);
+            lastInteractionAt = System.currentTimeMillis();
+            nextAction = "Return beside east curtain";
             return;
         }
 
@@ -1341,12 +1470,14 @@ public class BlackjackScript extends Script
 
         if (isInsideHouse())
         {
+            wineDoorCrossingAttempts = 0;
+            wineDoorCrossingStartedAt = 0;
             transition(BlackjackState.SECURING_WINE_ENTRY, "Close east door behind player");
             return;
         }
 
         WorldPoint location = Rs2Player.getWorldLocation();
-        if (!WINE_DOOR_OUTSIDE_TILE.equals(location))
+        if (location != null && location.distanceTo2D(WINE_DOOR_OUTSIDE_TILE) > 2)
         {
             if (readyForInteraction(450))
             {
@@ -1366,9 +1497,7 @@ public class BlackjackScript extends Script
 
         if (findWineDoor("Close") != null && readyForInteraction(350))
         {
-            Rs2Walker.walkFastCanvas(WINE_DOOR_INSIDE_TILE);
-            lastInteractionAt = System.currentTimeMillis();
-            nextAction = "Step back inside east door";
+            walkAcrossWineDoor(WINE_DOOR_INSIDE_TILE, "Step back inside east curtain");
             return;
         }
 
@@ -1450,6 +1579,38 @@ public class BlackjackScript extends Script
             return true;
         }
         return false;
+    }
+
+    private void walkAcrossWineDoor(WorldPoint destination, String description)
+    {
+        long now = System.currentTimeMillis();
+        if (wineDoorCrossingStartedAt == 0)
+        {
+            wineDoorCrossingStartedAt = now;
+        }
+        if (now - wineDoorCrossingStartedAt >= WINE_DOOR_CROSSING_TIMEOUT_MS)
+        {
+            fail("Unable to cross east blackjack curtain");
+            return;
+        }
+        if (!readyForInteraction(WINE_DOOR_CROSSING_RETRY_MS))
+        {
+            return;
+        }
+
+        boolean dispatched = Rs2Walker.walkFastCanvas(destination);
+        wineDoorCrossingAttempts++;
+        lastInteractionAt = System.currentTimeMillis();
+        nextAction = description + " (attempt " + wineDoorCrossingAttempts + ")";
+        if (wineDoorCrossingAttempts == 1 || wineDoorCrossingAttempts % 5 == 0)
+        {
+            log.info("Wine-door crossing attempt {} dispatched={} player={} destination={} doorOpen={}",
+                    wineDoorCrossingAttempts,
+                    dispatched,
+                    Rs2Player.getWorldLocation(),
+                    destination,
+                    findWineDoor("Close") != null);
+        }
     }
 
     private void waitForWineDoor(String action)

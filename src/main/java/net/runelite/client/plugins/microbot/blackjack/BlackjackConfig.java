@@ -46,7 +46,8 @@ public interface BlackjackConfig extends Config
     {
         return "Requires 45 Thieving, an equipped blackjack, coins, and a pre-lured target in the supported Pollnivneach house. " +
                 "Choose the pre-lured target below. Automatic mode selects level 41 Bandits until 55, level 56 Bandits until 70, then Menaphite Thugs. " +
-                "Keep attack options hidden. For automatic restocking, carry noted wine and coins. The script isolates the target " +
+                "Keep attack options hidden. The combat reset can temporarily drop and recover one full wine to unequip the blackjack. " +
+                "For automatic restocking, carry noted wine and coins. The script isolates the target " +
                 "behind the east door before clearing empty jugs and exchanging notes with the nearby merchant.";
     }
 
@@ -96,6 +97,18 @@ public interface BlackjackConfig extends Config
             section = suppliesSection
     )
     default boolean autoRestockWine()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+            keyName = "dropWineForDisarmedReset",
+            name = "Drop wine for combat reset",
+            description = "Temporarily drop one full wine when the inventory is full so the blackjack can be unequipped, then recover it after re-equipping",
+            position = 3,
+            section = suppliesSection
+    )
+    default boolean dropWineForDisarmedReset()
     {
         return true;
     }
