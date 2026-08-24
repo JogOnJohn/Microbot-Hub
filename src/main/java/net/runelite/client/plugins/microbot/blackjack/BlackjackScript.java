@@ -70,6 +70,7 @@ public class BlackjackScript extends Script
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MIN_MS = 550;
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MAX_MS = 676;
     private static final long SECOND_PICKPOCKET_INTERACTION_TIMEOUT_MS = 2_400;
+    private static final long PREARMED_KNOCKOUT_MENU_TIMEOUT_MS = SECOND_PICKPOCKET_INTERACTION_TIMEOUT_MS + 400;
     private static final int KNOCKOUT_MENU_DWELL_MIN_MS = 180;
     private static final int KNOCKOUT_MENU_DWELL_MAX_MS = 261;
     private static final int FIRST_PICKPOCKET_DELAY_MIN_MS = 30;
@@ -611,6 +612,7 @@ public class BlackjackScript extends Script
     private void selectKnockoutMenuEntry()
     {
         Rs2NpcModel target = currentTarget();
+        long now = System.currentTimeMillis();
         if (nextKnockoutArmedAt != 0)
         {
             observeSecondPickpocketInteraction(target);
@@ -623,6 +625,17 @@ public class BlackjackScript extends Script
                 transition(BlackjackState.FINDING_TARGET, "Yield completed burst to humanizer");
                 return;
             }
+        }
+
+        long selectionTimeout = nextKnockoutArmedAt == 0
+                ? KNOCKOUT_MENU_TIMEOUT_MS
+                : PREARMED_KNOCKOUT_MENU_TIMEOUT_MS;
+        if (elapsedInState() >= selectionTimeout)
+        {
+            recoverKnockoutMenu(Microbot.getClient().isMenuOpen()
+                    ? "Choose Option menu stayed open without a resolved Knock-Out"
+                    : "menu selection did not resolve before timeout");
+            return;
         }
 
         Point menuPoint = findTargetMenuOptionPoint("Knock-Out");
@@ -646,7 +659,7 @@ public class BlackjackScript extends Script
                 nextAction = "Finish second pickpocket interaction";
                 return;
             }
-            if (System.currentTimeMillis() < knockoutMenuSelectAt)
+            if (now < knockoutMenuSelectAt)
             {
                 nextAction = "Pause over Knock-Out menu";
                 return;
@@ -660,7 +673,6 @@ public class BlackjackScript extends Script
                 recoverKnockoutMenu("menu click could not be verified");
                 return;
             }
-            long now = System.currentTimeMillis();
             lastInteractionAt = now;
             knockoutClickIssuedAt = now;
             knockoutBurstReleaseAt = now + randomBetween(
@@ -694,10 +706,6 @@ public class BlackjackScript extends Script
             return;
         }
 
-        if (elapsedInState() >= KNOCKOUT_MENU_TIMEOUT_MS)
-        {
-            recoverKnockoutMenu("menu entry was not available before timeout");
-        }
     }
 
     private void runPickpocketBurst()
@@ -1661,6 +1669,9 @@ public class BlackjackScript extends Script
         knockoutMenuMisses++;
         burstClickPoint = null;
         knockoutMenuSelectAt = 0;
+        nextKnockoutArmedAt = 0;
+        secondPickpocketInteractionSeen = false;
+        secondPickpocketInteractionComplete = false;
         Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
         lastOutcome = "Knock-Out menu recovery";
         log.warn("Knock-Out menu recovery: {}. Clearing stale menu and reacquiring target hull.", reason);
