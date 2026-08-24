@@ -464,6 +464,12 @@ public class BlackjackScript extends Script
             fail("45 Thieving required");
             return;
         }
+        int targetRequirement = requiredThievingLevel(selectedTarget());
+        if (level < targetRequirement)
+        {
+            fail(expectedTargetDescription() + " requires " + targetRequirement + " Thieving");
+            return;
+        }
 
         if (!hasBlackjackEquipped())
         {
@@ -1452,6 +1458,11 @@ public class BlackjackScript extends Script
                 case PICKPOCKET_SUCCESS:
                     if (state == BlackjackState.PICKPOCKETING || isSecondPickpocketPrearmPending())
                     {
+                        if (!hasCurrentKnockoutPickpocketClick())
+                        {
+                            log.debug("Ignoring pickpocket success before this Knock-Out issued a pickpocket click");
+                            break;
+                        }
                         successfulPickpockets++;
                         picksThisKnockout++;
                         pendingInventoryFullAt = 0;
@@ -1586,30 +1597,68 @@ public class BlackjackScript extends Script
         {
             return false;
         }
-        int thievingLevel = Rs2Player.getRealSkillLevel(Skill.THIEVING);
-        if (thievingLevel < 55)
+        BlackjackTarget target = selectedTarget();
+        switch (target)
         {
-            return npc.getName().equalsIgnoreCase("Bandit") && npc.getCombatLevel() == 41;
+            case BANDIT_41:
+                return npc.getName().equalsIgnoreCase("Bandit") && npc.getCombatLevel() == 41;
+            case BANDIT_56:
+                return npc.getName().equalsIgnoreCase("Bandit") && npc.getCombatLevel() == 56;
+            case MENAPHITE_THUG:
+                return npc.getName().equalsIgnoreCase("Menaphite Thug");
+            default:
+                return false;
         }
-        if (thievingLevel < 65)
-        {
-            return npc.getName().equalsIgnoreCase("Bandit") && npc.getCombatLevel() == 56;
-        }
-        return npc.getName().equalsIgnoreCase("Menaphite Thug");
     }
 
     private String expectedTargetDescription()
     {
-        int level = Rs2Player.getRealSkillLevel(Skill.THIEVING);
-        if (level < 55)
+        switch (selectedTarget())
         {
-            return "Bandit (level 41)";
+            case BANDIT_41:
+                return "Bandit (level 41)";
+            case BANDIT_56:
+                return "Bandit (level 56)";
+            case MENAPHITE_THUG:
+                return "Menaphite Thug";
+            default:
+                return "Selected target";
         }
-        if (level < 65)
+    }
+
+    private BlackjackTarget selectedTarget()
+    {
+        BlackjackTarget configuredTarget = config == null ? BlackjackTarget.AUTO : config.target();
+        if (configuredTarget != BlackjackTarget.AUTO)
         {
-            return "Bandit (level 56)";
+            return configuredTarget;
         }
-        return "Menaphite Thug";
+        int thievingLevel = Rs2Player.getRealSkillLevel(Skill.THIEVING);
+        if (thievingLevel < 55)
+        {
+            return BlackjackTarget.BANDIT_41;
+        }
+        return thievingLevel < 70 ? BlackjackTarget.BANDIT_56 : BlackjackTarget.MENAPHITE_THUG;
+    }
+
+    private boolean hasCurrentKnockoutPickpocketClick()
+    {
+        return knockoutClickIssuedAt > 0 && lastPickpocketClickAt >= knockoutClickIssuedAt;
+    }
+
+    private int requiredThievingLevel(BlackjackTarget target)
+    {
+        switch (target)
+        {
+            case BANDIT_41:
+                return 45;
+            case BANDIT_56:
+                return 55;
+            case MENAPHITE_THUG:
+                return 65;
+            default:
+                return 45;
+        }
     }
 
     private boolean hasBlackjackEquipped()

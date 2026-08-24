@@ -45,9 +45,21 @@ public interface BlackjackConfig extends Config
     default String guide()
     {
         return "Requires 45 Thieving, an equipped blackjack, coins, and a pre-lured target in the supported Pollnivneach house. " +
-                "The script selects level 41 Bandits until 55, level 56 Bandits until 65, then Menaphite Thugs. " +
+                "Choose the pre-lured target below. Automatic mode selects level 41 Bandits until 55, level 56 Bandits until 70, then Menaphite Thugs. " +
                 "Keep attack options hidden. For automatic restocking, carry noted wine and coins. The script isolates the target " +
                 "behind the east door before clearing empty jugs and exchanging notes with the nearby merchant.";
+    }
+
+    @ConfigItem(
+            keyName = "target",
+            name = "Pickpocket target",
+            description = "Target that has been pre-lured into the marked house",
+            position = 1,
+            section = setupSection
+    )
+    default BlackjackTarget target()
+    {
+        return BlackjackTarget.AUTO;
     }
 
     @Range(min = 1, max = 99)
