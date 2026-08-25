@@ -22,6 +22,7 @@ import net.runelite.client.plugins.microbot.util.player.Rs2PlayerModel;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 
 import java.awt.Rectangle;
+import java.awt.Polygon;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -85,6 +86,8 @@ public class AutoChinScript extends Script {
     private volatile WorldPoint moveTarget;
     private long moveTargetStartedAt;
     private int moveTargetClickAttempts;
+    private WorldPoint blockedSetupTile;
+    private long blockedSetupTileUntil;
     private WorldPoint startTile;
     private WorldPoint layoutCenter;
     private long baselineUntil;
@@ -126,6 +129,8 @@ public class AutoChinScript extends Script {
         moveTarget = null;
         moveTargetStartedAt = 0;
         moveTargetClickAttempts = 0;
+        blockedSetupTile = null;
+        blockedSetupTileUntil = 0;
         startTile = Rs2Player.getWorldLocation();
         layoutCenter = null;
         baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
@@ -285,6 +290,7 @@ public class AutoChinScript extends Script {
         WorldPoint player = Rs2Player.getWorldLocation();
         WorldPoint target = layoutSlots.stream()
                 .filter(tile -> !managedTiles.contains(tile))
+                .filter(tile -> !isTemporarilyBlockedSetupTile(tile))
                 .filter(tile -> isSafePlacementTile(tile, false))
                 .min(Comparator.comparingInt(player::distanceTo))
                 .orElse(null);
@@ -319,7 +325,7 @@ public class AutoChinScript extends Script {
             List<WorldPoint> candidateSlots = AutoHunterPlanner.fiveDotLayout(center, trapLimit);
             if (candidateSlots.size() == trapLimit
                     && candidateSlots.stream().allMatch(tile -> managedTiles.contains(tile)
-                    || isSafePlacementTile(tile, false))) {
+                    || (!isTemporarilyBlockedSetupTile(tile) && isSafePlacementTile(tile, false)))) {
                 layoutCenter = center;
                 layoutSlots.clear();
                 layoutSlots.addAll(candidateSlots);
@@ -343,6 +349,8 @@ public class AutoChinScript extends Script {
                     || moveTargetClickAttempts >= 5) {
                 WorldPoint blocked = moveTarget;
                 clearMoveTarget();
+                blockedSetupTile = blocked;
+                blockedSetupTileUntil = System.currentTimeMillis() + 15_000;
                 layoutCenter = null;
                 layoutSlots.clear();
                 clearDelayedAction();
@@ -357,6 +365,10 @@ public class AutoChinScript extends Script {
         }
         WorldPoint layTile = moveTarget;
         clearMoveTarget();
+        if (layTile.equals(blockedSetupTile)) {
+            blockedSetupTile = null;
+            blockedSetupTileUntil = 0;
+        }
         if (!isSafePlacementTile(layTile, managedTiles.contains(layTile))
                 || !Rs2Inventory.contains(ItemID.BOX_TRAP)) {
             clearDelayedAction();
@@ -392,15 +404,33 @@ public class AutoChinScript extends Script {
         lastCanvasMoveAt = 0;
     }
 
+    private boolean isTemporarilyBlockedSetupTile(WorldPoint tile) {
+        if (blockedSetupTile == null) return false;
+        if (System.currentTimeMillis() >= blockedSetupTileUntil) {
+            blockedSetupTile = null;
+            blockedSetupTileUntil = 0;
+            return false;
+        }
+        return blockedSetupTile.equals(tile);
+    }
+
     private boolean clickCanvasTile(WorldPoint tile) {
         long now = System.currentTimeMillis();
         if (tile != null && tile.equals(lastCanvasMoveTile) && now - lastCanvasMoveAt < 1_000) return true;
         if (tile == null || Microbot.getClient().getTopLevelWorldView() == null) return false;
         LocalPoint localPoint = LocalPoint.fromWorld(Microbot.getClient().getTopLevelWorldView(), tile);
         if (localPoint == null) return false;
-        Point canvasPoint = Perspective.localToCanvas(Microbot.getClient(), localPoint,
-                Microbot.getClient().getTopLevelWorldView().getPlane());
-        if (canvasPoint == null || canvasPoint.getX() < 0 || canvasPoint.getY() < 0) return false;
+        Polygon tilePoly = Perspective.getCanvasTilePoly(Microbot.getClient(), localPoint);
+        if (tilePoly == null || tilePoly.npoints < 3) return false;
+        int sumX = 0;
+        int sumY = 0;
+        for (int i = 0; i < tilePoly.npoints; i++) {
+            sumX += tilePoly.xpoints[i];
+            sumY += tilePoly.ypoints[i];
+        }
+        Point canvasPoint = new Point(sumX / tilePoly.npoints, sumY / tilePoly.npoints);
+        if (!tilePoly.contains(canvasPoint.getX(), canvasPoint.getY())
+                || canvasPoint.getX() < 0 || canvasPoint.getY() < 0) return false;
 
         NewMenuEntry entry = new NewMenuEntry()
                 .param0(canvasPoint.getX())
