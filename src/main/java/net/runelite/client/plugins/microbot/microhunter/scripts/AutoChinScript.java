@@ -10,6 +10,8 @@ import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
+import net.runelite.client.plugins.hunter.HunterPlugin;
+import net.runelite.client.plugins.hunter.HunterTrap;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
 import net.runelite.client.plugins.microbot.microhunter.AutoHunterConfig;
@@ -23,18 +25,21 @@ import java.awt.Rectangle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import javax.inject.Inject;
 
 public class AutoChinScript extends Script {
     public enum State {
-        IDLE,
+        MONITORING,
         BUILDING_LAYOUT,
         MOVING,
+        REACTING,
         WAITING_FOR_CONFIRMATION,
         BREAK_PENDING,
         STOPPED
@@ -54,6 +59,7 @@ public class AutoChinScript extends Script {
     }
 
     private static final long ACTION_TIMEOUT_MS = 6_000;
+    private static final long REBUILD_TIMEOUT_MS = 9_000;
     private static final long SCENE_BASELINE_MS = 10_000;
     private static final long SPAWN_EXPIRY_MS = 600_000;
     private static final long MOUSE_WANDER_MIN_INTERVAL_MS = 45_000;
@@ -62,7 +68,8 @@ public class AutoChinScript extends Script {
     private final List<WorldPoint> layoutSlots = new ArrayList<>();
     private final Map<WorldPoint, SpawnObservation> spawnObservations = new ConcurrentHashMap<>();
     private final Map<WorldPoint, String> observedTrapSignatures = new ConcurrentHashMap<>();
-    private volatile State currentState = State.IDLE;
+    @Inject private HunterPlugin hunterPlugin;
+    private volatile State currentState = State.MONITORING;
     private volatile String nextAction = "Initialising";
     private volatile String stopReason = "";
     private volatile WorldPoint bestSpawnTile;
@@ -102,7 +109,7 @@ public class AutoChinScript extends Script {
         layoutSlots.clear();
         spawnObservations.clear();
         observedTrapSignatures.clear();
-        currentState = State.IDLE;
+        currentState = State.MONITORING;
         nextAction = "Waiting for client state";
         stopReason = "";
         bestSpawnTile = null;
@@ -156,7 +163,7 @@ public class AutoChinScript extends Script {
                 transition(State.BREAK_PENDING, "Break pending; manual trap recovery required");
                 return;
             }
-            if (currentState == State.BREAK_PENDING) transition(State.IDLE, "Break window cleared");
+            if (currentState == State.BREAK_PENDING) transition(State.MONITORING, "Break window cleared");
 
             if (moveTarget != null) {
                 handleMoveTarget();
@@ -176,10 +183,9 @@ public class AutoChinScript extends Script {
             // fallen trap is the only owned state with an item-expiry clock.
             if (recoverFallenManagedTrap()) return;
             if (layMissingManagedTrap()) return;
-            if (interactWithManagedTrap(AutoHunterPlanner.TrapState.CAUGHT, Action.CHECK)) return;
-            if (interactWithManagedTrap(AutoHunterPlanner.TrapState.FAILED, Action.RESET)) return;
+            if (interactWithOldestActionableTrap()) return;
             if (runIdleMouseWander(config)) return;
-            transition(State.IDLE, "Monitoring four-trap layout");
+            transition(State.MONITORING, "Monitoring four-trap layout");
         } catch (Exception ex) {
             Microbot.logStackTrace(getClass().getSimpleName(), ex);
         }
@@ -197,6 +203,37 @@ public class AutoChinScript extends Script {
             }
             clearDelayedAction();
         }
+        return false;
+    }
+
+    private boolean interactWithOldestActionableTrap() {
+        Map<WorldPoint, HunterTrap> timers = hunterPlugin == null ? new HashMap<>()
+                : Microbot.getClientThread().runOnClientThreadOptional(
+                () -> new HashMap<>(hunterPlugin.getTraps())).orElseGet(HashMap::new);
+        WorldPoint tile = managedTiles.stream()
+                .filter(point -> {
+                    AutoHunterPlanner.TrapState state = classify(trapAt(point));
+                    return state == AutoHunterPlanner.TrapState.CAUGHT
+                            || state == AutoHunterPlanner.TrapState.FAILED;
+                })
+                .min(Comparator.comparing(point -> {
+                    HunterTrap timer = timers.get(point);
+                    return timer == null ? java.time.Instant.MAX : timer.getPlacedOn();
+                })).orElse(null);
+        if (tile == null) return false;
+        Rs2TileObjectModel trap = trapAt(tile);
+        AutoHunterPlanner.TrapState state = classify(trap);
+        Action action = state == AutoHunterPlanner.TrapState.CAUGHT ? Action.CHECK : Action.RESET;
+        if (!readyForHumanizedAction(action, tile)) return true;
+        if (trap != null && trap.click(action.menuAction)) {
+            clearDelayedAction();
+            beginPending(action, tile, trapSignature(trap));
+            HunterTrap timer = timers.get(tile);
+            Microbot.log("AutoHunter priority: " + action + " at " + tile + " decay="
+                    + (timer == null ? "unknown" : Math.round(timer.getTrapTimeRelative() * 100) + "%"));
+            return true;
+        }
+        clearDelayedAction();
         return false;
     }
 
@@ -230,7 +267,7 @@ public class AutoChinScript extends Script {
 
     private void prepareNewTrap(AutoHunterConfig config) {
         if (!Rs2Inventory.contains(ItemID.BOX_TRAP)) {
-            transition(State.IDLE, "Need a box trap in inventory");
+            transition(State.MONITORING, "Need a box trap in inventory");
             return;
         }
         if (!ensureLayout(config)) {
@@ -248,7 +285,7 @@ public class AutoChinScript extends Script {
             return;
         }
         if (!isSafePlacementTile(target, false)) {
-            transition(State.IDLE, "Current placement tile is occupied or unreachable");
+            transition(State.MONITORING, "Current placement tile is occupied or unreachable");
             return;
         }
         moveTarget = target;
@@ -305,7 +342,7 @@ public class AutoChinScript extends Script {
         if (!isSafePlacementTile(layTile, managedTiles.contains(layTile))
                 || !Rs2Inventory.contains(ItemID.BOX_TRAP)) {
             clearDelayedAction();
-            transition(State.IDLE, "Lay tile became unavailable");
+            transition(State.MONITORING, "Lay tile became unavailable");
             return;
         }
         if (!readyForHumanizedAction(Action.LAY, layTile)) {
@@ -317,7 +354,7 @@ public class AutoChinScript extends Script {
             beginPending(Action.LAY, layTile, "empty");
         } else {
             clearDelayedAction();
-            transition(State.IDLE, "Lay interaction was not dispatched");
+            transition(State.MONITORING, "Lay interaction was not dispatched");
         }
     }
 
@@ -353,7 +390,7 @@ public class AutoChinScript extends Script {
             delayedActionReadyAt = now + randomActionDelay(action);
         }
         if (now < delayedActionReadyAt) {
-            transition(State.IDLE, "Reacting to " + action.menuAction.toLowerCase() + " at " + tile);
+            transition(State.REACTING, "Reacting to " + action.menuAction.toLowerCase() + " at " + tile);
             return false;
         }
         return true;
@@ -387,7 +424,7 @@ public class AutoChinScript extends Script {
         }
         if (mouseWanderPauseUntil > 0) {
             if (now < mouseWanderPauseUntil) {
-                transition(State.IDLE, "Brief pause after mouse wander");
+                transition(State.MONITORING, "Brief pause after mouse wander");
                 return true;
             }
             mouseWanderPauseUntil = 0;
@@ -409,7 +446,7 @@ public class AutoChinScript extends Script {
         int y = Math.max(8, Math.min(height - 8, originY + dy));
         Microbot.naturalMouse.moveTo(x, y);
         mouseWanderPauseUntil = now + randomBetween(250, 901);
-        transition(State.IDLE, "Mouse wandered while monitoring traps");
+        transition(State.MONITORING, "Mouse wandered while monitoring traps");
         return true;
     }
 
@@ -443,14 +480,23 @@ public class AutoChinScript extends Script {
         boolean confirmed;
         switch (action.action) {
             case LAY:
-                confirmed = object != null;
+                action.sawTransition |= inventoryChanged || objectChanged || Rs2Player.getAnimation() == 5208;
+                confirmed = action.sawTransition && classify(object) == AutoHunterPlanner.TrapState.ACTIVE
+                        && Rs2Player.getAnimation() == -1
+                        && Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP)
+                        .within(action.tile, 0).count() == 0;
                 break;
             case TAKE:
                 confirmed = inventoryChanged || Microbot.getRs2TileItemCache().query()
                         .withId(ItemID.BOX_TRAP).within(action.tile, 0).count() == 0;
                 break;
             default:
-                confirmed = inventoryChanged || objectChanged;
+                action.sawTransition |= inventoryChanged || objectChanged
+                        || Rs2Player.getAnimation() == 5212 || Rs2Player.getAnimation() == 5208;
+                confirmed = action.sawTransition && classify(object) == AutoHunterPlanner.TrapState.ACTIVE
+                        && Rs2Player.getAnimation() == -1
+                        && Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP)
+                        .within(action.tile, 0).count() == 0;
         }
 
         if (confirmed) {
@@ -458,11 +504,12 @@ public class AutoChinScript extends Script {
             if (action.action == Action.CHECK) catches++;
             if (action.action == Action.RESET) resets++;
             pending = null;
-            transition(State.IDLE, action.action + " confirmed at " + action.tile);
+            transition(State.MONITORING, action.action + " full rebuild confirmed at " + action.tile);
             Microbot.log("AutoHunter action: " + action.action + " confirmed at " + action.tile);
-        } else if (System.currentTimeMillis() - action.startedAt >= ACTION_TIMEOUT_MS) {
+        } else if (System.currentTimeMillis() - action.startedAt >=
+                (action.action == Action.TAKE ? ACTION_TIMEOUT_MS : REBUILD_TIMEOUT_MS)) {
             pending = null;
-            transition(State.IDLE, action.action + " timed out at " + action.tile);
+            transition(State.MONITORING, action.action + " timed out at " + action.tile);
             Microbot.log("AutoHunter action: " + action.action + " bounded timeout at " + action.tile);
         }
     }
@@ -611,6 +658,7 @@ public class AutoChinScript extends Script {
         private final String beforeSignature;
         private final int inventoryCount;
         private final long startedAt;
+        private boolean sawTransition;
 
         private PendingAction(Action action, WorldPoint tile, String beforeSignature,
                               int inventoryCount, long startedAt) {
