@@ -14,6 +14,8 @@ import net.runelite.client.plugins.hunter.HunterPlugin;
 import net.runelite.client.plugins.hunter.HunterTrap;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
+import net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban;
+import net.runelite.client.plugins.microbot.util.antiban.enums.ActivityIntensity;
 import net.runelite.client.plugins.microbot.microhunter.AutoHunterConfig;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
@@ -101,9 +103,11 @@ public class AutoChinScript extends Script {
     private long lastCanvasMoveAt;
     private WorldPoint preparedTrapTile;
     private long preparedTrapExpiresAt;
+    private boolean preparedTrapNeedsReacquire;
 
     public boolean run(AutoHunterConfig config) {
         resetSession();
+        Rs2Antiban.setActivityIntensity(ActivityIntensity.HIGH);
         Microbot.enableAutoRunOn = false;
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> pulse(config),
                 0, 250, TimeUnit.MILLISECONDS);
@@ -156,7 +160,12 @@ public class AutoChinScript extends Script {
 
             huntingRadius = Math.max(1, config.huntingRadius());
             humanizerEnabled = config.humanizerEnabled();
-            if (Rs2Player.isMoving() || Microbot.getClient().isMenuOpen()) clearPreparedTrap();
+            if (Microbot.getClient().isMenuOpen()) {
+                clearPreparedTrap();
+            } else if (Rs2Player.isMoving() && preparedTrapTile != null) {
+                preparedTrapNeedsReacquire = true;
+                preparedTrapExpiresAt = System.currentTimeMillis() + 3_000;
+            }
             trapLimit = AutoHunterPlanner.normalBoxTrapLimit(Rs2Player.getRealSkillLevel(Skill.HUNTER));
             expireSpawnObservations();
             updateSpawnRing(config);
@@ -450,6 +459,11 @@ public class AutoChinScript extends Script {
         long now = System.currentTimeMillis();
         boolean prepared = tile.equals(preparedTrapTile) && now < preparedTrapExpiresAt;
         if (preparedTrapTile != null && !prepared) clearPreparedTrap();
+        if (prepared && preparedTrapNeedsReacquire) {
+            if (!reacquirePreparedTrap(tile)) clearPreparedTrap();
+            else preparedTrapNeedsReacquire = false;
+            return false;
+        }
         if (delayedAction != action || !tile.equals(delayedActionTile)) {
             delayedAction = action;
             delayedActionTile = tile;
@@ -527,6 +541,7 @@ public class AutoChinScript extends Script {
     private void clearPreparedTrap() {
         preparedTrapTile = null;
         preparedTrapExpiresAt = 0;
+        preparedTrapNeedsReacquire = false;
     }
 
     private static int randomBetween(int minimumInclusive, int maximumExclusive) {
@@ -598,7 +613,11 @@ public class AutoChinScript extends Script {
     }
 
     private void preHoverNextReset(PendingAction current) {
-        if (current.preHoverComplete || System.currentTimeMillis() < current.nextPreHoverAttemptAt) return;
+        if (current.preHoverComplete) {
+            runPreHoverFidget(current);
+            return;
+        }
+        if (System.currentTimeMillis() < current.nextPreHoverAttemptAt) return;
         if (Microbot.naturalMouse == null || Microbot.getClient().isMenuOpen() || Rs2Player.isMoving()) {
             current.preHoverTile = null;
             current.preHoverCorrectionAt = 0;
@@ -661,9 +680,57 @@ public class AutoChinScript extends Script {
 
         Microbot.naturalMouse.moveTo(targetX, targetY);
         current.preHoverComplete = true;
+        current.preHoverFidgetsRemaining = humanizerEnabled ? randomBetween(1, 3) : 0;
+        current.nextPreHoverFidgetAt = now + (humanizerEnabled ? randomBetween(180, 651) : 0);
         preparedTrapTile = current.preHoverTile;
         preparedTrapExpiresAt = now + 3_000;
         Microbot.log("AutoHunter pre-hover: next reset " + preparedTrapTile);
+    }
+
+    private void runPreHoverFidget(PendingAction current) {
+        long now = System.currentTimeMillis();
+        if (!humanizerEnabled || current.preHoverFidgetsRemaining <= 0
+                || now < current.nextPreHoverFidgetAt || Microbot.naturalMouse == null
+                || Microbot.getClient().isMenuOpen() || Rs2Player.isMoving()) return;
+        Rectangle bounds = trapClickboxBounds(current.preHoverTile);
+        if (bounds == null) return;
+        Point mouse = Microbot.getClient().getMouseCanvasPosition();
+        int baseX = mouse == null ? bounds.x + bounds.width / 2 : mouse.getX();
+        int baseY = mouse == null ? bounds.y + bounds.height / 2 : mouse.getY();
+        int x = Math.max(bounds.x + 1, Math.min(bounds.x + bounds.width - 1,
+                baseX + randomBetween(3, 11) * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1)));
+        int y = Math.max(bounds.y + 1, Math.min(bounds.y + bounds.height - 1,
+                baseY + randomBetween(2, 8) * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1)));
+        Microbot.naturalMouse.moveTo(x, y);
+        current.preHoverFidgetsRemaining--;
+        current.nextPreHoverFidgetAt = now + randomBetween(180, 651);
+        preparedTrapExpiresAt = now + 3_000;
+    }
+
+    private boolean reacquirePreparedTrap(WorldPoint tile) {
+        Rectangle bounds = trapClickboxBounds(tile);
+        if (bounds == null || Microbot.naturalMouse == null || Rs2Player.isMoving()) return false;
+        int centerX = bounds.x + bounds.width / 2;
+        int centerY = bounds.y + bounds.height / 2;
+        int sideX = Math.max(8, Math.min(Microbot.getClient().getCanvasWidth() - 8,
+                centerX + randomBetween(10, 27) * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1)));
+        int sideY = Math.max(8, Math.min(Microbot.getClient().getCanvasHeight() - 8,
+                centerY + randomBetween(4, 13) * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1)));
+        Microbot.naturalMouse.moveTo(sideX, sideY);
+        Microbot.naturalMouse.moveTo(centerX, centerY);
+        preparedTrapExpiresAt = System.currentTimeMillis() + 3_000;
+        Microbot.log("AutoHunter pre-hover: reacquired after movement " + tile);
+        return true;
+    }
+
+    private Rectangle trapClickboxBounds(WorldPoint tile) {
+        Rs2TileObjectModel target = trapAt(tile);
+        if (target == null) return null;
+        Rectangle bounds = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            java.awt.Shape clickbox = target.getClickbox();
+            return clickbox == null ? null : clickbox.getBounds();
+        }).orElse(null);
+        return bounds == null || bounds.width < 3 || bounds.height < 3 ? null : bounds;
     }
 
     private WorldPoint oldestActionableTrapExcluding(WorldPoint excluded) {
@@ -832,6 +899,8 @@ public class AutoChinScript extends Script {
         private long preHoverCorrectionAt;
         private long nextPreHoverAttemptAt;
         private boolean preHoverComplete;
+        private int preHoverFidgetsRemaining;
+        private long nextPreHoverFidgetAt;
 
         private PendingAction(Action action, WorldPoint tile, String beforeSignature,
                               int inventoryCount, long startedAt, long nextPreHoverAttemptAt) {
