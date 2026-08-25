@@ -463,14 +463,15 @@ public class AutoChinScript extends Script {
         if (prepared && preparedTrapNeedsReacquire) {
             if (!reacquirePreparedTrap(tile)) clearPreparedTrap();
             else preparedTrapNeedsReacquire = false;
-            return false;
+            return preparedTrapTile != null;
         }
+        // The confirmation-phase pre-hover already supplies the reaction delay.
+        // Do not schedule another delay before dispatching the prepared reset.
+        if (prepared) return true;
         if (delayedAction != action || !tile.equals(delayedActionTile)) {
             delayedAction = action;
             delayedActionTile = tile;
-            delayedActionReadyAt = now + (prepared
-                    ? (humanizerEnabled ? randomBetween(35, 141) : 0)
-                    : randomActionDelay(action));
+            delayedActionReadyAt = now + randomActionDelay(action);
         }
         if (now < delayedActionReadyAt) {
             transition(State.REACTING, "Reacting to " + action.menuAction.toLowerCase() + " at " + tile);
@@ -718,7 +719,6 @@ public class AutoChinScript extends Script {
         int sideY = Math.max(8, Math.min(Microbot.getClient().getCanvasHeight() - 8,
                 centerY + randomBetween(4, 13) * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1)));
         Microbot.naturalMouse.moveTo(sideX, sideY);
-        Microbot.naturalMouse.moveTo(centerX, centerY);
         preparedTrapExpiresAt = System.currentTimeMillis() + 3_000;
         Microbot.log("AutoHunter pre-hover: reacquired after movement " + tile);
         return true;
