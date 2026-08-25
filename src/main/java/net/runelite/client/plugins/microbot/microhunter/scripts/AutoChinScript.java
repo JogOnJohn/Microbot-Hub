@@ -46,7 +46,7 @@ public class AutoChinScript extends Script {
     }
 
     private enum Action {
-        CHECK("Check"),
+        RESET_CAUGHT("Reset"),
         RESET("Reset"),
         TAKE("Take"),
         LAY("Lay");
@@ -223,7 +223,7 @@ public class AutoChinScript extends Script {
         if (tile == null) return false;
         Rs2TileObjectModel trap = trapAt(tile);
         AutoHunterPlanner.TrapState state = classify(trap);
-        Action action = state == AutoHunterPlanner.TrapState.CAUGHT ? Action.CHECK : Action.RESET;
+        Action action = state == AutoHunterPlanner.TrapState.CAUGHT ? Action.RESET_CAUGHT : Action.RESET;
         if (!readyForHumanizedAction(action, tile)) return true;
         if (trap != null && trap.click(action.menuAction)) {
             clearDelayedAction();
@@ -400,7 +400,7 @@ public class AutoChinScript extends Script {
         if (!humanizerEnabled) return 0;
         int delay;
         switch (action) {
-            case CHECK:
+            case RESET_CAUGHT:
             case RESET:
                 delay = randomBetween(120, 421);
                 break;
@@ -501,7 +501,7 @@ public class AutoChinScript extends Script {
 
         if (confirmed) {
             if (action.action == Action.LAY) managedTiles.add(action.tile);
-            if (action.action == Action.CHECK) catches++;
+            if (action.action == Action.RESET_CAUGHT) catches++;
             if (action.action == Action.RESET) resets++;
             pending = null;
             transition(State.MONITORING, action.action + " full rebuild confirmed at " + action.tile);
