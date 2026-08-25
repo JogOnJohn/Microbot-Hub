@@ -3,6 +3,7 @@ package net.runelite.client.plugins.microbot.microhunter.scripts;
 import net.runelite.api.ItemID;
 import net.runelite.api.MenuAction;
 import net.runelite.api.NPC;
+import net.runelite.api.ObjectComposition;
 import net.runelite.api.Perspective;
 import net.runelite.api.Point;
 import net.runelite.api.Skill;
@@ -767,14 +768,17 @@ public class AutoChinScript extends Script {
     }
 
     private AutoHunterPlanner.TrapState classify(Rs2TileObjectModel object) {
-        if (object == null || object.getObjectComposition() == null) return AutoHunterPlanner.TrapState.UNKNOWN;
-        return AutoHunterPlanner.classifyActions(object.getObjectComposition().getActions());
+        if (object == null) return AutoHunterPlanner.TrapState.UNKNOWN;
+        ObjectComposition composition = object.getObjectComposition();
+        return composition == null
+                ? AutoHunterPlanner.TrapState.UNKNOWN
+                : AutoHunterPlanner.classifyActions(composition.getActions());
     }
 
     private String trapSignature(Rs2TileObjectModel object) {
         if (object == null) return "none";
-        String[] actions = object.getObjectComposition() == null
-                ? null : object.getObjectComposition().getActions();
+        ObjectComposition composition = object.getObjectComposition();
+        String[] actions = composition == null ? null : composition.getActions();
         return object.getId() + ":" + classify(object) + ":" + Arrays.toString(actions);
     }
 
