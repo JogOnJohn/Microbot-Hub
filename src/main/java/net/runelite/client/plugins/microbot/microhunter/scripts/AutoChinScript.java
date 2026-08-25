@@ -83,6 +83,8 @@ public class AutoChinScript extends Script {
     private volatile boolean humanizerEnabled = true;
     private volatile PendingAction pending;
     private volatile WorldPoint moveTarget;
+    private long moveTargetStartedAt;
+    private int moveTargetClickAttempts;
     private WorldPoint startTile;
     private WorldPoint layoutCenter;
     private long baselineUntil;
@@ -122,6 +124,8 @@ public class AutoChinScript extends Script {
         activeTraps = 0;
         pending = null;
         moveTarget = null;
+        moveTargetStartedAt = 0;
+        moveTargetClickAttempts = 0;
         startTile = Rs2Player.getWorldLocation();
         layoutCenter = null;
         baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
@@ -261,7 +265,7 @@ public class AutoChinScript extends Script {
         for (WorldPoint tile : managedTiles) {
             if (!hasAnyObjectAt(tile)
                     && Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP).within(tile, 0).count() == 0) {
-                moveTarget = tile;
+                setMoveTarget(tile);
                 transition(State.MOVING, setupProgress() + ": restore owned trap tile " + tile);
                 return true;
             }
@@ -292,7 +296,7 @@ public class AutoChinScript extends Script {
             transition(State.MONITORING, "Current placement tile is occupied or unreachable");
             return;
         }
-        moveTarget = target;
+        setMoveTarget(target);
         transition(State.BUILDING_LAYOUT, setupProgress() + ": move to lay box trap at " + target);
     }
 
@@ -334,15 +338,25 @@ public class AutoChinScript extends Script {
     private void handleMoveTarget() {
         WorldPoint player = Rs2Player.getWorldLocation();
         if (!player.equals(moveTarget)) {
+            if ((!managedTiles.contains(moveTarget) && !isSafePlacementTile(moveTarget, false))
+                    || System.currentTimeMillis() - moveTargetStartedAt >= 6_000
+                    || moveTargetClickAttempts >= 5) {
+                WorldPoint blocked = moveTarget;
+                clearMoveTarget();
+                layoutCenter = null;
+                layoutSlots.clear();
+                clearDelayedAction();
+                transition(State.BUILDING_LAYOUT, "Abandoned blocked setup tile " + blocked);
+                return;
+            }
+            if (System.currentTimeMillis() - lastCanvasMoveAt >= 1_000) moveTargetClickAttempts++;
             if (!clickCanvasTile(moveTarget)) {
                 transition(State.MOVING, "Target tile is not visible on the game canvas: " + moveTarget);
             }
             return;
         }
         WorldPoint layTile = moveTarget;
-        moveTarget = null;
-        lastCanvasMoveTile = null;
-        lastCanvasMoveAt = 0;
+        clearMoveTarget();
         if (!isSafePlacementTile(layTile, managedTiles.contains(layTile))
                 || !Rs2Inventory.contains(ItemID.BOX_TRAP)) {
             clearDelayedAction();
@@ -350,7 +364,7 @@ public class AutoChinScript extends Script {
             return;
         }
         if (!readyForHumanizedAction(Action.LAY, layTile)) {
-            moveTarget = layTile;
+            setMoveTarget(layTile);
             return;
         }
         if (Rs2Inventory.interact(ItemID.BOX_TRAP, "Lay")) {
@@ -360,6 +374,22 @@ public class AutoChinScript extends Script {
             clearDelayedAction();
             transition(State.MONITORING, "Lay interaction was not dispatched");
         }
+    }
+
+    private void setMoveTarget(WorldPoint tile) {
+        if (!tile.equals(moveTarget)) {
+            moveTargetStartedAt = System.currentTimeMillis();
+            moveTargetClickAttempts = 0;
+        }
+        moveTarget = tile;
+    }
+
+    private void clearMoveTarget() {
+        moveTarget = null;
+        moveTargetStartedAt = 0;
+        moveTargetClickAttempts = 0;
+        lastCanvasMoveTile = null;
+        lastCanvasMoveAt = 0;
     }
 
     private boolean clickCanvasTile(WorldPoint tile) {
