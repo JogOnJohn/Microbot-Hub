@@ -6,7 +6,9 @@ import net.runelite.api.events.NpcSpawned;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
+import net.runelite.client.plugins.PluginDependency;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.hunter.HunterPlugin;
 import net.runelite.client.plugins.microbot.PluginConstants;
 import net.runelite.client.plugins.microbot.microhunter.scripts.AutoChinScript;
 import net.runelite.client.ui.overlay.OverlayManager;
@@ -26,8 +28,9 @@ import java.awt.*;
         isExternal = PluginConstants.IS_EXTERNAL
 )
 @Slf4j
+@PluginDependency(HunterPlugin.class)
 public class AutoHunterPlugin extends Plugin {
-    public static final String version = "1.4.0";
+    public static final String version = "1.4.1";
     @Inject
     private AutoHunterConfig config;
 
@@ -57,13 +60,19 @@ public class AutoHunterPlugin extends Plugin {
     }
 
     protected void shutDown() {
-        autoChinScript.shutdown();
-        overlayManager.remove(autoHunterOverlay);
+        if (autoChinScript != null) {
+            autoChinScript.shutdown();
+        }
+        if (overlayManager != null && autoHunterOverlay != null) {
+            overlayManager.remove(autoHunterOverlay);
+        }
     }
 
     @Subscribe
     public void onNpcSpawned(NpcSpawned event) {
-        autoChinScript.onNpcSpawned(event.getNpc());
+        if (autoChinScript != null) {
+            autoChinScript.onNpcSpawned(event.getNpc());
+        }
     }
 
 }
