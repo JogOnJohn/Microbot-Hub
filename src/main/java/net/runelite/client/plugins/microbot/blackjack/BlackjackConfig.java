@@ -44,9 +44,10 @@ public interface BlackjackConfig extends Config
     )
     default String guide()
     {
-        return "Requires 45 Thieving, an equipped blackjack, coins, and a pre-lured target in the supported Pollnivneach house. " +
+        return "Requires [JOJ] Blackjack Entry Swap to be enabled at the same time. Requires 45 Thieving, an equipped blackjack, coins, and a pre-lured target in the supported Pollnivneach house. " +
                 "Choose the pre-lured target below. Automatic mode selects level 41 Bandits until 55, level 56 Bandits until 70, then Menaphite Thugs. " +
-                "Keep attack options hidden. The combat reset can temporarily drop and recover one full wine to unequip the blackjack. " +
+                "The helper selects Knock-Out while the target is standing and Pickpocket while it is unconscious. Keep attack options hidden. " +
+                "The combat reset can temporarily drop and recover one full wine to unequip the blackjack. " +
                 "For automatic restocking, carry noted wine and coins. The script isolates the target " +
                 "behind the east door before clearing empty jugs and exchanging notes with the nearby merchant.";
     }
@@ -116,7 +117,7 @@ public interface BlackjackConfig extends Config
     @ConfigItem(
             keyName = "humanizerEnabled",
             name = "Enable humanizer",
-            description = "Enable bounded timing variation, mouse recovery, menu mistakes, and scheduled breaks",
+            description = "Enable bounded timing variation, mouse recovery, and scheduled breaks",
             position = 0,
             section = humanizerSection
     )
@@ -138,34 +139,10 @@ public interface BlackjackConfig extends Config
     }
 
     @ConfigItem(
-            keyName = "randomMenuMistakes",
-            name = "Random menu mistakes",
-            description = "Rarely select another target option and recover before resuming",
-            position = 2,
-            section = humanizerSection
-    )
-    default boolean randomMenuMistakes()
-    {
-        return true;
-    }
-
-    @ConfigItem(
-            keyName = "includeLureMistakes",
-            name = "Include Lure mistakes",
-            description = "Allow very rare Lure selections; this can move the pre-lured target",
-            position = 3,
-            section = humanizerSection
-    )
-    default boolean includeLureMistakes()
-    {
-        return true;
-    }
-
-    @ConfigItem(
             keyName = "humanizerBreaks",
             name = "Random breaks",
             description = "Take approximately 30-second breaks around every 10 minutes and 1-2 minute breaks every 20-30 minutes",
-            position = 4,
+            position = 2,
             section = humanizerSection
     )
     default boolean humanizerBreaks()

@@ -56,7 +56,7 @@ public class BlackjackOverlay extends OverlayPanel
         addLine("Pickpockets", Integer.toString(script.getSuccessfulPickpockets()));
         addLine("Burst", script.getPicksThisKnockout() + "/2 (" + script.getPickpocketClicks() + " clicks)");
         addLine("Burst timeouts", Integer.toString(script.getBurstTimeouts()));
-        addLine("Menu misses", Integer.toString(script.getKnockoutMenuMisses()));
+        addLine("KO timeouts", Integer.toString(script.getKnockoutDispatchTimeouts()));
         addLine("Reset probes", Integer.toString(script.getCombatResetRetries()));
         addLine("HP", Rs2Player.getBoostedSkillLevel(Skill.HITPOINTS)
                 + "/" + Rs2Player.getRealSkillLevel(Skill.HITPOINTS));

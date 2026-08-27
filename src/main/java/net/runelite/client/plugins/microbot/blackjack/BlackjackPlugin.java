@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.NPC;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.OverheadTextChanged;
+import net.runelite.api.events.StatChanged;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -93,6 +94,12 @@ public class BlackjackPlugin extends Plugin
         {
             script.onOverheadTextChanged((NPC) event.getActor(), event.getOverheadText());
         }
+    }
+
+    @Subscribe
+    public void onStatChanged(StatChanged event)
+    {
+        script.onStatChanged(event.getSkill(), event.getXp());
     }
 
     private static String buildAttribute(String name)

@@ -3,10 +3,8 @@ package net.runelite.client.plugins.microbot.blackjack;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.EquipmentInventorySlot;
-import net.runelite.api.Menu;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
-import net.runelite.api.NPCComposition;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
@@ -16,7 +14,6 @@ import net.runelite.api.coords.WorldArea;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.ItemID;
-import net.runelite.client.config.ConfigManager;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
@@ -27,7 +24,6 @@ import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
-import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.shop.Rs2Shop;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
@@ -35,7 +31,6 @@ import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import javax.inject.Inject;
 import java.awt.Rectangle;
 import java.awt.Shape;
-import java.awt.event.KeyEvent;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
@@ -50,8 +45,12 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class BlackjackScript extends Script
 {
-    private static final WorldArea SUPPORTED_HOUSE = new WorldArea(3357, 2991, 4, 5, 0);
-    private static final WorldPoint HOUSE_CENTRE = new WorldPoint(3358, 2993, 0);
+    private static final WorldArea BANDIT_HOUSE = new WorldArea(3357, 2991, 4, 5, 0);
+    private static final WorldPoint BANDIT_HOUSE_CENTRE = new WorldPoint(3358, 2993, 0);
+    private static final WorldArea SOUTH_THUG_TENT = new WorldArea(3348, 2953, 4, 4, 0);
+    private static final WorldPoint SOUTH_THUG_TENT_CENTRE = new WorldPoint(3349, 2954, 0);
+    private static final WorldPoint SOUTH_THUG_COMBAT_STAGING_TILE = new WorldPoint(3351, 2956, 0);
+    private static final WorldPoint SOUTH_THUG_COMBAT_SAFE_TILE = new WorldPoint(3351, 2953, 0);
     private static final WorldPoint COMBAT_STAGING_TILE = new WorldPoint(3359, 2995, 0);
     private static final WorldPoint COMBAT_SAFE_TILE = new WorldPoint(3360, 2993, 0);
     private static final WorldPoint WINE_DOOR_INSIDE_TILE = COMBAT_SAFE_TILE;
@@ -67,25 +66,19 @@ public class BlackjackScript extends Script
     private static final int EARLY_WINE_RESTOCK_HITPOINTS = 40;
     private static final int EARLY_WINE_RESTOCK_MAX_WINES = 1;
 
-    private static final String MENU_ENTRY_SWAPPER_GROUP = "menuentryswapper";
-    private static final String NPC_LEFT_CLICK_CUSTOMIZATION_KEY = "npcLeftClickCustomization";
-    private static final String NPC_LEFT_CLICK_PREFIX = "npc_";
-    private static final String NPC_SHIFT_CLICK_PREFIX = "npc_shift_";
     private static final String PICKPOCKET_ACTION = "Pickpocket";
     private static final String KNOCKOUT_ACTION = "Knock-Out";
-    private static final long MENU_SWAP_SETTLE_MS = 35;
-    private static final long SHIFT_OPTION_TIMEOUT_MS = 750;
 
     private static final long FAILED_KNOCKOUT_RETRY_MS = 450;
     private static final long PICKPOCKET_BURST_TIMEOUT_MS = 2_800;
     private static final long KNOCKOUT_CONFIRM_TIMEOUT_MS = 1_500;
-    private static final int KNOCKOUT_DISPATCH_FALLBACK_MIN_MS = 550;
-    private static final int KNOCKOUT_DISPATCH_FALLBACK_MAX_MS = 676;
+    private static final int KNOCKOUT_DISPATCH_FALLBACK_MIN_MS = 35;
+    private static final int KNOCKOUT_DISPATCH_FALLBACK_MAX_MS = 106;
     private static final long SECOND_PICKPOCKET_INTERACTION_TIMEOUT_MS = 2_400;
     private static final int FIRST_PICKPOCKET_DELAY_MIN_MS = 30;
     private static final int FIRST_PICKPOCKET_DELAY_MAX_MS = 71;
-    private static final int PICKPOCKET_CLICK_DELAY_MIN_MS = 75;
-    private static final int PICKPOCKET_CLICK_DELAY_MAX_MS = 126;
+    private static final int PICKPOCKET_CLICK_DELAY_MIN_MS = 25;
+    private static final int PICKPOCKET_CLICK_DELAY_MAX_MS = 100;
     private static final int BURST_WANDER_CHANCE_PERCENT = 82;
     private static final int BURST_WANDER_MAX_X = 8;
     private static final int BURST_WANDER_MAX_UP = 8;
@@ -114,8 +107,6 @@ public class BlackjackScript extends Script
     private static final int TOP_DOWN_CAMERA_TOLERANCE = 8;
     private static final long HUMANIZER_MOUSE_MIN_INTERVAL_MS = 45_000;
     private static final long HUMANIZER_MOUSE_MAX_INTERVAL_MS = 120_001;
-    private static final long HUMANIZER_MISTAKE_MIN_INTERVAL_MS = 360_000;
-    private static final long HUMANIZER_MISTAKE_MAX_INTERVAL_MS = 840_001;
     private static final long HUMANIZER_MICRO_BREAK_MIN_INTERVAL_MS = 540_000;
     private static final long HUMANIZER_MICRO_BREAK_MAX_INTERVAL_MS = 660_001;
     private static final long HUMANIZER_SMALL_BREAK_MIN_INTERVAL_MS = 1_200_000;
@@ -151,23 +142,6 @@ public class BlackjackScript extends Script
         WINE_EXCHANGED
     }
 
-    private static final class MenuOptionTarget
-    {
-        private final Point clickPoint;
-        private final Rectangle bounds;
-
-        private MenuOptionTarget(Point clickPoint, Rectangle bounds)
-        {
-            this.clickPoint = clickPoint;
-            this.bounds = bounds;
-        }
-
-        private boolean contains(Point point)
-        {
-            return point != null && bounds.contains(point.getX(), point.getY());
-        }
-    }
-
     private final ConcurrentLinkedQueue<Outcome> outcomes = new ConcurrentLinkedQueue<>();
 
     @Getter
@@ -191,7 +165,7 @@ public class BlackjackScript extends Script
     @Getter
     private volatile boolean combatSignal;
     @Getter
-    private volatile int knockoutMenuMisses;
+    private volatile int knockoutDispatchTimeouts;
     @Getter
     private volatile int burstTimeouts;
     @Getter
@@ -208,10 +182,9 @@ public class BlackjackScript extends Script
     private volatile int humanizerEvents;
 
     private BlackjackConfig config;
-    @Inject
-    private ConfigManager configManager;
     private Instant startTime;
     private int startXp;
+    private int lastObservedThievingXp;
     private int targetIndex = -1;
     private long stateEnteredAt;
     private long lastInteractionAt;
@@ -248,18 +221,11 @@ public class BlackjackScript extends Script
     private long wineDoorCrossingStartedAt;
     private long nextHumanizerMouseAt;
     private long humanizerMouseRecoverAt;
-    private long nextHumanizerMistakeAt;
-    private long humanizerMistakeSelectAt;
-    private long humanizerMistakeRecoverAt;
     private long nextMicroBreakAt;
     private long nextSmallBreakAt;
     private long humanizerBreakUntil;
     private long knockoutAttemptReadyAt;
     private long knockoutRetryAt;
-    private int configuredMenuSwapNpcId = -1;
-    private long menuSwapsReadyAt;
-    private boolean targetShiftHeld;
-    private long targetShiftHeldAt;
     private CombatResetPhase combatResetPhase = CombatResetPhase.UNTRIED;
     private long combatResetPhaseAt;
     private long combatResetKnockoutAt;
@@ -267,11 +233,10 @@ public class BlackjackScript extends Script
     private boolean combatResetKnockoutSucceeded;
     private boolean combatWineDropped;
     private WorldPoint combatWineDropTile;
-    private boolean humanizerMistakeClicked;
-    private String humanizerMistakeOption = "Examine";
     private String humanizerBreakType = "None";
     private volatile KnockoutResult knockoutResult = KnockoutResult.NONE;
     private volatile boolean shutdownRequested;
+    private String lastContinuousAction;
 
     @Inject
     public BlackjackScript()
@@ -288,7 +253,7 @@ public class BlackjackScript extends Script
         picksThisKnockout = 0;
         lastOutcome = "None";
         combatSignal = false;
-        knockoutMenuMisses = 0;
+        knockoutDispatchTimeouts = 0;
         burstTimeouts = 0;
         pickpocketClicks = 0;
         combatResetRetries = 0;
@@ -329,30 +294,23 @@ public class BlackjackScript extends Script
         long now = System.currentTimeMillis();
         nextHumanizerMouseAt = scheduleFromNow(now,
                 HUMANIZER_MOUSE_MIN_INTERVAL_MS, HUMANIZER_MOUSE_MAX_INTERVAL_MS);
-        nextHumanizerMistakeAt = scheduleFromNow(now,
-                HUMANIZER_MISTAKE_MIN_INTERVAL_MS, HUMANIZER_MISTAKE_MAX_INTERVAL_MS);
         nextMicroBreakAt = scheduleFromNow(now,
                 HUMANIZER_MICRO_BREAK_MIN_INTERVAL_MS, HUMANIZER_MICRO_BREAK_MAX_INTERVAL_MS);
         nextSmallBreakAt = scheduleFromNow(now,
                 HUMANIZER_SMALL_BREAK_MIN_INTERVAL_MS, HUMANIZER_SMALL_BREAK_MAX_INTERVAL_MS);
         humanizerMouseRecoverAt = 0;
-        humanizerMistakeSelectAt = 0;
-        humanizerMistakeRecoverAt = 0;
         humanizerBreakUntil = 0;
         knockoutAttemptReadyAt = 0;
         knockoutRetryAt = 0;
-        configuredMenuSwapNpcId = -1;
-        menuSwapsReadyAt = 0;
-        releaseTargetShift();
         resetDisarmedCombatRecovery();
-        humanizerMistakeClicked = false;
-        humanizerMistakeOption = "Examine";
         humanizerBreakType = "None";
         knockoutResult = KnockoutResult.NONE;
+        lastContinuousAction = null;
         shutdownRequested = false;
         stopReason = "";
         startTime = Instant.now();
         startXp = currentThievingXp();
+        lastObservedThievingXp = startXp;
         transition(BlackjackState.STARTING, "Validate setup");
 
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
@@ -447,10 +405,8 @@ public class BlackjackScript extends Script
                 acquireTarget();
                 break;
             case KNOCKING_OUT:
-                knockOutTarget();
-                break;
             case PICKPOCKETING:
-                runPickpocketBurst();
+                runContinuousBlackjackLoop();
                 break;
             case WAITING_FOR_TARGET_CLEAR:
                 waitForTargetClear();
@@ -484,9 +440,6 @@ public class BlackjackScript extends Script
                 break;
             case HUMANIZER_MOUSE:
                 recoverHumanizerMouse();
-                break;
-            case HUMANIZER_MISCLICK:
-                runHumanizerMisclick();
                 break;
             case HUMANIZER_BREAK:
                 runHumanizerBreak();
@@ -560,7 +513,7 @@ public class BlackjackScript extends Script
         }
         if (readyForInteraction(1_000))
         {
-            Rs2Walker.walkTo(HOUSE_CENTRE, 0);
+            Rs2Walker.walkTo(activeHouseCentre(), 0);
             lastInteractionAt = System.currentTimeMillis();
         }
     }
@@ -582,10 +535,6 @@ public class BlackjackScript extends Script
 
         targetIndex = target.getIndex();
         targetDescription = target.getName() + " (level " + target.getCombatLevel() + ")";
-        if (!ensureTargetMenuSwaps(target))
-        {
-            return;
-        }
         maintainTargetCamera(target);
         transition(BlackjackState.KNOCKING_OUT, "Knock-Out target");
     }
@@ -636,13 +585,17 @@ public class BlackjackScript extends Script
                 }
                 else
                 {
+                    continuePrearmedPickpocketClicks(target);
                     nextAction = "Wait for second pickpocket interaction";
                     return;
                 }
             }
             if (secondPickpocketInteractionSeen && !secondPickpocketInteractionComplete)
             {
-                prepositionPrearmedKnockoutCursor(target);
+                if (!continuePrearmedPickpocketClicks(target))
+                {
+                    prepositionPrearmedKnockoutCursor(target);
+                }
                 return;
             }
             if (picksThisKnockout >= 2
@@ -655,11 +608,6 @@ public class BlackjackScript extends Script
             }
         }
 
-        if (!ensureTargetMenuSwaps(target))
-        {
-            return;
-        }
-
         Point anchor = targetAnchor(target, burstClickPoint);
         if (anchor == null)
         {
@@ -669,7 +617,7 @@ public class BlackjackScript extends Script
 
         if (readyForInteraction(80))
         {
-            if (!shiftLeftClickTarget(target, anchor, KNOCKOUT_ACTION))
+            if (!moveAndLeftClickTargetOption(target, anchor, KNOCKOUT_ACTION))
             {
                 return;
             }
@@ -678,6 +626,140 @@ public class BlackjackScript extends Script
             lastInteractionAt = now;
             recordKnockoutDispatch(now);
         }
+    }
+
+    private void runContinuousBlackjackLoop()
+    {
+        Rs2NpcModel target = currentTarget();
+        if (target == null)
+        {
+            lastContinuousAction = null;
+            transition(BlackjackState.FINDING_TARGET, "Refresh target");
+            return;
+        }
+
+        maintainTargetCamera(target);
+        long now = System.currentTimeMillis();
+        if (now < nextPickpocketClickAt)
+        {
+            return;
+        }
+
+        String action = clickCurrentBlackjackOption(target);
+        if (action == null)
+        {
+            nextPickpocketClickAt = now + 35;
+            return;
+        }
+
+        now = System.currentTimeMillis();
+        lastInteractionAt = now;
+        nextPickpocketClickAt = now + randomPickpocketDelay(false);
+
+        if (KNOCKOUT_ACTION.equals(action))
+        {
+            if (!KNOCKOUT_ACTION.equals(lastContinuousAction))
+            {
+                recordKnockoutDispatch(now);
+            }
+            else
+            {
+                knockoutClickIssuedAt = now;
+                knockoutResult = KnockoutResult.PENDING;
+                knockoutFailedAt = 0;
+                knockoutRetryAt = 0;
+                lastOutcome = "Continuous Knock-Out click";
+                nextAction = "Continue Knock-Out clicks";
+            }
+        }
+        else
+        {
+            if (knockoutResult == KnockoutResult.PENDING)
+            {
+                confirmKnockout("entry swap");
+            }
+            if (pickpocketBurstStartedAt == 0)
+            {
+                pickpocketBurstStartedAt = now;
+            }
+            lastPickpocketClickAt = now;
+            pickpocketClicks++;
+            nextAction = "Continue Pickpocket clicks";
+        }
+        lastContinuousAction = action;
+    }
+
+    private String clickCurrentBlackjackOption(Rs2NpcModel target)
+    {
+        if (Microbot.getClient().isMenuOpen() || Microbot.naturalMouse == null)
+        {
+            return null;
+        }
+
+        Point anchor = burstWanderAnchor(target, burstClickPoint);
+        if (anchor == null)
+        {
+            burstClickPoint = null;
+            nextAction = "Reacquire safe NPC click point";
+            return null;
+        }
+
+        Point current = Microbot.getClient().getMouseCanvasPosition();
+        if (current == null
+                || Math.abs(current.getX() - anchor.getX()) > 2
+                || Math.abs(current.getY() - anchor.getY()) > 2)
+        {
+            Microbot.naturalMouse.moveTo(anchor.getX(), anchor.getY());
+            current = Microbot.getClient().getMouseCanvasPosition();
+            if (current == null)
+            {
+                current = anchor;
+            }
+        }
+
+        if (!isInsideTargetHull(target, current))
+        {
+            burstClickPoint = null;
+            nextAction = "Reacquire safe NPC click point";
+            return null;
+        }
+
+        String action = topBlackjackOption(target);
+        if (action == null)
+        {
+            nextAction = "Wait for Blackjack entry swap";
+            return null;
+        }
+
+        Microbot.getMouse().click(current);
+        burstClickPoint = current;
+        return action;
+    }
+
+    private String topBlackjackOption(Rs2NpcModel target)
+    {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            MenuEntry[] entries = Microbot.getClient().getMenuEntries();
+            if (entries == null || entries.length == 0)
+            {
+                return null;
+            }
+            MenuEntry entry = entries[entries.length - 1];
+            NPC npc = entry.getNpc();
+            if (npc == null || target == null || npc.getIndex() != target.getIndex())
+            {
+                return null;
+            }
+            if (KNOCKOUT_ACTION.equalsIgnoreCase(entry.getOption()))
+            {
+                return KNOCKOUT_ACTION;
+            }
+            if (PICKPOCKET_ACTION.equalsIgnoreCase(entry.getOption()))
+            {
+                return PICKPOCKET_ACTION;
+            }
+            return null;
+        }).orElse(null);
     }
 
     private void recordKnockoutDispatch(long now)
@@ -699,10 +781,27 @@ public class BlackjackScript extends Script
         secondPickpocketInteractionComplete = false;
         knockoutResult = KnockoutResult.PENDING;
         curtainCameraAdjusted = false;
-        lastOutcome = "Shift-click Knock-Out dispatched";
-        log.info("Shift-click Knock-Out dispatched: dispatchAtMs={} fallbackInMs={}",
+        lastOutcome = "Left-click Knock-Out dispatched";
+        log.info("Left-click Knock-Out dispatched: dispatchAtMs={} fallbackInMs={}",
                 knockoutClickIssuedAt, knockoutBurstReleaseAt - knockoutClickIssuedAt);
         transition(BlackjackState.PICKPOCKETING, "Spam pickpocket 1/2");
+    }
+
+    private boolean continuePrearmedPickpocketClicks(Rs2NpcModel target)
+    {
+        long now = System.currentTimeMillis();
+        if (now < nextPickpocketClickAt || !clickAnchoredTarget(target))
+        {
+            return false;
+        }
+
+        now = System.currentTimeMillis();
+        lastInteractionAt = now;
+        lastPickpocketClickAt = now;
+        nextPickpocketClickAt = now + randomPickpocketDelay(false);
+        pickpocketClicks++;
+        nextAction = "Continue pickpocket click cadence";
+        return true;
     }
 
     private void runPickpocketBurst()
@@ -729,7 +828,7 @@ public class BlackjackScript extends Script
         {
             if (elapsedInState() >= KNOCKOUT_CONFIRM_TIMEOUT_MS)
             {
-                knockoutMenuMisses++;
+                knockoutDispatchTimeouts++;
                 lastOutcome = "Knock-Out command not confirmed";
                 log.warn("Knock-Out command was not confirmed: targetAnimation={} playerInteracting={}",
                         target.getAnimation(), isPlayerInteractingWithTarget(target));
@@ -804,12 +903,6 @@ public class BlackjackScript extends Script
             lastPickpocketClickAt = now;
             nextPickpocketClickAt = now + randomPickpocketDelay(false);
             pickpocketClicks++;
-            if (picksThisKnockout == 1 && nextKnockoutArmedAt == 0)
-            {
-                armNextKnockout(target);
-                transition(BlackjackState.KNOCKING_OUT, "Pre-arm next Knock-Out after second pickpocket click");
-                return;
-            }
             nextAction = "Confirm pickpocket " + (picksThisKnockout + 1) + "/2";
         }
     }
@@ -851,8 +944,16 @@ public class BlackjackScript extends Script
         }
 
         WorldPoint location = Rs2Player.getWorldLocation();
-        if (COMBAT_STAGING_TILE.equals(location))
+        WorldPoint stagingTile = activeCombatStagingTile();
+        if (stagingTile.equals(location))
         {
+            if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
+            {
+                combatClearSince = 0;
+                transition(BlackjackState.ESCAPING_COMBAT,
+                        "Move to southern tent safespot");
+                return;
+            }
             Rs2NpcModel target = currentTarget();
             WorldPoint targetLocation = target == null ? null : target.getWorldLocation();
             if (targetLocation != null && targetLocation.getY() > COMBAT_SAFE_TILE.getY())
@@ -871,9 +972,9 @@ public class BlackjackScript extends Script
 
         if (readyForInteraction(450))
         {
-            Rs2Walker.walkFastCanvas(COMBAT_STAGING_TILE);
+            Rs2Walker.walkFastCanvas(stagingTile);
             lastInteractionAt = System.currentTimeMillis();
-            nextAction = "Walk to 3359,2995";
+            nextAction = "Move to combat reset position";
         }
     }
 
@@ -943,7 +1044,7 @@ public class BlackjackScript extends Script
                 if (!hasBlackjackEquipped())
                 {
                     startCombatResetPhase(CombatResetPhase.KNOCKING_OUT,
-                            "Shift-click Knock-Out while unarmed");
+                            "Left-click Knock-Out while unarmed");
                     return true;
                 }
                 if (now - combatResetPhaseAt >= COMBAT_UNEQUIP_TIMEOUT_MS)
@@ -981,9 +1082,8 @@ public class BlackjackScript extends Script
             }
             targetIndex = target.getIndex();
             targetDescription = target.getName() + " (level " + target.getCombatLevel() + ")";
-            if (!ensureTargetMenuSwaps(target)
-                    || !readyForInteraction(80)
-                    || !shiftLeftClickTarget(target, anchor, KNOCKOUT_ACTION))
+            if (!readyForInteraction(80)
+                    || !moveAndLeftClickTargetOption(target, anchor, KNOCKOUT_ACTION))
             {
                 return true;
             }
@@ -1142,7 +1242,8 @@ public class BlackjackScript extends Script
     {
         burstClickPoint = null;
         WorldPoint location = Rs2Player.getWorldLocation();
-        if (location != null && location.equals(COMBAT_SAFE_TILE))
+        WorldPoint safeTile = activeCombatSafeTile();
+        if (location != null && location.equals(safeTile))
         {
             combatClearSince = 0;
             transition(BlackjackState.WAITING_FOR_COMBAT_CLEAR, "Wait for combat to clear");
@@ -1151,7 +1252,7 @@ public class BlackjackScript extends Script
 
         if (readyForInteraction(450))
         {
-            Rs2Walker.walkFastCanvas(COMBAT_SAFE_TILE);
+            Rs2Walker.walkFastCanvas(safeTile);
             lastInteractionAt = System.currentTimeMillis();
         }
     }
@@ -1877,6 +1978,24 @@ public class BlackjackScript extends Script
         }
     }
 
+    public void onStatChanged(Skill skill, int xp)
+    {
+        if (skill != Skill.THIEVING)
+        {
+            return;
+        }
+
+        int previousXp = lastObservedThievingXp;
+        lastObservedThievingXp = xp;
+        if (previousXp > 0 && xp - previousXp == 10
+                && state == BlackjackState.PICKPOCKETING
+                && knockoutResult == KnockoutResult.PENDING)
+        {
+            log.debug("Knock-Out 10 XP signal observed");
+            outcomes.add(Outcome.KNOCKOUT_SUCCESS);
+        }
+    }
+
     private Rs2NpcModel findEligibleTarget()
     {
         List<Rs2NpcModel> candidates = Microbot.getRs2NpcCache().query()
@@ -1901,7 +2020,7 @@ public class BlackjackScript extends Script
     private boolean isEligibleTarget(Rs2NpcModel npc)
     {
         if (npc == null || npc.getName() == null || npc.getWorldLocation() == null
-                || !SUPPORTED_HOUSE.contains(npc.getWorldLocation()))
+                || !activeHouse().contains(npc.getWorldLocation()))
         {
             return false;
         }
@@ -1978,16 +2097,40 @@ public class BlackjackScript extends Script
     private boolean isInsideHouse()
     {
         WorldPoint location = Rs2Player.getWorldLocation();
-        return location != null && SUPPORTED_HOUSE.contains(location);
+        return location != null && activeHouse().contains(location);
+    }
+
+    private WorldArea activeHouse()
+    {
+        return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
+                ? SOUTH_THUG_TENT
+                : BANDIT_HOUSE;
+    }
+
+    private WorldPoint activeHouseCentre()
+    {
+        return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
+                ? SOUTH_THUG_TENT_CENTRE
+                : BANDIT_HOUSE_CENTRE;
+    }
+
+    private WorldPoint activeCombatStagingTile()
+    {
+        return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
+                ? SOUTH_THUG_COMBAT_STAGING_TILE
+                : COMBAT_STAGING_TILE;
+    }
+
+    private WorldPoint activeCombatSafeTile()
+    {
+        return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
+                ? SOUTH_THUG_COMBAT_SAFE_TILE
+                : COMBAT_SAFE_TILE;
     }
 
     private boolean clickAnchoredTarget(Rs2NpcModel target)
     {
         if (Microbot.getClient().isMenuOpen())
-        {
-            return false;
-        }
-        if (!ensureTargetMenuSwaps(target))
         {
             return false;
         }
@@ -2031,78 +2174,6 @@ public class BlackjackScript extends Script
         return true;
     }
 
-    private boolean ensureTargetMenuSwaps(Rs2NpcModel target)
-    {
-        int[] swap = Microbot.getClientThread().runOnClientThreadOptional(() -> {
-            NPC npc = target == null ? null : target.getNpc();
-            NPCComposition composition = npc == null ? null : npc.getTransformedComposition();
-            String[] actions = composition == null ? null : composition.getActions();
-            if (actions == null)
-            {
-                return null;
-            }
-            int pickpocketIndex = actionIndex(actions, PICKPOCKET_ACTION);
-            int knockoutIndex = actionIndex(actions, KNOCKOUT_ACTION);
-            return pickpocketIndex < 0 || knockoutIndex < 0
-                    ? null
-                    : new int[]{composition.getId(), pickpocketIndex, knockoutIndex};
-        }).orElse(null);
-        if (swap == null)
-        {
-            nextAction = "Wait for target Pickpocket and Knock-Out actions";
-            return false;
-        }
-
-        boolean changed = setConfigurationIfDifferent(
-                NPC_LEFT_CLICK_CUSTOMIZATION_KEY, Boolean.TRUE.toString());
-        changed |= setConfigurationIfDifferent(NPC_LEFT_CLICK_PREFIX + swap[0],
-                Integer.toString(swap[1]));
-        changed |= setConfigurationIfDifferent(NPC_SHIFT_CLICK_PREFIX + swap[0],
-                Integer.toString(swap[2]));
-        if (changed)
-        {
-            configuredMenuSwapNpcId = swap[0];
-            menuSwapsReadyAt = System.currentTimeMillis() + MENU_SWAP_SETTLE_MS;
-            log.info("Configured Menu Entry Swapper for npcId={}: left={} shift={}",
-                    swap[0], PICKPOCKET_ACTION, KNOCKOUT_ACTION);
-        }
-        else if (configuredMenuSwapNpcId != swap[0])
-        {
-            configuredMenuSwapNpcId = swap[0];
-            menuSwapsReadyAt = 0;
-        }
-
-        if (System.currentTimeMillis() < menuSwapsReadyAt)
-        {
-            nextAction = "Apply target left-click swaps";
-            return false;
-        }
-        return true;
-    }
-
-    private int actionIndex(String[] actions, String action)
-    {
-        for (int i = 0; i < actions.length; i++)
-        {
-            if (action.equalsIgnoreCase(actions[i]))
-            {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private boolean setConfigurationIfDifferent(String key, String value)
-    {
-        String current = configManager.getConfiguration(MENU_ENTRY_SWAPPER_GROUP, key);
-        if (value.equalsIgnoreCase(current))
-        {
-            return false;
-        }
-        configManager.setConfiguration(MENU_ENTRY_SWAPPER_GROUP, key, value);
-        return true;
-    }
-
     private boolean moveAndLeftClickTargetOption(Rs2NpcModel target, Point point, String option)
     {
         if (Microbot.naturalMouse == null)
@@ -2134,37 +2205,6 @@ public class BlackjackScript extends Script
         return true;
     }
 
-    private boolean shiftLeftClickTarget(Rs2NpcModel target, Point point, String option)
-    {
-        long now = System.currentTimeMillis();
-        if (!targetShiftHeld)
-        {
-            Rs2Keyboard.holdShift();
-            targetShiftHeld = true;
-            targetShiftHeldAt = now;
-            nextAction = "Prime Shift+left-click " + option;
-            return false;
-        }
-        if (now - targetShiftHeldAt < MENU_SWAP_SETTLE_MS)
-        {
-            return false;
-        }
-
-        if (moveAndLeftClickTargetOption(target, point, option))
-        {
-            releaseTargetShift();
-            return true;
-        }
-        if (now - targetShiftHeldAt >= SHIFT_OPTION_TIMEOUT_MS)
-        {
-            knockoutMenuMisses++;
-            log.warn("Shift+left-click {} was not available after {}ms; releasing Shift before retry",
-                    option, now - targetShiftHeldAt);
-            releaseTargetShift();
-        }
-        return false;
-    }
-
     private boolean isTopTargetOption(Rs2NpcModel target, String option)
     {
         return Microbot.getClientThread().runOnClientThreadOptional(() -> {
@@ -2180,41 +2220,6 @@ public class BlackjackScript extends Script
                     && target != null
                     && npc.getIndex() == target.getIndex();
         }).orElse(false);
-    }
-
-    private void releaseTargetShift()
-    {
-        if (!targetShiftHeld)
-        {
-            return;
-        }
-        Rs2Keyboard.releaseShift();
-        targetShiftHeld = false;
-        targetShiftHeldAt = 0;
-    }
-
-    private boolean naturalMoveAndClick(Rs2NpcModel target, Point point, boolean rightClick)
-    {
-        if (Microbot.naturalMouse == null)
-        {
-            log.warn("Natural mouse unavailable; refusing direct point click");
-            return false;
-        }
-
-        Microbot.naturalMouse.moveTo(point.getX(), point.getY());
-        Point current = Microbot.getClient().getMouseCanvasPosition();
-        if (current == null)
-        {
-            current = point;
-        }
-        if (!isInsideTargetHull(target, current))
-        {
-            log.warn("Natural mouse ended outside NPC hull; refusing {} click: expected={} actual={} targetIndex={}",
-                    rightClick ? "right" : "left", point, current, targetIndex);
-            return false;
-        }
-        Microbot.getMouse().click(current, rightClick);
-        return true;
     }
 
     private void prepositionPrearmedKnockoutCursor(Rs2NpcModel target)
@@ -2255,119 +2260,6 @@ public class BlackjackScript extends Script
                 }).orElse(false);
     }
 
-    private Point findTargetMenuOptionPoint(String option)
-    {
-        MenuOptionTarget menuTarget = findTargetMenuOption(option);
-        return menuTarget == null ? null : menuTarget.clickPoint;
-    }
-
-    private MenuOptionTarget findTargetMenuOption(String option)
-    {
-        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
-            if (!Microbot.getClient().isMenuOpen())
-            {
-                return null;
-            }
-
-            Menu menu = Microbot.getClient().getMenu();
-            MenuEntry[] entries = menu.getMenuEntries();
-            for (int i = entries.length - 1; i >= 0; i--)
-            {
-                MenuEntry entry = entries[i];
-                if (!option.equalsIgnoreCase(entry.getOption()))
-                {
-                    continue;
-                }
-                NPC npc = entry.getNpc();
-                if (npc == null || npc.getIndex() != targetIndex)
-                {
-                    continue;
-                }
-
-                int displayedRow = entries.length - i - 1;
-                int rowTop = menu.getMenuY() + 19 + displayedRow * 15;
-                Rectangle rowBounds = new Rectangle(
-                        menu.getMenuX() + 2,
-                        rowTop,
-                        Math.max(1, menu.getMenuWidth() - 4),
-                        15);
-                int menuCentreX = menu.getMenuX() + menu.getMenuWidth() / 2;
-                int maximumOffset = Math.min(24, Math.max(0, menu.getMenuWidth() / 2 - 12));
-                int menuX = menuCentreX;
-                if (maximumOffset >= 8)
-                {
-                    int sidewaysOffset = ThreadLocalRandom.current().nextInt(8, maximumOffset + 1);
-                    menuX += ThreadLocalRandom.current().nextBoolean() ? sidewaysOffset : -sidewaysOffset;
-                }
-                return new MenuOptionTarget(new Point(menuX, rowTop + 7), rowBounds);
-            }
-            return null;
-        }).orElse(null);
-    }
-
-    private boolean clickMenuPoint(String option, Point menuPoint)
-    {
-        if (Microbot.naturalMouse == null)
-        {
-            log.warn("Natural mouse unavailable; refusing direct menu click");
-            return false;
-        }
-
-        Point current = Microbot.getClient().getMouseCanvasPosition();
-        if (current != null)
-        {
-            int sideways = ThreadLocalRandom.current().nextInt(6, 13)
-                    * (ThreadLocalRandom.current().nextBoolean() ? 1 : -1);
-            int waypointX = Math.max(2, Math.min(Microbot.getClient().getCanvasWidth() - 2,
-                    (current.getX() + menuPoint.getX()) / 2 + sideways));
-            int waypointY = Math.max(2, Math.min(Microbot.getClient().getCanvasHeight() - 2,
-                    (current.getY() + menuPoint.getY()) / 2));
-            Microbot.naturalMouse.moveTo(waypointX, waypointY);
-        }
-        Microbot.naturalMouse.moveTo(menuPoint.getX(), menuPoint.getY());
-
-        Point actual = Microbot.getClient().getMouseCanvasPosition();
-        MenuOptionTarget currentTarget = findTargetMenuOption(option);
-        if (currentTarget == null)
-        {
-            log.warn("Menu option disappeared before click: option={} expected={} actual={} targetIndex={} targetAnimation={}",
-                    option, menuPoint, actual, targetIndex, currentTargetAnimation());
-            return false;
-        }
-
-        if (!currentTarget.contains(actual))
-        {
-            log.info("Correcting menu cursor before click: option={} expected={} actual={} bounds={}",
-                    option, menuPoint, actual, currentTarget.bounds);
-            Microbot.naturalMouse.moveTo(currentTarget.clickPoint.getX(), currentTarget.clickPoint.getY());
-            actual = Microbot.getClient().getMouseCanvasPosition();
-            currentTarget = findTargetMenuOption(option);
-        }
-
-        if (currentTarget == null || !currentTarget.contains(actual))
-        {
-            log.warn("Refusing unverified menu click: option={} expected={} actual={} bounds={} targetIndex={} targetAnimation={}",
-                    option,
-                    menuPoint,
-                    actual,
-                    currentTarget == null ? null : currentTarget.bounds,
-                    targetIndex,
-                    currentTargetAnimation());
-            return false;
-        }
-
-        log.info("Clicking verified menu option: option={} expected={} actual={} bounds={} targetIndex={} targetAnimation={}",
-                option, menuPoint, actual, currentTarget.bounds, targetIndex, currentTargetAnimation());
-        Microbot.getMouse().click();
-        return true;
-    }
-
-    private int currentTargetAnimation()
-    {
-        Rs2NpcModel target = currentTarget();
-        return target == null ? -1 : target.getAnimation();
-    }
-
     private boolean handleHumanizerPriority()
     {
         if (!config.humanizerEnabled())
@@ -2376,10 +2268,7 @@ public class BlackjackScript extends Script
             if (isHumanizerState())
             {
                 humanizerMouseRecoverAt = 0;
-                humanizerMistakeSelectAt = 0;
-                humanizerMistakeRecoverAt = 0;
                 humanizerBreakUntil = 0;
-                humanizerMistakeClicked = false;
                 transition(BlackjackState.FINDING_TARGET, "Humanizer disabled");
                 return true;
             }
@@ -2409,10 +2298,6 @@ public class BlackjackScript extends Script
             startHumanizerBreak("Micro break", randomBetween(25_000, 35_001));
             return true;
         }
-        if (config.randomMenuMistakes() && now >= nextHumanizerMistakeAt)
-        {
-            return startHumanizerMisclick();
-        }
         if (config.randomMouseRecovery() && now >= nextHumanizerMouseAt)
         {
             return startHumanizerMouse();
@@ -2429,7 +2314,6 @@ public class BlackjackScript extends Script
             return false;
         }
         return (config.humanizerBreaks() && (now >= nextSmallBreakAt || now >= nextMicroBreakAt))
-                || (config.randomMenuMistakes() && now >= nextHumanizerMistakeAt)
                 || (config.randomMouseRecovery() && now >= nextHumanizerMouseAt);
     }
 
@@ -2446,7 +2330,6 @@ public class BlackjackScript extends Script
     private boolean isHumanizerState()
     {
         return state == BlackjackState.HUMANIZER_MOUSE
-                || state == BlackjackState.HUMANIZER_MISCLICK
                 || state == BlackjackState.HUMANIZER_BREAK;
     }
 
@@ -2497,106 +2380,6 @@ public class BlackjackScript extends Script
         transition(BlackjackState.FINDING_TARGET, "Resume after mouse recovery");
     }
 
-    private boolean startHumanizerMisclick()
-    {
-        Rs2NpcModel target = currentTarget();
-        Point anchor = target == null ? null : targetAnchor(target, null);
-        if (anchor == null || !naturalMoveAndClick(target, anchor, true))
-        {
-            nextHumanizerMistakeAt = scheduleFromNow(System.currentTimeMillis(),
-                    HUMANIZER_MISTAKE_MIN_INTERVAL_MS, HUMANIZER_MISTAKE_MAX_INTERVAL_MS);
-            return false;
-        }
-
-        targetIndex = target.getIndex();
-        targetDescription = target.getName() + " (level " + target.getCombatLevel() + ")";
-        boolean lureMistake = config.includeLureMistakes()
-                && ThreadLocalRandom.current().nextInt(100) < 25;
-        humanizerMistakeOption = lureMistake ? "Lure" : "Examine";
-        humanizerMistakeSelectAt = System.currentTimeMillis() + randomBetween(220, 601);
-        humanizerMistakeRecoverAt = 0;
-        humanizerMistakeClicked = false;
-        humanizerStatus = "Menu mistake: " + humanizerMistakeOption;
-        humanizerEvents++;
-        transition(BlackjackState.HUMANIZER_MISCLICK,
-                "Select mistaken " + humanizerMistakeOption + " option");
-        return true;
-    }
-
-    private void runHumanizerMisclick()
-    {
-        long now = System.currentTimeMillis();
-        Rs2NpcModel target = currentTarget();
-        if (target == null)
-        {
-            finishHumanizerMisclick("Target moved during menu mistake");
-            return;
-        }
-
-        if (!humanizerMistakeClicked)
-        {
-            Point menuPoint = findTargetMenuOptionPoint(humanizerMistakeOption);
-            if (menuPoint == null && "Lure".equals(humanizerMistakeOption) && elapsedInState() >= 900)
-            {
-                humanizerMistakeOption = "Examine";
-                humanizerStatus = "Menu mistake: Examine";
-                menuPoint = findTargetMenuOptionPoint(humanizerMistakeOption);
-            }
-            if (menuPoint == null)
-            {
-                if (elapsedInState() >= 1_800)
-                {
-                    Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
-                    finishHumanizerMisclick("Mistake option unavailable");
-                }
-                return;
-            }
-            if (now < humanizerMistakeSelectAt)
-            {
-                nextAction = "Hover over mistaken " + humanizerMistakeOption;
-                return;
-            }
-            if (!clickMenuPoint(humanizerMistakeOption, menuPoint))
-            {
-                return;
-            }
-            humanizerMistakeClicked = true;
-            humanizerMistakeRecoverAt = now + randomBetween(650, 1_401);
-            lastInteractionAt = now;
-            lastOutcome = "Humanizer selected " + humanizerMistakeOption;
-            nextAction = "Recover from " + humanizerMistakeOption + " mistake";
-            return;
-        }
-
-        if (now < humanizerMistakeRecoverAt || Rs2Player.isMoving() || target.isMoving())
-        {
-            nextAction = "Wait for menu mistake recovery";
-            if (elapsedInState() < 4_000)
-            {
-                return;
-            }
-        }
-        if (Rs2Dialogue.isInDialogue())
-        {
-            Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
-        }
-        finishHumanizerMisclick("Recovered from " + humanizerMistakeOption);
-    }
-
-    private void finishHumanizerMisclick(String outcome)
-    {
-        humanizerMistakeClicked = false;
-        humanizerMistakeSelectAt = 0;
-        humanizerMistakeRecoverAt = 0;
-        nextHumanizerMistakeAt = scheduleFromNow(System.currentTimeMillis(),
-                HUMANIZER_MISTAKE_MIN_INTERVAL_MS, HUMANIZER_MISTAKE_MAX_INTERVAL_MS);
-        burstClickPoint = null;
-        targetIndex = -1;
-        humanizerStatus = "Scheduled";
-        lastOutcome = outcome;
-        transition(BlackjackState.FINDING_TARGET, "Reacquire target after menu mistake");
-    }
-
     private void startHumanizerBreak(String type, long duration)
     {
         humanizerBreakType = type;
@@ -2639,15 +2422,6 @@ public class BlackjackScript extends Script
             humanizerMouseRecoverAt = 0;
             nextHumanizerMouseAt = scheduleFromNow(now,
                     HUMANIZER_MOUSE_MIN_INTERVAL_MS, HUMANIZER_MOUSE_MAX_INTERVAL_MS);
-        }
-        if (state != BlackjackState.HUMANIZER_MISCLICK
-                && (humanizerMistakeSelectAt > 0 || humanizerMistakeRecoverAt > 0))
-        {
-            humanizerMistakeSelectAt = 0;
-            humanizerMistakeRecoverAt = 0;
-            humanizerMistakeClicked = false;
-            nextHumanizerMistakeAt = scheduleFromNow(now,
-                    HUMANIZER_MISTAKE_MIN_INTERVAL_MS, HUMANIZER_MISTAKE_MAX_INTERVAL_MS);
         }
         if (state != BlackjackState.HUMANIZER_BREAK && humanizerBreakUntil > 0)
         {
@@ -3081,7 +2855,6 @@ public class BlackjackScript extends Script
 
     private void cancelSecondPickpocketPrearm(String reason)
     {
-        Rs2Keyboard.keyPress(KeyEvent.VK_ESCAPE);
         nextKnockoutArmedAt = 0;
         secondPickpocketInteractionSeen = false;
         secondPickpocketInteractionComplete = false;
@@ -3169,7 +2942,7 @@ public class BlackjackScript extends Script
             return Microbot.getRs2NpcCache().query().toList().stream()
                     .anyMatch(npc -> npc != null && npc.getNpc() != null
                             && npc.getNpc().getWorldLocation() != null
-                            && SUPPORTED_HOUSE.contains(npc.getNpc().getWorldLocation())
+                            && activeHouse().contains(npc.getNpc().getWorldLocation())
                             && npc.getNpc().getInteracting() == player);
         }).orElse(false);
     }
@@ -3241,7 +3014,6 @@ public class BlackjackScript extends Script
         if (state != newState)
         {
             log.info("Blackjack state {} -> {} ({})", state, newState, action);
-            releaseTargetShift();
             if (newState == BlackjackState.KNOCKING_OUT)
             {
                 knockoutAttemptReadyAt = System.currentTimeMillis() + randomKnockoutAttemptDelay();
@@ -3292,7 +3064,6 @@ public class BlackjackScript extends Script
     public void shutdown()
     {
         shutdownRequested = true;
-        releaseTargetShift();
         if (!hasBlackjackEquipped()
                 && combatResetPhase != CombatResetPhase.UNTRIED
                 && Rs2Inventory.items(item -> item.getName() != null
@@ -3318,13 +3089,8 @@ public class BlackjackScript extends Script
         restockTargetWineCount = 0;
         humanizerStatus = "Disabled";
         humanizerMouseRecoverAt = 0;
-        humanizerMistakeSelectAt = 0;
-        humanizerMistakeRecoverAt = 0;
         humanizerBreakUntil = 0;
-        humanizerMistakeClicked = false;
         humanizerBreakType = "None";
-        configuredMenuSwapNpcId = -1;
-        menuSwapsReadyAt = 0;
         resetDisarmedCombatRecovery();
         transition(BlackjackState.STOPPED, "Enable plugin");
         super.shutdown();
