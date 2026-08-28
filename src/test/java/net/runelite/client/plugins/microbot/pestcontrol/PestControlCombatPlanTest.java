@@ -1,36 +1,15 @@
 package net.runelite.client.plugins.microbot.pestcontrol;
 
 import net.runelite.client.plugins.pestcontrol.Portal;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
 public final class PestControlCombatPlanTest {
-    private PestControlCombatPlanTest() {
-    }
-
-    public static void main(String[] args) {
-        defaultPlanUsesOnlyStyleOne();
-        tribridPlanResolvesPortalLoadouts();
-        meleeVariantsAreIndependent();
-        openingModesExcludeRed();
-        weightedOpeningUsesNormalizedBoundaries();
-        missingCrushLoadoutFallsBackToPrimaryStyle();
-        sameMeleeWeaponVariantsRemainDistinct();
-        voidHelmetMappingFollowsCombatStyle();
-        voidHelmetSwitchingRequiresCompleteSet();
-        duplicateStylesAreIgnored();
-        roundOutcomeIsRewardBacked();
-        roundCountersAlwaysReconcile();
-        roundFinalizationWaitsForEvidenceOrGrace();
-        awardedPointMessagesAreDeduplicated();
-        sessionPointsIgnoreEvidenceOrder();
-        destroyedGateVariantIsNeverOpened();
-        System.out.println("PestControlCombatPlanTest passed");
-    }
-
-    private static void defaultPlanUsesOnlyStyleOne() {
+    @Test
+    void defaultPlanUsesOnlyStyleOne() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new PestControlConfig() { });
         check(plan.enabledStyles().size() == 1, "default should enable only Style 1");
         check(plan.primaryLoadout().combatStyle == PestControlCombatStyle.RANGED,
@@ -39,7 +18,8 @@ public final class PestControlCombatPlanTest {
                 "disabled melee should fall back to Style 1");
     }
 
-    private static void tribridPlanResolvesPortalLoadouts() {
+    @Test
+    void tribridPlanResolvesPortalLoadouts() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig());
         check(plan.enabledStyles().size() == 3, "tribrid should enable three styles");
         check(plan.loadoutForPortal(Portal.PURPLE).combatStyle == PestControlCombatStyle.RANGED,
@@ -50,7 +30,8 @@ public final class PestControlCombatPlanTest {
                 "Yellow should resolve melee");
     }
 
-    private static void meleeVariantsAreIndependent() {
+    @Test
+    void meleeVariantsAreIndependent() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig());
         PestControlLoadout yellow = plan.loadoutForPortal(Portal.YELLOW);
         PestControlLoadout red = plan.loadoutForPortal(Portal.RED);
@@ -64,7 +45,8 @@ public final class PestControlCombatPlanTest {
         check(red.requiresEmptyOffhand(), "two-handed crush loadout should require empty off-hand");
     }
 
-    private static void openingModesExcludeRed() {
+    @Test
+    void openingModesExcludeRed() {
         PestControlCombatPlan mainMagic = new PestControlCombatPlan(new TribridConfig() {
             @Override
             public PestControlCombatStyle primaryCombatStyle() {
@@ -94,7 +76,8 @@ public final class PestControlCombatPlanTest {
         }
     }
 
-    private static void duplicateStylesAreIgnored() {
+    @Test
+    void duplicateStylesAreIgnored() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new PestControlConfig() {
             @Override
             public PestControlOptionalCombatStyle secondaryCombatStyle() {
@@ -105,7 +88,8 @@ public final class PestControlCombatPlanTest {
         check(!plan.validationMessages().isEmpty(), "duplicate style should produce a warning");
     }
 
-    private static void weightedOpeningUsesNormalizedBoundaries() {
+    @Test
+    void weightedOpeningUsesNormalizedBoundaries() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig());
         check(plan.openingPortal(54) == Portal.PURPLE, "roll 54 should be Purple");
         check(plan.openingPortal(55) == Portal.BLUE, "roll 55 should be Blue");
@@ -114,7 +98,8 @@ public final class PestControlCombatPlanTest {
         check(plan.openingPortal(99) == Portal.YELLOW, "roll 99 should be Yellow");
     }
 
-    private static void missingCrushLoadoutFallsBackToPrimaryStyle() {
+    @Test
+    void missingCrushLoadoutFallsBackToPrimaryStyle() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig() {
             @Override
             public String crushWeapon() {
@@ -129,7 +114,8 @@ public final class PestControlCombatPlanTest {
                 "missing crush loadout should produce a startup validation message");
     }
 
-    private static void sameMeleeWeaponVariantsRemainDistinct() {
+    @Test
+    void sameMeleeWeaponVariantsRemainDistinct() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig() {
             @Override
             public String slashStabWeapon() {
@@ -149,7 +135,8 @@ public final class PestControlCombatPlanTest {
         check("Crush".equals(red.attackOption), "Red should request the crush option");
     }
 
-    private static void roundOutcomeIsRewardBacked() {
+    @Test
+    void roundOutcomeIsRewardBacked() {
         check(PestControlScript.resolveRoundOutcome(true)
                         == PestControlScript.RoundOutcome.WON,
                 "confirmed reward should count as a win");
@@ -158,7 +145,8 @@ public final class PestControlCombatPlanTest {
                 "a finalized round without a reward should count as a non-win");
     }
 
-    private static void roundCountersAlwaysReconcile() {
+    @Test
+    void roundCountersAlwaysReconcile() {
         check(PestControlScript.reconcileLostRounds(7, 5) == 2,
                 "two unrewarded rounds must not disappear from a 7/5 session");
         check(PestControlScript.reconcileLostRounds(8, 6) == 2,
@@ -169,7 +157,8 @@ public final class PestControlCombatPlanTest {
                 "an empty session should remain balanced");
     }
 
-    private static void roundFinalizationWaitsForEvidenceOrGrace() {
+    @Test
+    void roundFinalizationWaitsForEvidenceOrGrace() {
         check(PestControlScript.shouldFinalizeRound(
                         true, PestControlScript.TeamOutcome.UNKNOWN, 0L, 12_000L),
                 "reward evidence should finalize immediately");
@@ -187,7 +176,8 @@ public final class PestControlCombatPlanTest {
                 "unrewarded result should finalize when grace expires");
     }
 
-    private static void awardedPointMessagesAreDeduplicated() {
+    @Test
+    void awardedPointMessagesAreDeduplicated() {
         check(PestControlScript.newlyAwardedPoints(0, 4) == 4,
                 "first award message should add all awarded points");
         check(PestControlScript.newlyAwardedPoints(4, 4) == 0,
@@ -196,7 +186,8 @@ public final class PestControlCombatPlanTest {
                 "only newly observed awarded points should be added");
     }
 
-    private static void sessionPointsIgnoreEvidenceOrder() {
+    @Test
+    void sessionPointsIgnoreEvidenceOrder() {
         check(PestControlScript.reconcileSessionPoints(4, 100, 104) == 4,
                 "award chat and total delta must not count the same points twice");
         check(PestControlScript.reconcileSessionPoints(0, 100, 104) == 4,
@@ -205,7 +196,8 @@ public final class PestControlCombatPlanTest {
                 "award chat should work without an initial total-points baseline");
     }
 
-    private static void destroyedGateVariantIsNeverOpened() {
+    @Test
+    void destroyedGateVariantIsNeverOpened() {
         check(PestControlScript.isDestroyedGateId(14245),
                 "Pest Control's totally destroyed gate variant must be recognized");
         check(!PestControlScript.isDestroyedGateId(14233),
@@ -214,7 +206,8 @@ public final class PestControlCombatPlanTest {
                 "a damaged but usable gate must remain interactable");
     }
 
-    private static void voidHelmetMappingFollowsCombatStyle() {
+    @Test
+    void voidHelmetMappingFollowsCombatStyle() {
         check("Void ranger helm".equals(PestControlLoadout.helmetFor(PestControlCombatStyle.RANGED)),
                 "ranged Void helmet mismatch");
         check("Void mage helm".equals(PestControlLoadout.helmetFor(PestControlCombatStyle.MAGIC)),
@@ -223,7 +216,8 @@ public final class PestControlCombatPlanTest {
                 "melee Void helmet mismatch");
     }
 
-    private static void voidHelmetSwitchingRequiresCompleteSet() {
+    @Test
+    void voidHelmetSwitchingRequiresCompleteSet() {
         Set<String> allHelmets = new HashSet<>(Arrays.asList(
                 "Void ranger helm",
                 "Void mage helm",
@@ -253,6 +247,24 @@ public final class PestControlCombatPlanTest {
         if (!condition) {
             throw new AssertionError(message);
         }
+    }
+
+    @Test
+    void crushAttackOptionAcceptsVisibleAliasesOnly() {
+        check(PestControlScript.isAttackOptionMatch("crush", "crush"),
+                "literal Crush should remain valid");
+        check(PestControlScript.isAttackOptionMatch("pummel", "crush"),
+                "Pummel should satisfy the configured crush mode");
+        check(PestControlScript.isAttackOptionMatch("smash", "crush"),
+                "Smash should satisfy the configured crush mode");
+        check(!PestControlScript.isAttackOptionMatch("pound", "crush"),
+                "unconfigured crush labels must not be accepted");
+        check(!PestControlScript.isAttackOptionMatch("stab", "slash"),
+                "Stab must not satisfy Slash");
+        check(PestControlScript.isAttackOptionMatch("rapid", "rapid"),
+                "Rapid should retain exact matching");
+        check(!PestControlScript.isAttackOptionMatch("rapid fire", "rapid"),
+                "partial labels must not satisfy Rapid");
     }
 
     private static class TribridConfig implements PestControlConfig {

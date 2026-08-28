@@ -1,6 +1,6 @@
 # Pest Control PR Validation Handoff
 
-Last refreshed: 2026-08-14 (Australia/Sydney)
+Last refreshed: 2026-08-28 (Australia/Sydney)
 
 ## Source
 
@@ -35,6 +35,17 @@ hash was verified when this handoff was written.
 PR #522 records successful packaging against Microbot `2.6.15`, a packaged and
 smoked `2.5.6`, and one complete `2.5.7` round on Microbot `2.6.16`. That is a
 smoke checkpoint, not sufficient acceptance for the state-machine breadth.
+
+On 2026-08-28, this branch was rebased onto `upstream/development` at
+`64d1d0f` and source-validated with
+`gradlew.bat test PestControlPluginJar -PpluginList=PestControlPlugin`. The
+JUnit XML report recorded 17 Pest Control tests, with zero failures or errors.
+This includes the focused combat-tab resolver coverage: configured Crush accepts
+the visible `Crush`, `Pummel`, and `Smash` labels, while Stab, Slash, and Rapid
+continue to require exact labels. The built `PestControlPlugin-2.5.7.jar` hash
+was `594DB36A8A2FF2F7AEBD81EBACBC8369D7B17D72B1A79C728B69074562E5D886`.
+This is build/test evidence only; it does not establish a loaded or live-tested
+artifact.
 
 Further live evidence should cover:
 

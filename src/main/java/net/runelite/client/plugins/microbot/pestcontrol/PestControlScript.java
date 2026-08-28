@@ -2846,16 +2846,22 @@ public class PestControlScript extends Script {
         int score = 0;
         for (int index = 0; index < lines.length; index++) {
             String line = lines[index].trim().toLowerCase(Locale.ROOT);
-            if (line.equals(desired)) {
+            if (isAttackOptionMatch(line, desired)) {
                 score = Math.max(score, index == 0 ? 100 : 50);
-            } else if (line.contains(desired)) {
-                score = Math.max(score, index == 0 ? 75 : 25);
             }
             if (line.contains("strength xp")) {
                 score += 10;
             }
         }
         return score;
+    }
+
+    static boolean isAttackOptionMatch(String visibleLabel, String desiredStyle) {
+        if (visibleLabel.equals(desiredStyle)) {
+            return true;
+        }
+        return "crush".equals(desiredStyle)
+                && ("pummel".equals(visibleLabel) || "smash".equals(visibleLabel));
     }
 
     private static String getEquippedWeaponName() {
