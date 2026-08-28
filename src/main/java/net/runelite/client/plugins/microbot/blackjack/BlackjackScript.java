@@ -107,6 +107,8 @@ public class BlackjackScript extends Script
     private static final long CAMERA_REFACING_MAX_DELAY_MS = 951;
     private static final int CAMERA_PIVOT_THRESHOLD = 24;
     private static final long CAMERA_PITCH_COOLDOWN_MS = 1_000;
+    private static final long CAMERA_ZOOM_COOLDOWN_MS = 1_000;
+    private static final int CAMERA_ZOOM_TOLERANCE_PERCENT = 5;
     private static final long DOOR_INTERACTION_DELAY_MS = 650;
     private static final long WINE_DOOR_CROSSING_RETRY_MS = 350;
     private static final long WINE_DOOR_CROSSING_TIMEOUT_MS = 30_000;
@@ -219,6 +221,8 @@ public class BlackjackScript extends Script
     private boolean healingRequired;
     private long nextCameraRefacingAt;
     private long lastCameraPitchAt;
+    private long lastCameraZoomAt;
+    private int targetCameraZoom;
     private WorldPoint lastCameraTargetLocation;
     private String targetClearReason = "None";
     private boolean restockAfterCombatReset;
@@ -293,6 +297,8 @@ public class BlackjackScript extends Script
         healingRequired = false;
         nextCameraRefacingAt = 0;
         lastCameraPitchAt = 0;
+        lastCameraZoomAt = 0;
+        targetCameraZoom = -1;
         lastCameraTargetLocation = null;
         targetClearReason = "None";
         restockAfterCombatReset = false;
@@ -2595,6 +2601,8 @@ public class BlackjackScript extends Script
             return;
         }
 
+        maintainTargetZoom();
+
         WorldPoint targetLocation = target.getWorldLocation();
         if (targetLocation.equals(lastCameraTargetLocation))
         {
@@ -2630,6 +2638,35 @@ public class BlackjackScript extends Script
         }
         lastCameraTargetLocation = targetLocation;
         nextCameraRefacingAt = 0;
+    }
+
+    private void maintainTargetZoom()
+    {
+        if (!isInsideHouse() || Microbot.getClient().isMenuOpen())
+        {
+            return;
+        }
+
+        int currentZoom = Rs2Camera.getZoom();
+        if (targetCameraZoom < 0)
+        {
+            targetCameraZoom = currentZoom;
+            log.info("Captured blackjack camera zoom baseline: {}", targetCameraZoom);
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now - lastCameraZoomAt < CAMERA_ZOOM_COOLDOWN_MS)
+        {
+            return;
+        }
+        int tolerance = Math.max(1, targetCameraZoom * CAMERA_ZOOM_TOLERANCE_PERCENT / 100);
+        if (Math.abs(currentZoom - targetCameraZoom) > tolerance)
+        {
+            Rs2Camera.setZoom(targetCameraZoom);
+            log.debug("Restoring blackjack camera zoom: {} -> {}", currentZoom, targetCameraZoom);
+        }
+        lastCameraZoomAt = now;
     }
 
     private void maintainTopDownCamera()
