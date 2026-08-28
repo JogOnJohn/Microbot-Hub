@@ -15,8 +15,8 @@ import net.runelite.client.plugins.microbot.util.magic.Rs2CombatSpells;
                 + "Configure exact weapon and off-hand names for Style 1 and any optional styles. "
                 + "Use <b>None</b> for a two-handed weapon or empty off-hand, and keep one inventory slot free when an equipped off-hand must be removed.<br /><br />"
                 + "Portal styles: Purple = Ranged, Blue = Magic, Yellow = Stab/Slash, Red = Crush. "
-                + "Yellow uses one weapon and off-hand pair with an attack-style selector. "
-                + "Red requires a separate crush-capable weapon; not every Stab/Slash weapon offers a Crush option. "
+                + "Configure either melee weapon entry; when one is blank, the other weapon and off-hand are used for both portals. "
+                + "The shared weapon must expose the selected Yellow style and a Crush-compatible Red style. "
                 + "Magic autocast is checked once at startup and then remembered by the weapon.<br /><br />"
                 + "Void helmet switching is automatic when every enabled style's helmet is equipped or in your inventory. "
                 + "Carry the Void ranger, mage, and/or melee helms required by your enabled styles. "
@@ -53,7 +53,7 @@ public interface PestControlConfig extends Config {
 
     @ConfigSection(
             name = "Melee loadouts",
-            description = "Independent stab, slash, and crush switches",
+            description = "Yellow Stab/Slash and Red Crush switches; one melee weapon entry is sufficient",
             position = 4
     )
     String meleeSection = "meleeSection";
@@ -278,7 +278,7 @@ public interface PestControlConfig extends Config {
     @ConfigItem(
             keyName = "slashStabWeapon",
             name = "Yellow weapon",
-            description = "Exact weapon name for the yellow portal's selected Stab or Slash style",
+            description = "Exact weapon name for Yellow's selected Stab or Slash style; falls back to Red crush weapon when blank",
             position = 1,
             section = meleeSection
     )
@@ -300,7 +300,7 @@ public interface PestControlConfig extends Config {
     @ConfigItem(
             keyName = "crushWeapon",
             name = "Red crush weapon",
-            description = "Exact crush-capable weapon name required for the red portal",
+            description = "Exact crush-capable weapon name for Red; also used for Yellow when the Yellow weapon is blank",
             position = 3,
             section = meleeSection
     )

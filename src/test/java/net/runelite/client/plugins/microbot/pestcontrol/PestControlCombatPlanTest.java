@@ -99,7 +99,7 @@ public final class PestControlCombatPlanTest {
     }
 
     @Test
-    void missingCrushLoadoutFallsBackToPrimaryStyle() {
+    void missingCrushLoadoutFallsBackToYellowWeapon() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig() {
             @Override
             public String crushWeapon() {
@@ -107,11 +107,65 @@ public final class PestControlCombatPlanTest {
             }
         });
         PestControlLoadout red = plan.loadoutForPortal(Portal.RED);
-        check(red.combatStyle == PestControlCombatStyle.RANGED,
-                "missing crush loadout should use Style 1 rather than an incompatible Yellow weapon");
+        check(red.combatStyle == PestControlCombatStyle.MELEE,
+                "missing crush loadout should use the configured Yellow melee weapon");
+        check("Abyssal dagger".equals(red.weapon),
+                "Red should reuse the configured Yellow weapon");
+        check("Crush".equals(red.attackOption),
+                "Red must retain its Crush mode when sharing the Yellow weapon");
+    }
+
+    @Test
+    void crushWeaponAloneSupportsAllMeleeLoadouts() {
+        PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig() {
+            @Override
+            public PestControlCombatStyle primaryCombatStyle() {
+                return PestControlCombatStyle.MELEE;
+            }
+
+            @Override
+            public String slashStabWeapon() {
+                return "None";
+            }
+
+            @Override
+            public String crushWeapon() {
+                return "Dual macuahuitl";
+            }
+        });
+        check("Dual macuahuitl".equals(plan.primaryLoadout().weapon),
+                "a crush-only melee setup must provide the primary loadout");
+        check("Dual macuahuitl".equals(plan.loadoutForPortal(Portal.YELLOW).weapon),
+                "Yellow should fall back to the configured crush weapon");
+        check("Crush".equals(plan.loadoutForPortal(Portal.YELLOW).attackOption),
+                "Yellow fallback should retain the crush weapon's mode");
+        check("Dual macuahuitl".equals(plan.loadoutForPortal(Portal.RED).weapon),
+                "Red should retain the configured crush weapon");
+    }
+
+    @Test
+    void missingAllMeleeWeaponsIsRejected() {
+        PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig() {
+            @Override
+            public PestControlCombatStyle primaryCombatStyle() {
+                return PestControlCombatStyle.MELEE;
+            }
+
+            @Override
+            public String slashStabWeapon() {
+                return "None";
+            }
+
+            @Override
+            public String crushWeapon() {
+                return "None";
+            }
+        });
+        check(!plan.primaryLoadout().isConfigured(),
+                "a melee plan with no configured weapons must remain unusable");
         check(plan.validationMessages().stream()
-                        .anyMatch(message -> message.contains("Red portal crush weapon")),
-                "missing crush loadout should produce a startup validation message");
+                        .anyMatch(message -> message.contains("Style 1 MELEE weapon is not configured")),
+                "a melee plan with no weapons must report a startup validation error");
     }
 
     @Test

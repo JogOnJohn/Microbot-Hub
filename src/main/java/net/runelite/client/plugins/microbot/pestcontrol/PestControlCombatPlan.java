@@ -34,9 +34,6 @@ final class PestControlCombatPlan {
                 messages.add("Style " + (index + 1) + " " + style + " weapon is not configured");
             }
         }
-        if (styles.contains(PestControlCombatStyle.MELEE) && !redMeleeLoadout().isConfigured()) {
-            messages.add("Red portal crush weapon is not configured");
-        }
         this.validationMessages = Collections.unmodifiableList(messages);
     }
 
@@ -107,6 +104,11 @@ final class PestControlCombatPlan {
     }
 
     private PestControlLoadout yellowMeleeLoadout() {
+        PestControlLoadout yellow = configuredYellowMeleeLoadout();
+        return yellow.isConfigured() ? yellow : configuredRedMeleeLoadout();
+    }
+
+    private PestControlLoadout configuredYellowMeleeLoadout() {
         PestControlYellowAttackStyle style = config.yellowMeleeStyle() == null
                 ? PestControlYellowAttackStyle.SLASH
                 : config.yellowMeleeStyle();
@@ -117,6 +119,17 @@ final class PestControlCombatPlan {
     }
 
     private PestControlLoadout redMeleeLoadout() {
+        PestControlLoadout red = configuredRedMeleeLoadout();
+        if (red.isConfigured()) {
+            return red;
+        }
+        return PestControlLoadout.melee(
+                PestControlMeleeStyle.CRUSH,
+                config.slashStabWeapon(),
+                config.slashOffhand());
+    }
+
+    private PestControlLoadout configuredRedMeleeLoadout() {
         return PestControlLoadout.melee(
                 PestControlMeleeStyle.CRUSH,
                 config.crushWeapon(),
