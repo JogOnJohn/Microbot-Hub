@@ -110,6 +110,7 @@ public class BlackjackScript extends Script
     private static final long DOOR_INTERACTION_DELAY_MS = 650;
     private static final long WINE_DOOR_CROSSING_RETRY_MS = 350;
     private static final long WINE_DOOR_CROSSING_TIMEOUT_MS = 30_000;
+    private static final long WINE_DOOR_RESOLUTION_TIMEOUT_MS = 12_000;
     private static final long WINE_EXIT_STATE_TIMEOUT_MS = 20_000;
     private static final long WINE_EXIT_DIAGNOSTIC_INTERVAL_MS = 1_000;
     private static final int TARGET_CAMERA_PITCH = 332;
@@ -228,6 +229,7 @@ public class BlackjackScript extends Script
     private long wineExitCurtainOpenedAt;
     private int wineDoorCrossingAttempts;
     private long wineDoorCrossingStartedAt;
+    private long wineDoorMissingSince;
     private long lastWineExitDiagnosticAt;
     private long nextHumanizerMouseAt;
     private long humanizerMouseRecoverAt;
@@ -301,6 +303,7 @@ public class BlackjackScript extends Script
         wineExitCurtainOpenedAt = 0;
         wineDoorCrossingAttempts = 0;
         wineDoorCrossingStartedAt = 0;
+        wineDoorMissingSince = 0;
         lastWineExitDiagnosticAt = 0;
         long now = System.currentTimeMillis();
         nextHumanizerMouseAt = scheduleFromNow(now,
@@ -1676,6 +1679,7 @@ public class BlackjackScript extends Script
 
     private Rs2TileObjectModel findWineDoor(String action)
     {
+        Rs2TileObjectModel door;
         if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
         {
             int expectedId;
@@ -1691,22 +1695,29 @@ public class BlackjackScript extends Script
             {
                 return null;
             }
-            return Microbot.getRs2TileObjectCache().query()
+            door = Microbot.getRs2TileObjectCache().query()
                     .withId(expectedId)
                     .where(object -> SOUTH_THUG_WINE_CURTAIN_TILE.equals(object.getWorldLocation()))
                     .first();
         }
-
-        WorldPoint insideTile = activeWineDoorInsideTile();
-        return new Rs2TileObjectQueryable()
-                .withName(WINE_EXIT_OBJECT_NAME)
-                .where(object -> {
-                    WorldPoint location = object.getWorldLocation();
-                    return location != null
-                            && location.distanceTo2D(insideTile) <= 1
-                            && hasObjectAction(object, action);
-                })
-                .first();
+        else
+        {
+            WorldPoint insideTile = activeWineDoorInsideTile();
+            door = new Rs2TileObjectQueryable()
+                    .withName(WINE_EXIT_OBJECT_NAME)
+                    .where(object -> {
+                        WorldPoint location = object.getWorldLocation();
+                        return location != null
+                                && location.distanceTo2D(insideTile) <= 1
+                                && hasObjectAction(object, action);
+                    })
+                    .first();
+        }
+        if (door != null)
+        {
+            wineDoorMissingSince = 0;
+        }
+        return door;
     }
 
     private boolean hasObjectAction(Rs2TileObjectModel object, String action)
@@ -1787,9 +1798,16 @@ public class BlackjackScript extends Script
     private void waitForWineDoor(String action)
     {
         nextAction = action;
-        if (elapsedInState() > 12_000)
+        long now = System.currentTimeMillis();
+        if (wineDoorMissingSince == 0)
         {
-            fail("East blackjack door could not be resolved");
+            wineDoorMissingSince = now;
+            log.debug("Wine curtain temporarily unresolved in state {}; waiting for cache transition", state);
+            return;
+        }
+        if (now - wineDoorMissingSince > WINE_DOOR_RESOLUTION_TIMEOUT_MS)
+        {
+            fail("Blackjack wine curtain could not be resolved");
         }
     }
 
@@ -3121,6 +3139,7 @@ public class BlackjackScript extends Script
             }
             state = newState;
             stateEnteredAt = System.currentTimeMillis();
+            wineDoorMissingSince = 0;
         }
         nextAction = action;
         Microbot.status = "Blackjack: " + action;
