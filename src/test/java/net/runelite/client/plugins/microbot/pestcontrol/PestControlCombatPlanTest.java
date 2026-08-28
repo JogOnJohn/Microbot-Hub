@@ -99,7 +99,7 @@ public final class PestControlCombatPlanTest {
     }
 
     @Test
-    void missingCrushLoadoutFallsBackToYellowWeapon() {
+    void missingCrushLoadoutPreservesYellowWeaponStyle() {
         PestControlCombatPlan plan = new PestControlCombatPlan(new TribridConfig() {
             @Override
             public String crushWeapon() {
@@ -111,8 +111,8 @@ public final class PestControlCombatPlanTest {
                 "missing crush loadout should use the configured Yellow melee weapon");
         check("Abyssal dagger".equals(red.weapon),
                 "Red should reuse the configured Yellow weapon");
-        check("Crush".equals(red.attackOption),
-                "Red must retain its Crush mode when sharing the Yellow weapon");
+        check("Stab".equals(red.attackOption),
+                "Red must retain the configured Yellow weapon style rather than request incompatible Crush");
     }
 
     @Test

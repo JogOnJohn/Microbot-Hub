@@ -120,13 +120,7 @@ final class PestControlCombatPlan {
 
     private PestControlLoadout redMeleeLoadout() {
         PestControlLoadout red = configuredRedMeleeLoadout();
-        if (red.isConfigured()) {
-            return red;
-        }
-        return PestControlLoadout.melee(
-                PestControlMeleeStyle.CRUSH,
-                config.slashStabWeapon(),
-                config.slashOffhand());
+        return red.isConfigured() ? red : configuredYellowMeleeLoadout();
     }
 
     private PestControlLoadout configuredRedMeleeLoadout() {
