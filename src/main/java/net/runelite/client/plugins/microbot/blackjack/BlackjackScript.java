@@ -47,14 +47,21 @@ public class BlackjackScript extends Script
 {
     private static final WorldArea BANDIT_HOUSE = new WorldArea(3357, 2991, 4, 5, 0);
     private static final WorldPoint BANDIT_HOUSE_CENTRE = new WorldPoint(3358, 2993, 0);
-    private static final WorldArea SOUTH_THUG_TENT = new WorldArea(3348, 2953, 4, 4, 0);
+    private static final WorldArea SOUTH_THUG_TENT_MAIN_ROOM = new WorldArea(3348, 2953, 4, 4, 0);
+    private static final WorldArea SOUTH_THUG_TENT_REAR_ROOM = new WorldArea(3349, 2947, 3, 5, 0);
+    private static final WorldPoint SOUTH_THUG_TENT_HALLWAY = new WorldPoint(3350, 2952, 0);
     private static final WorldPoint SOUTH_THUG_TENT_CENTRE = new WorldPoint(3349, 2954, 0);
     private static final WorldPoint SOUTH_THUG_COMBAT_STAGING_TILE = new WorldPoint(3351, 2956, 0);
     private static final WorldPoint SOUTH_THUG_COMBAT_SAFE_TILE = new WorldPoint(3351, 2953, 0);
     private static final WorldPoint COMBAT_STAGING_TILE = new WorldPoint(3359, 2995, 0);
     private static final WorldPoint COMBAT_SAFE_TILE = new WorldPoint(3360, 2993, 0);
-    private static final WorldPoint WINE_DOOR_INSIDE_TILE = COMBAT_SAFE_TILE;
-    private static final WorldPoint WINE_DOOR_OUTSIDE_TILE = new WorldPoint(3362, 2993, 0);
+    private static final WorldPoint BANDIT_WINE_DOOR_INSIDE_TILE = COMBAT_SAFE_TILE;
+    private static final WorldPoint BANDIT_WINE_DOOR_OUTSIDE_TILE = new WorldPoint(3362, 2993, 0);
+    private static final WorldPoint SOUTH_THUG_WINE_DOOR_INSIDE_TILE = new WorldPoint(3350, 2956, 0);
+    private static final WorldPoint SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE = new WorldPoint(3350, 2958, 0);
+    private static final WorldPoint SOUTH_THUG_WINE_CURTAIN_TILE = new WorldPoint(3350, 2957, 0);
+    private static final int CLOSED_CURTAIN_ID = 1533;
+    private static final int OPEN_CURTAIN_ID = 1534;
     private static final WorldPoint WINE_MERCHANT_TILE = new WorldPoint(3359, 2990, 0);
     private static final String WINE_EXIT_OBJECT_NAME = "Curtain";
 
@@ -96,15 +103,17 @@ public class BlackjackScript extends Script
     private static final long COMBAT_WINE_RECOVERY_TIMEOUT_MS = 8_000;
     private static final long FAILED_KNOCKOUT_RETALIATION_GRACE_MS = 1_800;
     private static final long SUSTAINED_NPC_ATTACK_MS = 3_000;
-    private static final long CAMERA_PIVOT_COOLDOWN_MS = 1_000;
-    private static final int CAMERA_PIVOT_THRESHOLD = 128;
-    private static final int CAMERA_PIVOT_STEP = 192;
+    private static final long CAMERA_REFACING_MIN_DELAY_MS = 450;
+    private static final long CAMERA_REFACING_MAX_DELAY_MS = 951;
+    private static final int CAMERA_PIVOT_THRESHOLD = 24;
     private static final long CAMERA_PITCH_COOLDOWN_MS = 1_000;
     private static final long DOOR_INTERACTION_DELAY_MS = 650;
     private static final long WINE_DOOR_CROSSING_RETRY_MS = 350;
     private static final long WINE_DOOR_CROSSING_TIMEOUT_MS = 30_000;
-    private static final int TOP_DOWN_CAMERA_PITCH = 383;
-    private static final int TOP_DOWN_CAMERA_TOLERANCE = 8;
+    private static final long WINE_EXIT_STATE_TIMEOUT_MS = 20_000;
+    private static final long WINE_EXIT_DIAGNOSTIC_INTERVAL_MS = 1_000;
+    private static final int TARGET_CAMERA_PITCH = 332;
+    private static final int TARGET_CAMERA_PITCH_TOLERANCE = 8;
     private static final long HUMANIZER_MOUSE_MIN_INTERVAL_MS = 45_000;
     private static final long HUMANIZER_MOUSE_MAX_INTERVAL_MS = 120_001;
     private static final long HUMANIZER_MICRO_BREAK_MIN_INTERVAL_MS = 540_000;
@@ -207,7 +216,7 @@ public class BlackjackScript extends Script
     private Point burstClickPoint;
     private boolean curtainCameraAdjusted;
     private boolean healingRequired;
-    private long lastCameraPivotAt;
+    private long nextCameraRefacingAt;
     private long lastCameraPitchAt;
     private WorldPoint lastCameraTargetLocation;
     private String targetClearReason = "None";
@@ -219,6 +228,7 @@ public class BlackjackScript extends Script
     private long wineExitCurtainOpenedAt;
     private int wineDoorCrossingAttempts;
     private long wineDoorCrossingStartedAt;
+    private long lastWineExitDiagnosticAt;
     private long nextHumanizerMouseAt;
     private long humanizerMouseRecoverAt;
     private long nextMicroBreakAt;
@@ -279,7 +289,7 @@ public class BlackjackScript extends Script
         burstClickPoint = null;
         curtainCameraAdjusted = false;
         healingRequired = false;
-        lastCameraPivotAt = 0;
+        nextCameraRefacingAt = 0;
         lastCameraPitchAt = 0;
         lastCameraTargetLocation = null;
         targetClearReason = "None";
@@ -291,6 +301,7 @@ public class BlackjackScript extends Script
         wineExitCurtainOpenedAt = 0;
         wineDoorCrossingAttempts = 0;
         wineDoorCrossingStartedAt = 0;
+        lastWineExitDiagnosticAt = 0;
         long now = System.currentTimeMillis();
         nextHumanizerMouseAt = scheduleFromNow(now,
                 HUMANIZER_MOUSE_MIN_INTERVAL_MS, HUMANIZER_MOUSE_MAX_INTERVAL_MS);
@@ -1310,6 +1321,11 @@ public class BlackjackScript extends Script
 
     private boolean handleWineRestockPriority()
     {
+        if (shutdownRequested || state == BlackjackState.ERROR || state == BlackjackState.STOPPED)
+        {
+            return false;
+        }
+
         if (hasPendingCombatEquipmentRecovery())
         {
             if (wineRestockPending)
@@ -1407,31 +1423,39 @@ public class BlackjackScript extends Script
 
     private void exitHouseForWine()
     {
+        long now = System.currentTimeMillis();
+        if (elapsedInState() >= WINE_EXIT_STATE_TIMEOUT_MS)
+        {
+            fail("Unable to leave blackjack tent through wine curtain");
+            return;
+        }
         if (!isInsideHouse())
         {
             wineExitCurtainOpenedAt = 0;
             wineDoorCrossingAttempts = 0;
             wineDoorCrossingStartedAt = 0;
-            transition(BlackjackState.SECURING_WINE_EXIT, "Close east door behind player");
+            transition(BlackjackState.SECURING_WINE_EXIT, "Close wine curtain behind player");
             return;
         }
 
         Rs2TileObjectModel openDoor = findWineDoor("Close");
         if (openDoor != null)
         {
+            WorldPoint outsideTile = activeWineDoorOutsideTile();
             if (wineExitCurtainOpenedAt == 0)
             {
                 wineExitCurtainOpenedAt = System.currentTimeMillis();
-                log.info("East curtain is open; crossing from {} to {}",
-                        Rs2Player.getWorldLocation(), WINE_DOOR_OUTSIDE_TILE);
+                log.info("Wine curtain is open; crossing from {} to {}",
+                        Rs2Player.getWorldLocation(), outsideTile);
             }
-            walkAcrossWineDoor(WINE_DOOR_OUTSIDE_TILE, "Step outside east curtain");
+            walkAcrossWineDoor(outsideTile, "Step outside wine curtain");
             return;
         }
 
         Rs2TileObjectModel closedDoor = findWineDoor("Open");
         if (closedDoor != null)
         {
+            logWineExitDiagnostic(now, "open-curtain", closedDoor);
             if (wineExitCurtainOpenedAt != 0)
             {
                 log.info("East curtain closed again before crossing; reopening");
@@ -1439,7 +1463,7 @@ public class BlackjackScript extends Script
                 wineDoorCrossingAttempts = 0;
                 wineDoorCrossingStartedAt = 0;
             }
-            if (interactWithWineDoor(closedDoor, "Open", "Open east door"))
+            if (interactWithWineDoor(closedDoor, "Open", "Open wine curtain"))
             {
                 wineExitCurtainOpenedAt = System.currentTimeMillis();
             }
@@ -1447,17 +1471,20 @@ public class BlackjackScript extends Script
         }
 
         WorldPoint location = Rs2Player.getWorldLocation();
+        WorldPoint insideTile = activeWineDoorInsideTile();
         if (location != null
-                && location.distanceTo2D(WINE_DOOR_INSIDE_TILE) > 2
+                && location.distanceTo2D(insideTile) > 2
                 && readyForInteraction(450))
         {
-            Rs2Walker.walkFastCanvas(WINE_DOOR_INSIDE_TILE);
+            boolean dispatched = Rs2Walker.walkFastCanvas(insideTile);
             lastInteractionAt = System.currentTimeMillis();
-            nextAction = "Approach east curtain";
+            nextAction = "Approach wine curtain";
+            logWineExitDiagnostic(now, "approach-curtain dispatched=" + dispatched, null);
             return;
         }
 
-        waitForWineDoor("Open east door");
+        logWineExitDiagnostic(now, "curtain-not-resolved", null);
+        waitForWineDoor("Open wine curtain");
     }
 
     private void secureWineExit()
@@ -1471,7 +1498,7 @@ public class BlackjackScript extends Script
         Rs2TileObjectModel openDoor = findWineDoor("Close");
         if (openDoor != null)
         {
-            interactWithWineDoor(openDoor, "Close", "Close east door behind player");
+            interactWithWineDoor(openDoor, "Close", "Close wine curtain behind player");
             return;
         }
 
@@ -1484,17 +1511,18 @@ public class BlackjackScript extends Script
         }
 
         WorldPoint location = Rs2Player.getWorldLocation();
+        WorldPoint outsideTile = activeWineDoorOutsideTile();
         if (location != null
-                && location.distanceTo2D(WINE_DOOR_OUTSIDE_TILE) > 2
+                && location.distanceTo2D(outsideTile) > 2
                 && readyForInteraction(450))
         {
-            Rs2Walker.walkFastCanvas(WINE_DOOR_OUTSIDE_TILE);
+            Rs2Walker.walkFastCanvas(outsideTile);
             lastInteractionAt = System.currentTimeMillis();
-            nextAction = "Return beside east curtain";
+            nextAction = "Return beside wine curtain";
             return;
         }
 
-        waitForWineDoor("Confirm east door is closed");
+        waitForWineDoor("Confirm wine curtain is closed");
     }
 
     private void restockWine()
@@ -1507,14 +1535,14 @@ public class BlackjackScript extends Script
 
         if (findWineDoor("Close") != null)
         {
-            transition(BlackjackState.SECURING_WINE_EXIT, "Close east door before inventory changes");
+            transition(BlackjackState.SECURING_WINE_EXIT, "Close wine curtain before inventory changes");
             return;
         }
 
         int wines = Rs2Inventory.count(WINE_ID);
         if (wines >= restockTargetWineCount)
         {
-            transition(BlackjackState.RETURNING_WITH_WINE, "Return to east door");
+            transition(BlackjackState.RETURNING_WITH_WINE, "Return to wine curtain");
             return;
         }
 
@@ -1537,7 +1565,7 @@ public class BlackjackScript extends Script
             return;
         }
 
-        int coins = Rs2Inventory.count(COINS_ID);
+        int coins = Rs2Inventory.itemQuantity(COINS_ID);
         if (coins < WINE_EXCHANGE_COST)
         {
             fail("Coins required to restock wine");
@@ -1573,18 +1601,19 @@ public class BlackjackScript extends Script
         {
             wineDoorCrossingAttempts = 0;
             wineDoorCrossingStartedAt = 0;
-            transition(BlackjackState.SECURING_WINE_ENTRY, "Close east door behind player");
+            transition(BlackjackState.SECURING_WINE_ENTRY, "Close wine curtain behind player");
             return;
         }
 
         WorldPoint location = Rs2Player.getWorldLocation();
-        if (location != null && location.distanceTo2D(WINE_DOOR_OUTSIDE_TILE) > 2)
+        WorldPoint outsideTile = activeWineDoorOutsideTile();
+        if (location != null && location.distanceTo2D(outsideTile) > 2)
         {
             if (readyForInteraction(450))
             {
-                Rs2Walker.walkFastCanvas(WINE_DOOR_OUTSIDE_TILE);
+                Rs2Walker.walkFastCanvas(outsideTile);
                 lastInteractionAt = System.currentTimeMillis();
-                nextAction = "Return to outside door tile";
+                nextAction = "Return to outside curtain tile";
             }
             return;
         }
@@ -1592,17 +1621,17 @@ public class BlackjackScript extends Script
         Rs2TileObjectModel closedDoor = findWineDoor("Open");
         if (closedDoor != null)
         {
-            interactWithWineDoor(closedDoor, "Open", "Open east door to re-enter");
+            interactWithWineDoor(closedDoor, "Open", "Open wine curtain to re-enter");
             return;
         }
 
         if (findWineDoor("Close") != null && readyForInteraction(350))
         {
-            walkAcrossWineDoor(WINE_DOOR_INSIDE_TILE, "Step back inside east curtain");
+            walkAcrossWineDoor(activeWineDoorInsideTile(), "Step back inside wine curtain");
             return;
         }
 
-        waitForWineDoor("Open east door to re-enter");
+        waitForWineDoor("Open wine curtain to re-enter");
     }
 
     private void secureWineEntry()
@@ -1616,13 +1645,13 @@ public class BlackjackScript extends Script
         Rs2TileObjectModel openDoor = findWineDoor("Close");
         if (openDoor != null)
         {
-            interactWithWineDoor(openDoor, "Close", "Close east door behind player");
+            interactWithWineDoor(openDoor, "Close", "Close wine curtain behind player");
             return;
         }
 
         if (findWineDoor("Open") == null)
         {
-            waitForWineDoor("Confirm east door is closed");
+            waitForWineDoor("Confirm wine curtain is closed");
             return;
         }
 
@@ -1647,12 +1676,34 @@ public class BlackjackScript extends Script
 
     private Rs2TileObjectModel findWineDoor(String action)
     {
+        if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
+        {
+            int expectedId;
+            if ("Open".equalsIgnoreCase(action))
+            {
+                expectedId = CLOSED_CURTAIN_ID;
+            }
+            else if ("Close".equalsIgnoreCase(action))
+            {
+                expectedId = OPEN_CURTAIN_ID;
+            }
+            else
+            {
+                return null;
+            }
+            return Microbot.getRs2TileObjectCache().query()
+                    .withId(expectedId)
+                    .where(object -> SOUTH_THUG_WINE_CURTAIN_TILE.equals(object.getWorldLocation()))
+                    .first();
+        }
+
+        WorldPoint insideTile = activeWineDoorInsideTile();
         return new Rs2TileObjectQueryable()
                 .withName(WINE_EXIT_OBJECT_NAME)
                 .where(object -> {
                     WorldPoint location = object.getWorldLocation();
                     return location != null
-                            && location.distanceTo2D(WINE_DOOR_INSIDE_TILE) <= 1
+                            && location.distanceTo2D(insideTile) <= 1
                             && hasObjectAction(object, action);
                 })
                 .first();
@@ -1679,7 +1730,26 @@ public class BlackjackScript extends Script
             nextAction = description;
             return true;
         }
+        log.warn("Wine curtain interaction returned false: id={} location={} action={} state={}",
+                door.getId(), door.getWorldLocation(), action, state);
         return false;
+    }
+
+    private void logWineExitDiagnostic(long now, String branch, Rs2TileObjectModel door)
+    {
+        if (now - lastWineExitDiagnosticAt < WINE_EXIT_DIAGNOSTIC_INTERVAL_MS)
+        {
+            return;
+        }
+        lastWineExitDiagnosticAt = now;
+        log.info("Wine-exit branch={} player={} inside={} outside={} doorId={} doorLocation={} stateAgeMs={}",
+                branch,
+                Rs2Player.getWorldLocation(),
+                activeWineDoorInsideTile(),
+                activeWineDoorOutsideTile(),
+                door == null ? -1 : door.getId(),
+                door == null ? null : door.getWorldLocation(),
+                elapsedInState());
     }
 
     private void walkAcrossWineDoor(WorldPoint destination, String description)
@@ -1727,10 +1797,10 @@ public class BlackjackScript extends Script
     {
         if (Rs2Dialogue.hasSelectAnOption())
         {
-            int option = Rs2Inventory.emptySlotCount() > 1 ? 2 : 1;
+            int option = Rs2Inventory.emptySlotCount() > 1 ? 3 : 1;
             Rs2Dialogue.keyPressForDialogueOption(option);
             lastInteractionAt = System.currentTimeMillis();
-            nextAction = option == 2 ? "Exchange all notes" : "Exchange one note";
+            nextAction = option == 3 ? "Exchange all notes" : "Exchange one note";
             return;
         }
 
@@ -2020,7 +2090,7 @@ public class BlackjackScript extends Script
     private boolean isEligibleTarget(Rs2NpcModel npc)
     {
         if (npc == null || npc.getName() == null || npc.getWorldLocation() == null
-                || !activeHouse().contains(npc.getWorldLocation()))
+                || !isInsideActiveHouse(npc.getWorldLocation()))
         {
             return false;
         }
@@ -2096,15 +2166,22 @@ public class BlackjackScript extends Script
 
     private boolean isInsideHouse()
     {
-        WorldPoint location = Rs2Player.getWorldLocation();
-        return location != null && activeHouse().contains(location);
+        return isInsideActiveHouse(Rs2Player.getWorldLocation());
     }
 
-    private WorldArea activeHouse()
+    private boolean isInsideActiveHouse(WorldPoint location)
     {
-        return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
-                ? SOUTH_THUG_TENT
-                : BANDIT_HOUSE;
+        if (location == null)
+        {
+            return false;
+        }
+        if (selectedTarget() != BlackjackTarget.MENAPHITE_THUG)
+        {
+            return BANDIT_HOUSE.contains(location);
+        }
+        return SOUTH_THUG_TENT_MAIN_ROOM.contains(location)
+                || SOUTH_THUG_TENT_REAR_ROOM.contains(location)
+                || SOUTH_THUG_TENT_HALLWAY.equals(location);
     }
 
     private WorldPoint activeHouseCentre()
@@ -2126,6 +2203,20 @@ public class BlackjackScript extends Script
         return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
                 ? SOUTH_THUG_COMBAT_SAFE_TILE
                 : COMBAT_SAFE_TILE;
+    }
+
+    private WorldPoint activeWineDoorInsideTile()
+    {
+        return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
+                ? SOUTH_THUG_WINE_DOOR_INSIDE_TILE
+                : BANDIT_WINE_DOOR_INSIDE_TILE;
+    }
+
+    private WorldPoint activeWineDoorOutsideTile()
+    {
+        return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
+                ? SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE
+                : BANDIT_WINE_DOOR_OUTSIDE_TILE;
     }
 
     private boolean clickAnchoredTarget(Rs2NpcModel target)
@@ -2494,11 +2585,18 @@ public class BlackjackScript extends Script
         if (COMBAT_SAFE_TILE.equals(targetLocation))
         {
             lastCameraTargetLocation = targetLocation;
+            nextCameraRefacingAt = 0;
             return;
         }
 
         long now = System.currentTimeMillis();
-        if (now - lastCameraPivotAt < CAMERA_PIVOT_COOLDOWN_MS || Microbot.getClient().isMenuOpen())
+        if (nextCameraRefacingAt == 0)
+        {
+            nextCameraRefacingAt = now + randomBetween(
+                    CAMERA_REFACING_MIN_DELAY_MS,
+                    CAMERA_REFACING_MAX_DELAY_MS);
+        }
+        if (now < nextCameraRefacingAt || Microbot.getClient().isMenuOpen())
         {
             return;
         }
@@ -2508,13 +2606,12 @@ public class BlackjackScript extends Script
         int delta = (targetYaw - currentYaw + 3_072) % 2_048 - 1_024;
         if (Math.abs(delta) >= CAMERA_PIVOT_THRESHOLD)
         {
-            int pivot = Math.max(-CAMERA_PIVOT_STEP, Math.min(CAMERA_PIVOT_STEP, delta));
-            Rs2Camera.setYaw((currentYaw + pivot + 2_048) % 2_048);
-            lastCameraPivotAt = now;
-            log.debug("Pivoting camera toward moved target: location={}, yaw={} -> {}",
-                    targetLocation, currentYaw, (currentYaw + pivot + 2_048) % 2_048);
+            Rs2Camera.setYaw(targetYaw);
+            log.debug("Refacing camera toward moved target: location={}, yaw={} -> {}",
+                    targetLocation, currentYaw, targetYaw);
         }
         lastCameraTargetLocation = targetLocation;
+        nextCameraRefacingAt = 0;
     }
 
     private void maintainTopDownCamera()
@@ -2524,10 +2621,10 @@ public class BlackjackScript extends Script
         {
             return;
         }
-        if (Rs2Camera.getPitch() < TOP_DOWN_CAMERA_PITCH - TOP_DOWN_CAMERA_TOLERANCE)
+        if (Math.abs(Rs2Camera.getPitch() - TARGET_CAMERA_PITCH) > TARGET_CAMERA_PITCH_TOLERANCE)
         {
-            Rs2Camera.setPitch(TOP_DOWN_CAMERA_PITCH);
-            log.debug("Restoring top-down camera pitch: {}", TOP_DOWN_CAMERA_PITCH);
+            Rs2Camera.setPitch(TARGET_CAMERA_PITCH);
+            log.debug("Restoring target-facing camera pitch: {}", TARGET_CAMERA_PITCH);
         }
         lastCameraPitchAt = now;
     }
@@ -2942,7 +3039,7 @@ public class BlackjackScript extends Script
             return Microbot.getRs2NpcCache().query().toList().stream()
                     .anyMatch(npc -> npc != null && npc.getNpc() != null
                             && npc.getNpc().getWorldLocation() != null
-                            && activeHouse().contains(npc.getNpc().getWorldLocation())
+                            && isInsideActiveHouse(npc.getNpc().getWorldLocation())
                             && npc.getNpc().getInteracting() == player);
         }).orElse(false);
     }

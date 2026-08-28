@@ -30,3 +30,7 @@ Prioritize these `client.log` messages during smoke tests:
 - `Blackjack stopped`
 
 Do not infer a menu miss from a disappearing menu alone. Correlate the verified cursor point, target animation, dispatch time, overhead/chat result, and first pickpocket timing.
+
+## Deferred Backlog
+
+- Stabilize the standing lower-hull cursor anchor across the Knock-Out animation. When the target falls facing away, the prone convex-hull bounds can reinterpret the lower 70-93% band and move the cursor upward toward the arm. Keep lower-hull acquisition for standing targets, preserve the previous screen-space anchor while it remains safely inside the new hull and within a small movement tolerance, and prefer the nearest safe point to that anchor if correction is required. Only perform a full lower-hull reacquisition when the target stands, changes tile, or the preserved point no longer resolves the target menu entry. Retain the before-click hull and menu-entry checks.
