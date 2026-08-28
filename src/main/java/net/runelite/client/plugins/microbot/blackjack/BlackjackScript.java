@@ -79,6 +79,10 @@ public class BlackjackScript extends Script
     private static final long FAILED_KNOCKOUT_RETRY_MS = 450;
     private static final long PICKPOCKET_BURST_TIMEOUT_MS = 2_800;
     private static final long KNOCKOUT_CONFIRM_TIMEOUT_MS = 1_500;
+    private static final long KNOCKOUT_AIM_REACQUIRE_MS = 1_500;
+    private static final long KNOCKOUT_AIM_CAMERA_RESET_MS = 3_500;
+    private static final long KNOCKOUT_AIM_OBSTRUCTION_RECOVERY_MS = 6_000;
+    private static final int TARGET_CLICK_VIEWPORT_MARGIN = 18;
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MIN_MS = 35;
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MAX_MS = 106;
     private static final long SECOND_PICKPOCKET_INTERACTION_TIMEOUT_MS = 2_400;
@@ -113,6 +117,7 @@ public class BlackjackScript extends Script
     private static final long WINE_DOOR_CROSSING_RETRY_MS = 350;
     private static final long WINE_DOOR_CROSSING_TIMEOUT_MS = 30_000;
     private static final long WINE_DOOR_RESOLUTION_TIMEOUT_MS = 12_000;
+    private static final long WINE_MERCHANT_RESOLUTION_TIMEOUT_MS = 12_000;
     private static final long WINE_EXIT_STATE_TIMEOUT_MS = 20_000;
     private static final long WINE_EXIT_DIAGNOSTIC_INTERVAL_MS = 1_000;
     private static final int TARGET_CAMERA_PITCH = 332;
@@ -205,6 +210,9 @@ public class BlackjackScript extends Script
     private long npcInteractionSince;
     private long ignoreCombatUntil;
     private long knockoutClickIssuedAt;
+    private long knockoutAimStartedAt;
+    private int knockoutAimFailures;
+    private int knockoutAimRecoveryStage;
     private long knockoutBurstReleaseAt;
     private boolean knockoutFallbackReleased;
     private long pickpocketBurstStartedAt;
@@ -234,6 +242,7 @@ public class BlackjackScript extends Script
     private int wineDoorCrossingAttempts;
     private long wineDoorCrossingStartedAt;
     private long wineDoorMissingSince;
+    private long wineMerchantMissingSince;
     private long lastWineExitDiagnosticAt;
     private long nextHumanizerMouseAt;
     private long humanizerMouseRecoverAt;
@@ -281,6 +290,9 @@ public class BlackjackScript extends Script
         npcInteractionSince = 0;
         ignoreCombatUntil = 0;
         knockoutClickIssuedAt = 0;
+        knockoutAimStartedAt = 0;
+        knockoutAimFailures = 0;
+        knockoutAimRecoveryStage = 0;
         knockoutBurstReleaseAt = 0;
         knockoutFallbackReleased = false;
         pickpocketBurstStartedAt = 0;
@@ -310,6 +322,7 @@ public class BlackjackScript extends Script
         wineDoorCrossingAttempts = 0;
         wineDoorCrossingStartedAt = 0;
         wineDoorMissingSince = 0;
+        wineMerchantMissingSince = 0;
         lastWineExitDiagnosticAt = 0;
         long now = System.currentTimeMillis();
         nextHumanizerMouseAt = scheduleFromNow(now,
@@ -632,6 +645,7 @@ public class BlackjackScript extends Script
         if (anchor == null)
         {
             nextAction = "Wait for safe NPC click point";
+            handleKnockoutAimFailure(target, "no viewport-safe NPC anchor");
             return;
         }
 
@@ -639,6 +653,7 @@ public class BlackjackScript extends Script
         {
             if (!moveAndLeftClickTargetOption(target, anchor, KNOCKOUT_ACTION))
             {
+                handleKnockoutAimFailure(target, "cursor or left-click option validation failed");
                 return;
             }
             long now = System.currentTimeMillis();
@@ -784,6 +799,7 @@ public class BlackjackScript extends Script
 
     private void recordKnockoutDispatch(long now)
     {
+        resetKnockoutAimRecovery();
         knockoutClickIssuedAt = now;
         knockoutBurstReleaseAt = now + randomBetween(
                 KNOCKOUT_DISPATCH_FALLBACK_MIN_MS,
@@ -1828,29 +1844,49 @@ public class BlackjackScript extends Script
             return;
         }
 
-        Rs2NpcModel merchant = Microbot.getRs2NpcCache().query()
-                .withName("Banknote Exchange Merchant")
-                .nearestOnClientThread();
+        Rs2NpcModel merchant = findWineMerchant();
         if (merchant == null)
         {
-            if (readyForInteraction(700))
+            WorldPoint playerLocation = Rs2Player.getWorldLocation();
+            if (playerLocation == null || playerLocation.distanceTo2D(WINE_MERCHANT_TILE) > 2)
             {
-                Rs2Walker.walkTo(WINE_MERCHANT_TILE, 0);
-                lastInteractionAt = System.currentTimeMillis();
-                nextAction = "Walk to recorded note merchant tile";
+                wineMerchantMissingSince = 0;
+                if (readyForInteraction(700))
+                {
+                    Rs2Walker.walkTo(WINE_MERCHANT_TILE, 0);
+                    lastInteractionAt = System.currentTimeMillis();
+                    nextAction = "Walk to recorded note merchant tile";
+                }
+                return;
             }
-            if (elapsedInState() > 30_000)
+
+            long now = System.currentTimeMillis();
+            if (wineMerchantMissingSince == 0)
+            {
+                wineMerchantMissingSince = now;
+                log.debug("Banknote Exchange Merchant temporarily unresolved at {}; waiting for NPC cache",
+                        playerLocation);
+            }
+            else if (now - wineMerchantMissingSince > WINE_MERCHANT_RESOLUTION_TIMEOUT_MS)
             {
                 fail("Banknote Exchange Merchant not found");
             }
             return;
         }
+        wineMerchantMissingSince = 0;
 
-        if (merchant.getDistanceFromPlayer() > 2)
+        WorldPoint playerLocation = Rs2Player.getWorldLocation();
+        WorldPoint merchantLocation = merchant.getWorldLocation();
+        if (playerLocation == null || merchantLocation == null)
+        {
+            nextAction = "Wait for note merchant location";
+            return;
+        }
+        if (playerLocation.distanceTo2D(merchantLocation) > 2)
         {
             if (readyForInteraction(700))
             {
-                Rs2Walker.walkTo(merchant.getWorldLocation(), 1);
+                Rs2Walker.walkTo(merchantLocation, 1);
                 lastInteractionAt = System.currentTimeMillis();
                 nextAction = "Walk to note merchant";
             }
@@ -1865,6 +1901,33 @@ public class BlackjackScript extends Script
                 nextAction = "Choose note quantity";
             }
         }
+    }
+
+    private Rs2NpcModel findWineMerchant()
+    {
+        Rs2NpcModel cachedMerchant = Microbot.getRs2NpcCache().query()
+                .withName("Banknote Exchange Merchant")
+                .nearestOnClientThread();
+        if (cachedMerchant != null)
+        {
+            return cachedMerchant;
+        }
+
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Player player = Microbot.getClient().getLocalPlayer();
+            if (player == null || player.getWorldLocation() == null
+                    || Microbot.getClient().getTopLevelWorldView() == null)
+            {
+                return null;
+            }
+            return Microbot.getClient().getTopLevelWorldView().npcs().stream()
+                    .filter(Objects::nonNull)
+                    .filter(npc -> "Banknote Exchange Merchant".equalsIgnoreCase(npc.getName()))
+                    .min(Comparator.comparingInt(npc ->
+                            npc.getWorldLocation().distanceTo2D(player.getWorldLocation())))
+                    .map(Rs2NpcModel::new)
+                    .orElse(null);
+        }).orElse(null);
     }
 
     private void buyWineFromFaisal()
@@ -2367,12 +2430,105 @@ public class BlackjackScript extends Script
 
     private boolean isInsideTargetHull(Rs2NpcModel target, Point point)
     {
-        return target != null && point != null
+        return target != null && isInsideClickViewport(point)
                 && Microbot.getClientThread().runOnClientThreadOptional(() -> {
                     NPC npc = target.getNpc();
                     Shape hull = npc == null ? null : npc.getConvexHull();
                     return hull != null && hull.contains(point.getX(), point.getY());
                 }).orElse(false);
+    }
+
+    private boolean isInsideClickViewport(Point point)
+    {
+        if (point == null)
+        {
+            return false;
+        }
+        int width = Microbot.getClient().getCanvasWidth();
+        int height = Microbot.getClient().getCanvasHeight();
+        return isInsideClickViewport(point.getX(), point.getY(), width, height);
+    }
+
+    private boolean isInsideClickViewport(int x, int y, int width, int height)
+    {
+        return x >= TARGET_CLICK_VIEWPORT_MARGIN
+                && y >= TARGET_CLICK_VIEWPORT_MARGIN
+                && x < width - TARGET_CLICK_VIEWPORT_MARGIN
+                && y < height - TARGET_CLICK_VIEWPORT_MARGIN;
+    }
+
+    private void handleKnockoutAimFailure(Rs2NpcModel target, String reason)
+    {
+        long now = System.currentTimeMillis();
+        if (knockoutAimStartedAt == 0)
+        {
+            knockoutAimStartedAt = now;
+        }
+        knockoutAimFailures++;
+        long age = now - knockoutAimStartedAt;
+
+        if (knockoutAimRecoveryStage < 1 && age >= KNOCKOUT_AIM_REACQUIRE_MS)
+        {
+            knockoutAimRecoveryStage = 1;
+            burstClickPoint = null;
+            faceKnockoutTarget(target);
+            logKnockoutAimRecovery("reacquire", target, reason, age);
+            nextAction = "Reface and reacquire Knock-Out target";
+            return;
+        }
+        if (knockoutAimRecoveryStage < 2 && age >= KNOCKOUT_AIM_CAMERA_RESET_MS)
+        {
+            knockoutAimRecoveryStage = 2;
+            burstClickPoint = null;
+            faceKnockoutTarget(target);
+            Rs2Camera.setPitch(TARGET_CAMERA_PITCH);
+            if (targetCameraZoom >= 0)
+            {
+                Rs2Camera.setZoom(targetCameraZoom);
+            }
+            logKnockoutAimRecovery("camera-reset", target, reason, age);
+            nextAction = "Restore camera for Knock-Out target";
+            return;
+        }
+        if (knockoutAimRecoveryStage < 3 && age >= KNOCKOUT_AIM_OBSTRUCTION_RECOVERY_MS)
+        {
+            knockoutAimRecoveryStage = 3;
+            logKnockoutAimRecovery("obstruction-recovery", target, reason, age);
+            waitForTargetClear("Knock-Out cursor remained outside safe viewport", true);
+        }
+    }
+
+    private void faceKnockoutTarget(Rs2NpcModel target)
+    {
+        if (target == null || target.getNpc() == null)
+        {
+            return;
+        }
+        int targetYaw = Rs2Camera.calculateCameraYaw(Rs2Camera.angleToTile(target.getNpc()));
+        Rs2Camera.setYaw(targetYaw);
+        nextCameraRefacingAt = 0;
+        lastCameraTargetLocation = target.getWorldLocation();
+    }
+
+    private void logKnockoutAimRecovery(String stage, Rs2NpcModel target, String reason, long age)
+    {
+        String geometry = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            NPC npc = target == null ? null : target.getNpc();
+            Shape hull = npc == null ? null : npc.getConvexHull();
+            return "target=" + (target == null ? null : target.getWorldLocation())
+                    + " hull=" + (hull == null ? null : hull.getBounds())
+                    + " canvas=" + Microbot.getClient().getCanvasWidth()
+                    + "x" + Microbot.getClient().getCanvasHeight();
+        }).orElse("geometry unavailable");
+        log.warn("Knock-Out pre-dispatch recovery stage={}: reason={} age={}ms failures={} {}",
+                stage, reason, age, knockoutAimFailures, geometry);
+    }
+
+    private void resetKnockoutAimRecovery()
+    {
+        knockoutAimStartedAt = 0;
+        knockoutAimFailures = 0;
+        knockoutAimRecoveryStage = 0;
     }
 
     private boolean handleHumanizerPriority()
@@ -2704,13 +2860,16 @@ public class BlackjackScript extends Script
             }
 
             Rectangle bounds = hull.getBounds();
+            int canvasWidth = Microbot.getClient().getCanvasWidth();
+            int canvasHeight = Microbot.getClient().getCanvasHeight();
             int lowerBodyTop = bounds.y + Math.max(2, bounds.height * 7 / 10);
             int lowerBodyBottom = bounds.y + Math.max(3, bounds.height * 93 / 100);
 
             if (preferred != null
                     && preferred.getY() >= lowerBodyTop
                     && preferred.getY() <= lowerBodyBottom
-                    && hull.contains(preferred.getX(), preferred.getY()))
+                    && hull.contains(preferred.getX(), preferred.getY())
+                    && isInsideClickViewport(preferred.getX(), preferred.getY(), canvasWidth, canvasHeight))
             {
                 return preferred;
             }
@@ -2732,7 +2891,7 @@ public class BlackjackScript extends Script
             {
                 for (int x = left; x <= right; x += 2)
                 {
-                    if (!hull.contains(x, y))
+                    if (!hull.contains(x, y) || !isInsideClickViewport(x, y, canvasWidth, canvasHeight))
                     {
                         continue;
                     }
@@ -2758,7 +2917,8 @@ public class BlackjackScript extends Script
                 for (int xOffset : xOffsets)
                 {
                     Point candidate = new Point(feet.getX() + xOffset, feet.getY() - yOffset);
-                    if (hull.contains(candidate.getX(), candidate.getY()))
+                    if (hull.contains(candidate.getX(), candidate.getY())
+                            && isInsideClickViewport(candidate.getX(), candidate.getY(), canvasWidth, canvasHeight))
                     {
                         return candidate;
                     }
@@ -2789,6 +2949,8 @@ public class BlackjackScript extends Script
             }
 
             Rectangle bounds = hull.getBounds();
+            int canvasWidth = Microbot.getClient().getCanvasWidth();
+            int canvasHeight = Microbot.getClient().getCanvasHeight();
             int wanderTop = bounds.y + Math.max(2, bounds.height * 55 / 100);
             int wanderBottom = bounds.y + Math.max(3, bounds.height * 93 / 100);
             for (int attempt = 0; attempt < 12; attempt++)
@@ -2812,7 +2974,8 @@ public class BlackjackScript extends Script
                 Point candidate = new Point(base.getX() + dx, base.getY() + dy);
                 if (candidate.getY() >= wanderTop
                         && candidate.getY() <= wanderBottom
-                        && hull.contains(candidate.getX(), candidate.getY()))
+                        && hull.contains(candidate.getX(), candidate.getY())
+                        && isInsideClickViewport(candidate.getX(), candidate.getY(), canvasWidth, canvasHeight))
                 {
                     return candidate;
                 }
@@ -3169,6 +3332,9 @@ public class BlackjackScript extends Script
             if (newState == BlackjackState.KNOCKING_OUT)
             {
                 knockoutAttemptReadyAt = System.currentTimeMillis() + randomKnockoutAttemptDelay();
+                knockoutAimStartedAt = System.currentTimeMillis();
+                knockoutAimFailures = 0;
+                knockoutAimRecoveryStage = 0;
             }
             if (newState == BlackjackState.POSITIONING_COMBAT_RESET)
             {
@@ -3177,6 +3343,7 @@ public class BlackjackScript extends Script
             state = newState;
             stateEnteredAt = System.currentTimeMillis();
             wineDoorMissingSince = 0;
+            wineMerchantMissingSince = 0;
         }
         nextAction = action;
         Microbot.status = "Blackjack: " + action;
@@ -3229,6 +3396,7 @@ public class BlackjackScript extends Script
         targetIndex = -1;
         knockoutResult = KnockoutResult.NONE;
         knockoutClickIssuedAt = 0;
+        resetKnockoutAimRecovery();
         knockoutBurstReleaseAt = 0;
         knockoutFallbackReleased = false;
         pickpocketBurstStartedAt = 0;
