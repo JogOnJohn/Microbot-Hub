@@ -146,9 +146,13 @@ public class FarmingContractScript extends Script {
         }
     }
 
-    private Produce findProduceByContractName(String name) {
+    static Produce findProduceByContractName(String name) {
+        if (name == null) {
+            return null;
+        }
         for (Produce p : Produce.values()) {
-            if (p.getContractName() != null && p.getContractName().equalsIgnoreCase(name)) {
+            String contractName = FarmingContractData.CONTRACT_NAMES.getOrDefault(p, p.getName());
+            if (contractName.equalsIgnoreCase(name)) {
                 return p;
             }
         }
