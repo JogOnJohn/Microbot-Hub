@@ -25,8 +25,13 @@ import java.util.concurrent.TimeUnit;
 public class ConstructionScript extends Script {
 
     private static final int DEFAULT_DELAY = 600;
+    private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
+    private static final int CALL_SERVANT_WIDGET_ID = 24248342;
     private ConstructionState state = ConstructionState.Idle;
     private WorldPoint workingTile = null;
+    private final ButlerTripTracker butlerTrip = new ButlerTripTracker();
+    private long lastHouseRecoveryAttempt;
+    private int houseRecoveryAttempts;
 
     // NOTE: For the arrays below, the first ID is the BUILD OBJECT ID, the second is the EMPTY OBJECT ID
     private static final List<Integer> OAK_DUNGEON_DOOR = List.of(13344, 15328);
@@ -115,17 +120,47 @@ public class ConstructionScript extends Script {
 
     @Override
     public void shutdown() {
+        butlerTrip.reset();
+        workingTile = null;
+        state = ConstructionState.Idle;
         super.shutdown();
     }
 
     public void grabPlanksWhileWeBuild(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay){
-        if(getButler() != null) {
-            sleepUntil(()-> getButler() != null && getButler().isInteractingWithPlayer(), Rs2Random.between(750,1500));
-            if(!getButler().isInteractingWithPlayer()){
-                if (Rs2Inventory.count(config.selectedMode().getPlankItemId()) <= Rs2Random.between(0, 18)) butler(config, actionDelay);
-            } else {
+        Rs2NpcModel butler = getButler();
+        ButlerTripTracker.Action tripAction = butlerTrip.observe(
+                Rs2Dialogue.isInDialogue(), butler != null, System.currentTimeMillis());
+        if (tripAction == ButlerTripTracker.Action.WAIT) return;
+        if (tripAction == ButlerTripTracker.Action.HANDLE_RETURN_DIALOGUE) {
+            Microbot.log("Construction: Butler return dialogue detected");
+            butler(config, actionDelay);
+            return;
+        }
+        if (tripAction == ButlerTripTracker.Action.TALK_TO_RETURNED_BUTLER) {
+            Microbot.log("Construction: Butler returned without dialogue; reopening it");
+            if (butler != null && butler.click("Talk-to")) {
+                sleepUntil(Rs2Dialogue::isInDialogue, Rs2Random.between(2000, 5000));
                 butler(config, actionDelay);
             }
+            return;
+        }
+        if (tripAction == ButlerTripTracker.Action.RETRY_DISPATCH) {
+            Microbot.log("Construction: Butler trip timed out; allowing bounded recovery");
+        }
+
+        int plankCount = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+        if (butler == null) {
+            if (plankCount <= Rs2Random.between(0, 18)) butler(config, actionDelay);
+            return;
+        }
+        sleepUntil(() -> {
+            Rs2NpcModel current = getButler();
+            return current != null && current.isInteractingWithPlayer();
+        }, Rs2Random.between(750,1500));
+        butler = getButler();
+        if ((butler != null && butler.isInteractingWithPlayer())
+                || plankCount <= Rs2Random.between(0, 18)) {
+            butler(config, actionDelay);
         }
     }
 
@@ -150,45 +185,85 @@ public class ConstructionScript extends Script {
                 return;
         }
 
+        Rs2TileObjectModel closest = getClosestTile(objectIDs);
+        if (closest == null) {
+            setState(ConstructionState.Idle);
+            returnToTheHouse();
+            return;
+        }
+        houseRecoveryAttempts = 0;
+
         if (workingTile == null) {
-            workingTile = getClosestTile(objectIDs).getWorldLocation();
+            workingTile = closest.getWorldLocation();
         }
 
         Rs2TileObjectModel objOnWorkingTile = Microbot.getRs2TileObjectCache().query()
                 .where(o -> o.getWorldLocation().equals(workingTile))
                 .nearest();
         if (objOnWorkingTile == null || !objectIDs.contains(objOnWorkingTile.getId())) {
-            workingTile = getClosestTile(objectIDs).getWorldLocation();
+            closest = getClosestTile(objectIDs);
+            if (closest == null) {
+                setState(ConstructionState.Idle);
+                returnToTheHouse();
+                return;
+            }
+            workingTile = closest.getWorldLocation();
             objOnWorkingTile = Microbot.getRs2TileObjectCache().query()
                     .where(o -> o.getWorldLocation().equals(workingTile))
                     .nearest();
         }
 
-        if (objOnWorkingTile.getId() == objectIDs.get(0)) {
-            state = ConstructionState.Remove;
+        if (objOnWorkingTile == null) {
+            setState(ConstructionState.Idle);
+            returnToTheHouse();
+        } else if (objOnWorkingTile.getId() == objectIDs.get(0)) {
+            setState(ConstructionState.Remove);
         } else if (objOnWorkingTile.getId() == objectIDs.get(1) && hasRequiredPlanks) {
-            state = ConstructionState.Build;
+            setState(ConstructionState.Build);
         } else if (objOnWorkingTile.getId() == objectIDs.get(1) && butler != null) {
-            state = ConstructionState.Butler;
+            setState(ConstructionState.Butler);
         } else if (!objectIDs.contains(objOnWorkingTile.getId())) {
-            state = ConstructionState.Idle;
+            setState(ConstructionState.Idle);
             Microbot.getNotifier().notify("Looks like we are no longer in our house.");
             returnToTheHouse();
         }
     }
 
     private void returnToTheHouse(){
+        long now = System.currentTimeMillis();
+        if (now - lastHouseRecoveryAttempt < 5_000L) return;
+        lastHouseRecoveryAttempt = now;
+        houseRecoveryAttempts++;
+        Microbot.log("Construction: Outside POH recovery attempt %d", houseRecoveryAttempts);
+
         Rs2TileObjectModel housePortal = Microbot.getRs2TileObjectCache().query().withName("Portal").nearestOnClientThread();
         if(housePortal != null){
             if(housePortal.click("Build mode")){
-                sleepUntil(()-> Rs2Player.getWorldLocation() != null
+                boolean returned = sleepUntil(()-> Rs2Player.getWorldLocation() != null
                         && Rs2Player.getWorldLocation().getRegionX() == 29
                             && Rs2Player.getWorldLocation().getRegionY() == 89, Rs2Random.between(10000,20000));
-                sleep(2000,5000);
+                if (returned) {
+                    houseRecoveryAttempts = 0;
+                    workingTile = null;
+                    Microbot.log("Construction: Returned to POH build mode");
+                    sleep(2000,5000);
+                } else {
+                    Microbot.log("Construction: Timed out returning to POH");
+                }
             }
-        } else {
+        } else if (houseRecoveryAttempts >= 3) {
+            Microbot.log("Construction: House portal unavailable after bounded retries; stopping");
             Microbot.getNotifier().notify("Can't find the house portal!");
             shutdown();
+        } else {
+            Microbot.log("Construction: House portal unavailable; retrying later");
+        }
+    }
+
+    private void setState(ConstructionState nextState) {
+        if (state != nextState) {
+            Microbot.log("Construction state: %s -> %s", state, nextState);
+            state = nextState;
         }
     }
 
@@ -248,28 +323,22 @@ public class ConstructionScript extends Script {
 
     private void butler(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
         var butler = getButler();
-        if (butler == null) return;
-        boolean butlerIsInteracting = butler.isInteractingWithPlayer();
+        if (butlerTrip.isTripInProgress()) return;
 
-        if (!butlerIsInteracting) {
-            Rs2Tab.switchTo(InterfaceTab.SETTINGS);
-
-            Widget houseOptionWidget = Rs2Widget.getWidget(7602207);
-            sleepUntil(()-> houseOptionWidget != null, Rs2Random.between(2000,5000));
-            if (houseOptionWidget != null) Rs2Widget.clickWidget(houseOptionWidget);
-
-            Widget callServantWidget = Rs2Widget.getWidget(24248342);
-            sleepUntil(()-> callServantWidget != null, Rs2Random.between(2000,5000));
-            if (callServantWidget != null) Rs2Widget.clickWidget(callServantWidget);
-
-            sleepUntil(()-> Rs2Dialogue.isInDialogue(), Rs2Random.between(2000,5000));
+        if (!Rs2Dialogue.isInDialogue() && (butler == null || !butler.isInteractingWithPlayer())) {
+            if (!callServant()) return;
+            butler = getButler();
+        } else if (!Rs2Dialogue.isInDialogue() && butler != null) {
+            if (!butler.click("Talk-to")
+                    || !sleepUntil(Rs2Dialogue::isInDialogue, Rs2Random.between(2000, 5000))) return;
         }
 
-        if (Rs2Dialogue.isInDialogue() || butler.click("Talk-to")) {
+        if (Rs2Dialogue.isInDialogue()) {
             sleep(500);
             Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
             sleep(400, 1000);
-            if (Rs2Widget.findWidget("Go to the bank...", null) != null) {
+            if (Rs2Widget.findWidget("Go to the bank", null) != null) {
+                if (butler == null) return;
                 Rs2Inventory.useItemOnNpc(config.selectedMode().getPlankItemId() + 1, butler.getId());
                 sleepUntilOnClientThread(() -> Rs2Widget.hasWidget("Dost thou wish me to exchange that certificate"));
                 Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
@@ -277,6 +346,8 @@ public class ConstructionScript extends Script {
                 Rs2Keyboard.typeString("1");
                 sleepUntilOnClientThread(() -> Rs2Widget.hasWidget("Enter amount:"));
                 Rs2Keyboard.typeString("28");
+                butlerTrip.dispatched(System.currentTimeMillis());
+                Microbot.log("Construction: Butler bank trip dispatched");
                 Rs2Keyboard.enter();
             } else if (hasDialogueOptionToUnnote()) {
                 Rs2Keyboard.keyPress('1');
@@ -288,9 +359,51 @@ public class ConstructionScript extends Script {
                     Rs2Keyboard.keyPress('1');
                 }
             } else if(hasDialogueRepeatLastTask()){
+                butlerTrip.dispatched(System.currentTimeMillis());
+                Microbot.log("Construction: Repeating Butler bank trip");
                 Rs2Keyboard.keyPress('1');
             }
         }
+    }
+
+    private boolean callServant() {
+        if (butlerTrip.isTripInProgress()) return false;
+        Rs2Tab.switchTo(InterfaceTab.SETTINGS);
+
+        boolean houseOptionsAvailable = sleepUntil(() ->
+                        Rs2Widget.isWidgetVisible(HOUSE_OPTIONS_WIDGET_ID)
+                                || Rs2Widget.findWidget("House Options", null) != null,
+                Rs2Random.between(2000, 5000));
+        if (!houseOptionsAvailable) {
+            Microbot.log("Construction: House Options did not appear");
+            return false;
+        }
+        Widget houseOptions = Rs2Widget.getWidget(HOUSE_OPTIONS_WIDGET_ID);
+        if (houseOptions == null) houseOptions = Rs2Widget.findWidget("House Options", null);
+        if (houseOptions == null || !Rs2Widget.clickWidget(houseOptions)) {
+            Microbot.log("Construction: Failed to click House Options");
+            return false;
+        }
+
+        boolean callServantAvailable = sleepUntil(() ->
+                        Rs2Widget.isWidgetVisible(CALL_SERVANT_WIDGET_ID)
+                                || Rs2Widget.findWidget("Call Servant", null) != null,
+                Rs2Random.between(2000, 5000));
+        if (!callServantAvailable) {
+            Microbot.log("Construction: Call Servant did not appear");
+            return false;
+        }
+        Widget callServant = Rs2Widget.getWidget(CALL_SERVANT_WIDGET_ID);
+        if (callServant == null) callServant = Rs2Widget.findWidget("Call Servant", null);
+        if (callServant == null || !Rs2Widget.clickWidget(callServant)) {
+            Microbot.log("Construction: Failed to click Call Servant");
+            return false;
+        }
+        boolean dialogueOpened = sleepUntil(Rs2Dialogue::isInDialogue, Rs2Random.between(2000, 5000));
+        Microbot.log(dialogueOpened
+                ? "Construction: Call Servant opened dialogue"
+                : "Construction: Call Servant timed out waiting for dialogue");
+        return dialogueOpened;
     }
 
     private boolean hasRemoveInterfaceOpen(ConstructionConfig config) {
