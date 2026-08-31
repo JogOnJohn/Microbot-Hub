@@ -83,6 +83,7 @@ public class BlackjackScript extends Script
     private static final long KNOCKOUT_AIM_CAMERA_RESET_MS = 3_500;
     private static final long KNOCKOUT_AIM_OBSTRUCTION_RECOVERY_MS = 6_000;
     private static final int TARGET_CLICK_VIEWPORT_MARGIN = 18;
+    private static final int PRONE_ANCHOR_CORRECTION_RADIUS = 18;
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MIN_MS = 35;
     private static final int KNOCKOUT_DISPATCH_FALLBACK_MAX_MS = 106;
     private static final long SECOND_PICKPOCKET_INTERACTION_TIMEOUT_MS = 2_400;
@@ -225,6 +226,10 @@ public class BlackjackScript extends Script
     private long pendingInventoryFullAt;
     private long targetClearRecheckAt;
     private Point burstClickPoint;
+    private Point standingClickAnchor;
+    private int standingAnchorTargetIndex;
+    private WorldPoint standingAnchorTargetTile;
+    private int standingAnchorMenuMisses;
     private boolean curtainCameraAdjusted;
     private boolean healingRequired;
     private long nextCameraRefacingAt;
@@ -305,6 +310,7 @@ public class BlackjackScript extends Script
         pendingInventoryFullAt = 0;
         targetClearRecheckAt = 0;
         burstClickPoint = null;
+        clearStandingClickAnchor();
         curtainCameraAdjusted = false;
         healingRequired = false;
         nextCameraRefacingAt = 0;
@@ -762,9 +768,12 @@ public class BlackjackScript extends Script
         String action = topBlackjackOption(target);
         if (action == null)
         {
+            noteStandingAnchorMenuMiss(target);
+            burstClickPoint = null;
             nextAction = "Wait for Blackjack entry swap";
             return null;
         }
+        standingAnchorMenuMisses = 0;
 
         Microbot.getMouse().click(current);
         burstClickPoint = current;
@@ -2335,9 +2344,12 @@ public class BlackjackScript extends Script
             }
             if (!isTopTargetOption(target, PICKPOCKET_ACTION))
             {
+                noteStandingAnchorMenuMiss(target);
+                burstClickPoint = null;
                 nextAction = "Wait for Pickpocket left-click swap";
                 return false;
             }
+            standingAnchorMenuMisses = 0;
             Microbot.getMouse().click(current);
             burstClickPoint = anchor;
         }
@@ -2862,6 +2874,32 @@ public class BlackjackScript extends Script
             Rectangle bounds = hull.getBounds();
             int canvasWidth = Microbot.getClient().getCanvasWidth();
             int canvasHeight = Microbot.getClient().getCanvasHeight();
+            WorldPoint targetTile = target.getWorldLocation();
+            boolean targetUnconscious = target.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS;
+
+            if (!isStandingAnchorTarget(target, targetTile))
+            {
+                clearStandingClickAnchor();
+            }
+            if (targetUnconscious && standingClickAnchor != null)
+            {
+                Point preserved = nearestSafeHullPoint(
+                        hull,
+                        standingClickAnchor,
+                        canvasWidth,
+                        canvasHeight,
+                        PRONE_ANCHOR_CORRECTION_RADIUS);
+                if (preserved != null)
+                {
+                    if (!preserved.equals(standingClickAnchor))
+                    {
+                        log.debug("Correcting prone target anchor: standing={} corrected={} targetIndex={}",
+                                standingClickAnchor, preserved, target.getIndex());
+                    }
+                    return preserved;
+                }
+            }
+
             int lowerBodyTop = bounds.y + Math.max(2, bounds.height * 7 / 10);
             int lowerBodyBottom = bounds.y + Math.max(3, bounds.height * 93 / 100);
 
@@ -2871,6 +2909,7 @@ public class BlackjackScript extends Script
                     && hull.contains(preferred.getX(), preferred.getY())
                     && isInsideClickViewport(preferred.getX(), preferred.getY(), canvasWidth, canvasHeight))
             {
+                rememberStandingClickAnchor(target, targetTile, preferred, targetUnconscious);
                 return preferred;
             }
 
@@ -2907,6 +2946,7 @@ public class BlackjackScript extends Script
             }
             if (nearest != null)
             {
+                rememberStandingClickAnchor(target, targetTile, nearest, targetUnconscious);
                 return nearest;
             }
 
@@ -2920,12 +2960,102 @@ public class BlackjackScript extends Script
                     if (hull.contains(candidate.getX(), candidate.getY())
                             && isInsideClickViewport(candidate.getX(), candidate.getY(), canvasWidth, canvasHeight))
                     {
+                        rememberStandingClickAnchor(target, targetTile, candidate, targetUnconscious);
                         return candidate;
                     }
                 }
             }
             return null;
         }).orElse(null);
+    }
+
+    private Point nearestSafeHullPoint(Shape hull, Point reference, int canvasWidth, int canvasHeight, int radius)
+    {
+        if (hull == null || reference == null)
+        {
+            return null;
+        }
+        if (hull.contains(reference.getX(), reference.getY())
+                && isInsideClickViewport(reference.getX(), reference.getY(), canvasWidth, canvasHeight))
+        {
+            return reference;
+        }
+
+        Point nearest = null;
+        long nearestDistanceSquared = Long.MAX_VALUE;
+        long maximumDistanceSquared = (long) radius * radius;
+        int left = Math.max(TARGET_CLICK_VIEWPORT_MARGIN, reference.getX() - radius);
+        int right = Math.min(canvasWidth - TARGET_CLICK_VIEWPORT_MARGIN - 1, reference.getX() + radius);
+        int top = Math.max(TARGET_CLICK_VIEWPORT_MARGIN, reference.getY() - radius);
+        int bottom = Math.min(canvasHeight - TARGET_CLICK_VIEWPORT_MARGIN - 1, reference.getY() + radius);
+        for (int y = top; y <= bottom; y++)
+        {
+            for (int x = left; x <= right; x++)
+            {
+                if (!hull.contains(x, y))
+                {
+                    continue;
+                }
+                long dx = x - reference.getX();
+                long dy = y - reference.getY();
+                long distanceSquared = dx * dx + dy * dy;
+                if (distanceSquared <= maximumDistanceSquared && distanceSquared < nearestDistanceSquared)
+                {
+                    nearest = new Point(x, y);
+                    nearestDistanceSquared = distanceSquared;
+                }
+            }
+        }
+        return nearest;
+    }
+
+    private boolean isStandingAnchorTarget(Rs2NpcModel target, WorldPoint targetTile)
+    {
+        return standingClickAnchor != null
+                && target != null
+                && target.getIndex() == standingAnchorTargetIndex
+                && Objects.equals(targetTile, standingAnchorTargetTile);
+    }
+
+    private void rememberStandingClickAnchor(
+            Rs2NpcModel target,
+            WorldPoint targetTile,
+            Point anchor,
+            boolean targetUnconscious)
+    {
+        if (targetUnconscious || target == null || targetTile == null || anchor == null)
+        {
+            return;
+        }
+        standingClickAnchor = anchor;
+        standingAnchorTargetIndex = target.getIndex();
+        standingAnchorTargetTile = targetTile;
+        standingAnchorMenuMisses = 0;
+    }
+
+    private void noteStandingAnchorMenuMiss(Rs2NpcModel target)
+    {
+        if (target == null
+                || target.getAnimation() != AnimationID.HUMAN_UNCONSCIOUS
+                || target.getIndex() != standingAnchorTargetIndex)
+        {
+            return;
+        }
+        standingAnchorMenuMisses++;
+        if (standingAnchorMenuMisses >= 3)
+        {
+            log.debug("Discarding preserved prone anchor after {} unresolved menu checks: targetIndex={}",
+                    standingAnchorMenuMisses, target.getIndex());
+            clearStandingClickAnchor();
+        }
+    }
+
+    private void clearStandingClickAnchor()
+    {
+        standingClickAnchor = null;
+        standingAnchorTargetIndex = -1;
+        standingAnchorTargetTile = null;
+        standingAnchorMenuMisses = 0;
     }
 
     private Point burstWanderAnchor(Rs2NpcModel target, Point preferred)
@@ -3402,6 +3532,7 @@ public class BlackjackScript extends Script
         pickpocketBurstStartedAt = 0;
         combatSignal = false;
         burstClickPoint = null;
+        clearStandingClickAnchor();
         wineRestockPending = false;
         restockAfterCombatReset = false;
         waitingForRestockKnockout = false;
