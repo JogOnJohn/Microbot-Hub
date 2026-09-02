@@ -8,6 +8,7 @@ import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
+import net.runelite.client.plugins.microbot.breakhandler.breakhandlerv2.BreakHandlerV2State;
 import net.runelite.client.plugins.microbot.globval.enums.InterfaceTab;
 import net.runelite.client.plugins.microbot.tithefarming.enums.TitheFarmLanes;
 import net.runelite.client.plugins.microbot.tithefarming.enums.TitheFarmMaterial;
@@ -66,6 +67,7 @@ public class TitheFarmingScript extends Script {
     public static boolean init = true;
 
     private boolean allPlanted = false;
+    private boolean breakLockHeldByTithe = false;
     private boolean loginReconciliationPending = false;
     private long loginReconciliationReadyAt = 0L;
 
@@ -175,12 +177,14 @@ public class TitheFarmingScript extends Script {
         plants = new ArrayList<>();
         state = STARTING;
         allPlanted = false;
+        breakLockHeldByTithe = false;
         loginReconciliationPending = false;
         loginReconciliationReadyAt = 0L;
         Microbot.log("Tithe farming script started");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
                 if (!Microbot.isLoggedIn()) {
+                    setBreakLock(false);
                     loginReconciliationPending = true;
                     loginReconciliationReadyAt = 0L;
                     return;
@@ -198,6 +202,13 @@ public class TitheFarmingScript extends Script {
                     reconcileAfterLogin();
                     loginReconciliationPending = false;
                     loginReconciliationReadyAt = 0L;
+                    return;
+                }
+
+                if (BreakHandlerV2State.getCurrentState() == BreakHandlerV2State.BREAK_REQUESTED
+                        && isSafeBetweenCropCycles()) {
+                    setBreakLock(false);
+                    Microbot.status = "Waiting for Break Handler V2";
                     return;
                 }
 
@@ -241,7 +252,7 @@ public class TitheFarmingScript extends Script {
                         if (!depositSack()) {
                             leave();
                         }
-                        BreakHandlerScript.setLockState(false);
+                        setBreakLock(false);
                     break;
                     case TAKE_SEEDS:
                         if (isInMinigame()) {
@@ -270,12 +281,12 @@ public class TitheFarmingScript extends Script {
                         break;
                     case REFILL_WATERCANS:
                         refillWaterCans(config);
-                        BreakHandlerScript.setLockState(false);
+                        setBreakLock(false);
                         sleepGaussian(800, 200);
                         break;
                     case PLANTING_SEEDS:
                     case HARVEST:
-                        BreakHandlerScript.setLockState(true);
+                        setBreakLock(true);
                         coreLoop(config);
                         break;
                 }
@@ -294,6 +305,7 @@ public class TitheFarmingScript extends Script {
 
     @Override
     public void shutdown() {
+        setBreakLock(false);
         super.shutdown();
     }
 
@@ -403,6 +415,7 @@ public class TitheFarmingScript extends Script {
     }
 
     private void reconcileAfterLogin() {
+        setBreakLock(false);
         plants = new ArrayList<>();
         allPlanted = false;
         gricollerCanCharges = -1;
@@ -576,6 +589,23 @@ public class TitheFarmingScript extends Script {
 
     private boolean hasAllEmptyPatches() {
         return plants.stream().allMatch(TitheFarmPlant::isEmptyPatch);
+    }
+
+    private boolean isSafeBetweenCropCycles() {
+        return !isInMinigame()
+                || (!plants.isEmpty()
+                && plants.stream().allMatch(plant -> plant.getGameObject() != null)
+                && plants.stream().allMatch(TitheFarmPlant::isEmptyPatch));
+    }
+
+    private void setBreakLock(boolean locked) {
+        if (locked) {
+            BreakHandlerScript.setLockState(true);
+            breakLockHeldByTithe = true;
+        } else if (breakLockHeldByTithe) {
+            BreakHandlerScript.setLockState(false);
+            breakLockHeldByTithe = false;
+        }
     }
 
     private boolean isInMinigame() {
