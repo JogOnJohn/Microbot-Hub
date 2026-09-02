@@ -14,6 +14,7 @@ import net.runelite.client.plugins.microbot.tithefarming.enums.TitheFarmMaterial
 import net.runelite.client.plugins.microbot.tithefarming.enums.TitheFarmState;
 import net.runelite.client.plugins.microbot.tithefarming.models.TitheFarmPlant;
 import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
+import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
 import net.runelite.client.plugins.microbot.util.keyboard.Rs2Keyboard;
@@ -65,6 +66,8 @@ public class TitheFarmingScript extends Script {
     public static boolean init = true;
 
     private boolean allPlanted = false;
+    private boolean loginReconciliationPending = false;
+    private long loginReconciliationReadyAt = 0L;
 
     public void init(TitheFarmingConfig config) {
         TitheFarmLanes lane = config.Lanes();
@@ -172,12 +175,31 @@ public class TitheFarmingScript extends Script {
         plants = new ArrayList<>();
         state = STARTING;
         allPlanted = false;
+        loginReconciliationPending = false;
+        loginReconciliationReadyAt = 0L;
         Microbot.log("Tithe farming script started");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
-                if (!Microbot.isLoggedIn()) return;
+                if (!Microbot.isLoggedIn()) {
+                    loginReconciliationPending = true;
+                    loginReconciliationReadyAt = 0L;
+                    return;
+                }
                 if (!super.run()) return;
                 if (BreakHandlerScript.isBreakActive()) return;
+
+                if (loginReconciliationPending) {
+                    if (loginReconciliationReadyAt == 0L) {
+                        loginReconciliationReadyAt = System.currentTimeMillis() + 3_000L;
+                        return;
+                    }
+                    if (System.currentTimeMillis() < loginReconciliationReadyAt) return;
+
+                    reconcileAfterLogin();
+                    loginReconciliationPending = false;
+                    loginReconciliationReadyAt = 0L;
+                    return;
+                }
 
                 if (init) {
                     state = STARTING;
@@ -225,7 +247,9 @@ public class TitheFarmingScript extends Script {
                         if (isInMinigame()) {
                             state = TitheFarmState.STARTING;
                         } else {
-                            takeSeeds();
+                            if (!Rs2Inventory.hasItem(TitheFarmMaterial.getSeedForLevel().getName())) {
+                                takeSeeds();
+                            }
                             if (Rs2Inventory.hasItem(TitheFarmMaterial.getSeedForLevel().getName())) {
                                 enter();
                             }
@@ -332,7 +356,12 @@ public class TitheFarmingScript extends Script {
 
         WorldPoint corePlayerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
         Rs2TileObjectModel plantModel = plant.getGameObject();
-        if (plantModel == null || plantModel.getWorldLocation().distanceTo2D(corePlayerLoc) > DISTANCE_THRESHOLD_MINIMAP_WALK) {
+        if (plantModel == null) {
+            return;
+        }
+
+        if (plantModel.getWorldLocation().distanceTo2D(corePlayerLoc) > DISTANCE_THRESHOLD_MINIMAP_WALK
+                && !Rs2Camera.isTileOnScreen(plantModel.getLocalLocation())) {
             WorldPoint w = WorldPoint.fromRegion(corePlayerLoc.getRegionID(),
                     plant.regionX,
                     plant.regionY,
@@ -371,6 +400,14 @@ public class TitheFarmingScript extends Script {
                 sleepUntil(() -> plants.stream().anyMatch(x -> x.getIndex() == finalPlant.getIndex() && x.isEmptyPatch()));
             }
         }
+    }
+
+    private void reconcileAfterLogin() {
+        plants = new ArrayList<>();
+        allPlanted = false;
+        gricollerCanCharges = -1;
+        state = isInMinigame() ? STARTING : TAKE_SEEDS;
+        Microbot.log("Tithe farm login recovery: cleared stale patch cycle; state=" + state);
     }
 
         // Helper method to validate inventory items
@@ -497,7 +534,7 @@ public class TitheFarmingScript extends Script {
         if (!result) return;
         Rs2Keyboard.keyPress(TitheFarmMaterial.getSeedForLevel().getOption());
         sleep(1000);
-        Rs2Keyboard.typeString(String.valueOf(Rs2Random.betweenInclusive(1000, 10000)));
+        Rs2Keyboard.typeString("9".repeat(Rs2Random.betweenInclusive(4, 8)));
         sleep(600);
         Rs2Keyboard.enter();
         sleepUntil(() -> Rs2Inventory.hasItem(TitheFarmMaterial.getSeedForLevel().getName()));
