@@ -17,8 +17,8 @@ class FoundryMaterialPlannerTest
         assertAutoPlan(15, SmithableBars.BRONZE_BAR, 14, SmithableBars.IRON_BAR, 14);
         assertAutoPlan(45, SmithableBars.IRON_BAR, 14, SmithableBars.STEEL_BAR, 14);
         assertAutoPlan(50, SmithableBars.STEEL_BAR, 14, SmithableBars.MITHRIL_BAR, 14);
-        assertAutoPlan(70, SmithableBars.MITHRIL_BAR, 18, SmithableBars.ADAMANT_BAR, 10);
-        assertAutoPlan(85, SmithableBars.ADAMANT_BAR, 19, SmithableBars.RUNE_BAR, 9);
+        assertAutoPlan(70, SmithableBars.MITHRIL_BAR, 14, SmithableBars.ADAMANT_BAR, 14);
+        assertAutoPlan(85, SmithableBars.ADAMANT_BAR, 14, SmithableBars.RUNE_BAR, 14);
     }
 
     @Test

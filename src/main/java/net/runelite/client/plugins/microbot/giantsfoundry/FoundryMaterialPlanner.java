@@ -42,11 +42,13 @@ public final class FoundryMaterialPlanner
     {
         if (level >= SmithableBars.RUNE_BAR.getLevelNeeded() && bestAvailable)
         {
-            return barPlan(SmithableBars.ADAMANT_BAR, 19, SmithableBars.RUNE_BAR, 9);
+            return barPlan(SmithableBars.ADAMANT_BAR, 14, SmithableBars.RUNE_BAR, 14);
         }
         if (level >= SmithableBars.ADAMANT_BAR.getLevelNeeded())
         {
-            return barPlan(SmithableBars.MITHRIL_BAR, 18, SmithableBars.ADAMANT_BAR, 10);
+            return bestAvailable
+                    ? barPlan(SmithableBars.MITHRIL_BAR, 14, SmithableBars.ADAMANT_BAR, 14)
+                    : barPlan(SmithableBars.MITHRIL_BAR, 18, SmithableBars.ADAMANT_BAR, 10);
         }
         if (level >= SmithableBars.MITHRIL_BAR.getLevelNeeded())
         {

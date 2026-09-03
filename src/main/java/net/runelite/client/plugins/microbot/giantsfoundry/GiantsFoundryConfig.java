@@ -14,7 +14,7 @@ import net.runelite.client.plugins.microbot.giantsfoundry.enums.SmithableBars;
 @ConfigGroup(GiantsFoundryConfig.GROUP)
 @ConfigInformation(
         "Start inside Giants' Foundry after completing Sleeping Giants.<br />" +
-        "Auto modes lock one alloy per sword: iron/steel below level 50, then steel/mithril from level 50.<br />" +
+        "Auto modes lock one alloy per sword. Best available uses an even 14/14 split; economical avoids rune and uses 18 mithril/10 adamant from level 70.<br />" +
         "The plugin stops cleanly rather than substituting metals when the current strategy runs out of supplies.<br />" +
         "Start with empty weapon and shield slots. Ice gloves are the default; a bucket or Smiths gloves (i) is also supported.<br />" +
         "Manual materials must provide exactly 28 bars. Recycled item amounts are bar equivalents, not item counts.<br />" +
