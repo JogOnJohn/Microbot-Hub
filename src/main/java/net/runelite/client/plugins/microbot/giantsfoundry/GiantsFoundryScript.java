@@ -12,6 +12,7 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
+import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.CommissionType;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.CoolingMethod;
 import net.runelite.client.plugins.microbot.giantsfoundry.enums.SmithableBars;
@@ -56,6 +57,7 @@ public class GiantsFoundryScript extends Script
     private static final int TEMPERATURE_ACTION_TIMEOUT_MS = 45000;
     private static final int TEMPERATURE_STALL_TIMEOUT_MS = 6000;
     private static final long GAME_TICK_MS = 600;
+    private static final long SAFE_BREAK_WINDOW_MS = 1500;
     private static final int PASSIVE_COOLING_TIMEOUT_GRACE_TICKS = 4;
     private static final int VARP_FOUNDRY_REPUTATION = 3436;
 
@@ -91,6 +93,8 @@ public class GiantsFoundryScript extends Script
     private boolean cycleCostRecorded;
     private boolean cycleCompletionRecorded;
     private boolean supplySnapshotKnown;
+    private boolean breakLockHeld;
+    private long breakLockReleasedAt;
     private int sessionStartSmithingLevel = -1;
     private int sessionStartSmithingXp = -1;
     private int cyclePlanLevel;
@@ -214,6 +218,7 @@ public class GiantsFoundryScript extends Script
         }
 
         FoundrySnapshot snapshot = captureSnapshot();
+        recoverBreakLockForActiveCycle(snapshot);
         updateLiveMetrics(snapshot);
         StageTransitionCoordinator.Transition observedTransition =
                 stageTransitions.observe(snapshot.progress, snapshot.stage);
@@ -708,13 +713,21 @@ public class GiantsFoundryScript extends Script
         }
 
         setState(State.FILLING_CRUCIBLE, "Loading crucible (" + snapshot.oreCount + "/28)");
+        if (breakLockReleasedAt > 0
+                && System.currentTimeMillis() - breakLockReleasedAt < SAFE_BREAK_WINDOW_MS)
+        {
+            setState(State.WAITING, "Allowing requested break before the next alloy");
+            return;
+        }
         if (!firstMaterialAdded)
         {
+            holdBreakLock("starting alloy load");
             firstMaterialAdded = addMaterial(materialPlan.getFirst(), firstLoaded);
             return;
         }
         if (!secondMaterialAdded)
         {
+            holdBreakLock("continuing alloy load");
             secondMaterialAdded = addMaterial(materialPlan.getSecond(), secondLoaded);
             return;
         }
@@ -1566,7 +1579,44 @@ public class GiantsFoundryScript extends Script
         recordCompletedCraft(snapshot, damaged);
         GiantsFoundryState.reset();
         resetCycle();
+        releaseBreakLock(damaged ? "damaged preform hand-in acknowledged" : "craft hand-in acknowledged");
         return true;
+    }
+
+    private void recoverBreakLockForActiveCycle(FoundrySnapshot snapshot)
+    {
+        if (snapshot.oreCount > 0
+                || snapshot.canPour
+                || snapshot.canPickupPreform
+                || snapshot.hasPreform
+                || snapshot.progress > 0)
+        {
+            holdBreakLock("active craft detected");
+        }
+    }
+
+    private void holdBreakLock(String reason)
+    {
+        if (breakLockHeld && BreakHandlerScript.isLockState())
+        {
+            return;
+        }
+        BreakHandlerScript.setLockState(true);
+        breakLockHeld = true;
+        breakLockReleasedAt = 0;
+        log.info("Giants' Foundry: break lock acquired ({})", reason);
+    }
+
+    private void releaseBreakLock(String reason)
+    {
+        if (!breakLockHeld)
+        {
+            return;
+        }
+        BreakHandlerScript.setLockState(false);
+        breakLockHeld = false;
+        breakLockReleasedAt = System.currentTimeMillis();
+        log.info("Giants' Foundry: break lock released ({})", reason);
     }
 
     private void recordCompletedCraft(FoundrySnapshot snapshot, boolean damaged)
@@ -1970,6 +2020,7 @@ public class GiantsFoundryScript extends Script
     @Override
     public void shutdown()
     {
+        releaseBreakLock("plugin shutdown");
         GiantsFoundryState.reset();
         GiantsFoundryState.heatingCoolingState.stop();
         resetPassiveCoolingWait();
