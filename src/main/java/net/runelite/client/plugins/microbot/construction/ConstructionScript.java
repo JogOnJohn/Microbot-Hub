@@ -27,7 +27,6 @@ public class ConstructionScript extends Script {
     private static final int DEFAULT_DELAY = 600;
     private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
     private static final int CALL_SERVANT_WIDGET_ID = 24248342;
-    private static final WorldPoint OAK_LARDER_BUTLER_RETURN_TILE = new WorldPoint(1878, 7098, 0);
     private ConstructionState state = ConstructionState.Idle;
     private WorldPoint workingTile = null;
     private final ButlerTripTracker butlerTrip = new ButlerTripTracker();
@@ -146,13 +145,13 @@ public class ConstructionScript extends Script {
             }
             return false;
         }
-        if (tripAction == ButlerTripTracker.Action.REPOSITION_FOR_RETURN) {
-            Microbot.log("Construction: Demon butler has not returned after 10 seconds; moving to open return tile %s",
-                    OAK_LARDER_BUTLER_RETURN_TILE);
-            Rs2Walker.walkTo(OAK_LARDER_BUTLER_RETURN_TILE, 0);
-            sleepUntil(() -> !Rs2Player.isMoving()
-                    && Rs2Player.getWorldLocation() != null
-                    && Rs2Player.getWorldLocation().distanceTo(OAK_LARDER_BUTLER_RETURN_TILE) <= 1, 5_000);
+        if (tripAction == ButlerTripTracker.Action.CLICK_CURRENT_TILE) {
+            WorldPoint currentTile = Rs2Player.getWorldLocation();
+            Microbot.log("Construction: Demon butler has not returned after 10 seconds; clicking current tile %s",
+                    currentTile);
+            if (currentTile == null || !Rs2Walker.walkFastCanvas(currentTile)) {
+                Microbot.log("Construction: Could not click current tile; continuing to wait without calling servant");
+            }
             return false;
         }
 

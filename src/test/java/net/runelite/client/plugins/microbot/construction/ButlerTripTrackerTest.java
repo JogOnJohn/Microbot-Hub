@@ -30,9 +30,9 @@ class ButlerTripTrackerTest {
     }
 
     @Test
-    void repositionsInsteadOfRedispatchingWhenServantCannotReturn() {
+    void clicksCurrentTileInsteadOfRedispatchingWhenServantCannotReturn() {
         tracker.dispatched(1_000L);
-        assertEquals(ButlerTripTracker.Action.REPOSITION_FOR_RETURN,
+        assertEquals(ButlerTripTracker.Action.CLICK_CURRENT_TILE,
                 tracker.observe(false, true, 1_000L + ButlerTripTracker.BLOCKED_RETURN_GRACE_MS));
         assertTrue(tracker.isTripInProgress());
         assertEquals(ButlerTripTracker.Action.WAIT,
@@ -40,10 +40,10 @@ class ButlerTripTrackerTest {
     }
 
     @Test
-    void requestsOnlyOneRepositionWhileWaitingForReturn() {
+    void requestsOnlyOneTileClickWhileWaitingForReturn() {
         tracker.dispatched(1_000L);
         tracker.observe(false, false, 2_000L);
-        assertEquals(ButlerTripTracker.Action.REPOSITION_FOR_RETURN,
+        assertEquals(ButlerTripTracker.Action.CLICK_CURRENT_TILE,
                 tracker.observe(false, false, 1_000L + ButlerTripTracker.BLOCKED_RETURN_GRACE_MS));
         assertEquals(ButlerTripTracker.Action.WAIT,
                 tracker.observe(false, false, 60_000L));

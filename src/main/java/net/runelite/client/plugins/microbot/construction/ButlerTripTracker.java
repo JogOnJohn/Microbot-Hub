@@ -8,7 +8,7 @@ final class ButlerTripTracker {
         WAIT,
         HANDLE_RETURN_DIALOGUE,
         TALK_TO_RETURNED_BUTLER,
-        REPOSITION_FOR_RETURN
+        CLICK_CURRENT_TILE
     }
 
     private enum Phase {
@@ -41,7 +41,7 @@ final class ButlerTripTracker {
             if (elapsed >= BLOCKED_RETURN_GRACE_MS && !repositionRequested) {
                 phase = Phase.AWAY;
                 repositionRequested = true;
-                return Action.REPOSITION_FOR_RETURN;
+                return Action.CLICK_CURRENT_TILE;
             }
             return Action.WAIT;
         }
@@ -56,7 +56,7 @@ final class ButlerTripTracker {
         }
         if (elapsed >= BLOCKED_RETURN_GRACE_MS && !repositionRequested) {
             repositionRequested = true;
-            return Action.REPOSITION_FOR_RETURN;
+            return Action.CLICK_CURRENT_TILE;
         }
         return Action.WAIT;
     }
