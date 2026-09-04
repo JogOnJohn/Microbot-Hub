@@ -26,6 +26,7 @@ public class ConstructionScript extends Script {
 
     private static final int DEFAULT_DELAY = 600;
     private static final int DEMON_BUTLER_CAPACITY = 26;
+    private static final int OVERFLOW_BUILDS_BEFORE_COLLECTION = 2;
     private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
     private static final int CALL_SERVANT_WIDGET_ID = 24248342;
     private ConstructionState state = ConstructionState.Idle;
@@ -43,6 +44,9 @@ public class ConstructionScript extends Script {
     private int minimumPlanksDuringTrip;
     private int expectedOverflowPlanks;
     private int planksBeforeOverflowCollection;
+    private int overflowBuildsRemaining;
+    private boolean overflowCollectionObserved;
+    private long overflowCollectionObservedAt;
     private long lastOverflowActionAt;
 
     private enum OverflowStage {
@@ -399,7 +403,7 @@ public class ConstructionScript extends Script {
                 Rs2Keyboard.keyPress('1');
                 sleepUntilOnClientThread(() -> !hasDialogueOptionToUnnote());
                 butlerTrip.reset();
-                logAction("Butler delivery completed");
+                logAction("Selected Butler un-note service");
             } else if (hasPayButlerDialogue() || hasDialogueOptionToPay()) {
                 Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
                 sleep(400, 1000);
@@ -407,8 +411,9 @@ public class ConstructionScript extends Script {
                     Rs2Keyboard.keyPress('1');
                 }
             } else if(hasDialogueRepeatLastTask()){
+                minimumPlanksDuringTrip = Rs2Inventory.count(config.selectedMode().getPlankItemId());
                 butlerTrip.dispatched(System.currentTimeMillis());
-                logAction("Repeating Butler bank trip");
+                logAction("Repeating Butler bank trip (carrying " + minimumPlanksDuringTrip + ")");
                 Rs2Keyboard.keyPress('1');
             }
         }
@@ -468,14 +473,24 @@ public class ConstructionScript extends Script {
 
         int currentPlanks = Rs2Inventory.count(config.selectedMode().getPlankItemId());
         if (overflowStage == OverflowStage.COLLECT) {
-            logAction("Collecting " + expectedOverflowPlanks + " held overflow planks");
+            overflowBuildsRemaining = 1;
+            overflowCollectionObserved = false;
+            overflowStage = OverflowStage.BUILD_ONE;
+            logAction("Butler still has overflow after collection attempt; building one more before retrying");
+        } else if (overflowStage == OverflowStage.SEND_NEXT) {
+            overflowBuildsRemaining = 1;
+            overflowCollectionObserved = false;
+            overflowStage = OverflowStage.BUILD_ONE;
+            logAction("Late overflow dialogue detected; building one more before retrying collection");
         } else {
             int delivered = Math.max(0, currentPlanks - minimumPlanksDuringTrip);
             expectedOverflowPlanks = Math.max(1, DEMON_BUTLER_CAPACITY - delivered);
+            overflowBuildsRemaining = OVERFLOW_BUILDS_BEFORE_COLLECTION;
+            overflowCollectionObserved = false;
             overflowStage = OverflowStage.BUILD_ONE;
             butlerTrip.reset();
-            logAction("Inventory full; Butler is holding " + expectedOverflowPlanks
-                    + " overflow planks. Dismissing dialogue to build once");
+            logAction("Inventory full; Butler is holding at least " + expectedOverflowPlanks
+                    + " overflow planks. Dismissing dialogue to build twice");
         }
 
         if (!Rs2Dialogue.clickOption("Thanks")) {
@@ -485,14 +500,6 @@ public class ConstructionScript extends Script {
 
         sleepUntil(() -> !Rs2Dialogue.hasSelectAnOption(), 3_000);
         dialogueState = "None";
-        if (overflowStage == OverflowStage.COLLECT) {
-            sleepUntil(() -> Rs2Inventory.count(config.selectedMode().getPlankItemId())
-                    > planksBeforeOverflowCollection, 3_000);
-            if (Rs2Inventory.count(config.selectedMode().getPlankItemId()) > planksBeforeOverflowCollection) {
-                overflowStage = OverflowStage.SEND_NEXT;
-                logAction("Collected held overflow planks; sending Butler for the next load");
-            }
-        }
     }
 
     private void processOverflowCycle(ConstructionConfig config, int actionDelay) {
@@ -504,10 +511,17 @@ public class ConstructionScript extends Script {
                 return;
             }
             if (state == ConstructionState.Build && buildSpace(config, actionDelay)) {
-                planksBeforeOverflowCollection = Rs2Inventory.count(config.selectedMode().getPlankItemId());
-                overflowStage = OverflowStage.COLLECT;
-                logAction("Built one " + config.selectedMode() + "; collecting "
-                        + expectedOverflowPlanks + " held planks");
+                overflowBuildsRemaining--;
+                if (overflowBuildsRemaining > 0) {
+                    logAction("Built first " + config.selectedMode() + " for overflow; "
+                            + overflowBuildsRemaining + " more build needed before collection");
+                } else {
+                    planksBeforeOverflowCollection = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+                    overflowCollectionObserved = false;
+                    overflowStage = OverflowStage.COLLECT;
+                    logAction("Built enough space; collecting held overflow planks (planks="
+                            + planksBeforeOverflowCollection + ", free=" + Rs2Inventory.emptySlotCount() + ")");
+                }
             }
             return;
         }
@@ -515,8 +529,16 @@ public class ConstructionScript extends Script {
         if (overflowStage == OverflowStage.COLLECT) {
             int currentPlanks = Rs2Inventory.count(config.selectedMode().getPlankItemId());
             if (currentPlanks > planksBeforeOverflowCollection) {
-                overflowStage = OverflowStage.SEND_NEXT;
-                logAction("Collected held overflow planks; sending Butler for the next load");
+                if (!overflowCollectionObserved) {
+                    overflowCollectionObserved = true;
+                    overflowCollectionObservedAt = System.currentTimeMillis();
+                    logAction("Received held planks; waiting for Butler dialogue to settle");
+                }
+                if (!Rs2Dialogue.isInDialogue()
+                        && System.currentTimeMillis() - overflowCollectionObservedAt >= 1_500L) {
+                    overflowStage = OverflowStage.SEND_NEXT;
+                    logAction("Held overflow collection confirmed; sending Butler for the next load");
+                }
                 return;
             }
             if (Rs2Dialogue.hasContinue()) {
@@ -607,7 +629,8 @@ public class ConstructionScript extends Script {
     public String getOverflowFlow() {
         return overflowStage == OverflowStage.NONE
                 ? overflowStage.name()
-                : overflowStage.name() + " (" + expectedOverflowPlanks + " held)";
+                : overflowStage.name() + " (>= " + expectedOverflowPlanks
+                + " held, builds " + overflowBuildsRemaining + ")";
     }
     public String getDialogueStateForOverlay() { return dialogueState; }
     public String getLastAction() { return lastAction; }
