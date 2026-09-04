@@ -64,4 +64,12 @@ public class ConstructionPlugin extends Plugin {
     public ConstructionState getState() {
         return ConstructionScript.getState();
     }
+
+    public String getButlerFlow() { return ConstructionScript.getButlerFlow(); }
+    public String getOverflowFlow() { return ConstructionScript.getOverflowFlow(); }
+    public String getDialogueState() { return ConstructionScript.getDialogueStateForOverlay(); }
+    public String getLastAction() { return ConstructionScript.getLastAction(); }
+    public boolean isButlerPresent() { return ConstructionScript.isButlerPresent(); }
+    public int getPlankCount() { return ConstructionScript.getPlankCount(); }
+    public int getFreeSlots() { return ConstructionScript.getFreeSlots(); }
 }

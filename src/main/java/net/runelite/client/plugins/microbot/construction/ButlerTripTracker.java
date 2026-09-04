@@ -80,6 +80,11 @@ final class ButlerTripTracker {
         return phase != Phase.IDLE;
     }
 
+    String getStatus(long now) {
+        if (phase == Phase.IDLE) return "IDLE";
+        return phase.name() + " (" + Math.max(0L, (now - phaseStartedAt) / 1000L) + "s)";
+    }
+
     void reset() {
         phase = Phase.IDLE;
         phaseStartedAt = 0L;

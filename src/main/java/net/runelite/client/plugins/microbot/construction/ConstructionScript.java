@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 public class ConstructionScript extends Script {
 
     private static final int DEFAULT_DELAY = 600;
+    private static final int DEMON_BUTLER_CAPACITY = 26;
     private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
     private static final int CALL_SERVANT_WIDGET_ID = 24248342;
     private ConstructionState state = ConstructionState.Idle;
@@ -32,6 +33,24 @@ public class ConstructionScript extends Script {
     private final ButlerTripTracker butlerTrip = new ButlerTripTracker();
     private long lastHouseRecoveryAttempt;
     private int houseRecoveryAttempts;
+    private volatile String lastAction = "Starting";
+    private volatile String dialogueState = "None";
+    private String lastLoggedDialogueState = "None";
+    private volatile boolean butlerPresent;
+    private volatile int plankCount;
+    private volatile int freeSlots;
+    private volatile OverflowStage overflowStage = OverflowStage.NONE;
+    private int minimumPlanksDuringTrip;
+    private int expectedOverflowPlanks;
+    private int planksBeforeOverflowCollection;
+    private long lastOverflowActionAt;
+
+    private enum OverflowStage {
+        NONE,
+        BUILD_ONE,
+        COLLECT,
+        SEND_NEXT
+    }
 
     // NOTE: For the arrays below, the first ID is the BUILD OBJECT ID, the second is the EMPTY OBJECT ID
     private static final List<Integer> OAK_DUNGEON_DOOR = List.of(13344, 15328);
@@ -95,6 +114,20 @@ public class ConstructionScript extends Script {
             try {
                 if (!Microbot.isLoggedIn()) return;
                 if (!super.run()) return;
+                updateDebugSnapshot(config);
+                if (hasOverflowDialogue()) {
+                    handleOverflowDialogue(config);
+                    return;
+                }
+                if (overflowStage != OverflowStage.NONE) {
+                    processOverflowCycle(config, actionDelay);
+                    return;
+                }
+                if (Rs2Dialogue.isInDialogue()) {
+                    dialogueState = getDialogueState();
+                    butler(config, actionDelay);
+                    return;
+                }
                 Rs2Tab.switchTo(InterfaceTab.INVENTORY);
                 calculateState(config);
                 switch (state) {
@@ -122,6 +155,7 @@ public class ConstructionScript extends Script {
     @Override
     public void shutdown() {
         butlerTrip.reset();
+        overflowStage = OverflowStage.NONE;
         workingTile = null;
         state = ConstructionState.Idle;
         super.shutdown();
@@ -133,12 +167,12 @@ public class ConstructionScript extends Script {
                 Rs2Dialogue.isInDialogue(), butler != null, System.currentTimeMillis());
         if (tripAction == ButlerTripTracker.Action.WAIT) return true;
         if (tripAction == ButlerTripTracker.Action.HANDLE_RETURN_DIALOGUE) {
-            Microbot.log("Construction: Butler return dialogue detected");
+            logAction("Handling Butler return dialogue: " + getDialogueState());
             butler(config, actionDelay);
             return false;
         }
         if (tripAction == ButlerTripTracker.Action.TALK_TO_RETURNED_BUTLER) {
-            Microbot.log("Construction: Butler returned without dialogue; reopening it");
+            logAction("Butler returned without dialogue; reopening it");
             if (butler != null && butler.click("Talk-to")) {
                 sleepUntil(Rs2Dialogue::isInDialogue, Rs2Random.between(2000, 5000));
                 butler(config, actionDelay);
@@ -147,10 +181,9 @@ public class ConstructionScript extends Script {
         }
         if (tripAction == ButlerTripTracker.Action.CLICK_CURRENT_TILE) {
             WorldPoint currentTile = Rs2Player.getWorldLocation();
-            Microbot.log("Construction: Demon butler has not returned after 10 seconds; clicking current tile %s",
-                    currentTile);
+            logAction("Demon butler has not returned after 10 seconds; clicking current tile " + currentTile);
             if (currentTile == null || !Rs2Walker.walkFastCanvas(currentTile)) {
-                Microbot.log("Construction: Could not click current tile; continuing to wait without calling servant");
+                logAction("Could not click current tile; continuing to wait without calling servant");
             }
             return false;
         }
@@ -275,7 +308,7 @@ public class ConstructionScript extends Script {
         }
     }
 
-    private void buildSpace(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
+    private boolean buildSpace(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
         Rs2TileObjectModel space = Microbot.getRs2TileObjectCache().query()
                 .where(o -> o.getWorldLocation().equals(workingTile))
                 .nearest();
@@ -293,10 +326,11 @@ public class ConstructionScript extends Script {
                 buildKey = '6';
                 break;
             default:
-                return;
+                return false;
         }
 
-        if (space == null) return;
+        if (space == null) return false;
+        int planksBeforeBuild = Rs2Inventory.count(config.selectedMode().getPlankItemId());
         if (space.click("Build")) {
             System.out.println("Interacted with build space: " + space.getId());
             sleepUntilOnClientThread(this::hasFurnitureInterfaceOpen, 2500);
@@ -304,9 +338,11 @@ public class ConstructionScript extends Script {
             Rs2Keyboard.keyPress(buildKey); // Ensure this is the correct key for the selected build option
             sleepUntilOnClientThread(() -> spaceId != space.getId(), 2500);
             System.out.println("Built object: " + config.selectedMode());
+            return Rs2Inventory.count(config.selectedMode().getPlankItemId()) < planksBeforeBuild;
         } else {
             System.out.println("Failed to interact with build space: " + space.getId());
         }
+        return false;
     }
 
     private void removeSpace(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
@@ -353,15 +389,17 @@ public class ConstructionScript extends Script {
                 sleepUntilOnClientThread(() -> Rs2Widget.hasWidget("Select an option"));
                 Rs2Keyboard.typeString("1");
                 sleepUntilOnClientThread(() -> Rs2Widget.hasWidget("Enter amount:"));
-                Rs2Keyboard.typeString("28");
+                minimumPlanksDuringTrip = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+                Rs2Keyboard.typeString(Integer.toString(DEMON_BUTLER_CAPACITY));
                 butlerTrip.dispatched(System.currentTimeMillis());
-                Microbot.log("Construction: Butler bank trip dispatched");
+                logAction("Butler bank trip dispatched for " + DEMON_BUTLER_CAPACITY
+                        + " planks (carrying " + minimumPlanksDuringTrip + ")");
                 Rs2Keyboard.enter();
             } else if (hasDialogueOptionToUnnote()) {
                 Rs2Keyboard.keyPress('1');
                 sleepUntilOnClientThread(() -> !hasDialogueOptionToUnnote());
                 butlerTrip.reset();
-                Microbot.log("Construction: Butler delivery completed");
+                logAction("Butler delivery completed");
             } else if (hasPayButlerDialogue() || hasDialogueOptionToPay()) {
                 Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
                 sleep(400, 1000);
@@ -370,7 +408,7 @@ public class ConstructionScript extends Script {
                 }
             } else if(hasDialogueRepeatLastTask()){
                 butlerTrip.dispatched(System.currentTimeMillis());
-                Microbot.log("Construction: Repeating Butler bank trip");
+                logAction("Repeating Butler bank trip");
                 Rs2Keyboard.keyPress('1');
             }
         }
@@ -410,12 +448,140 @@ public class ConstructionScript extends Script {
             return false;
         }
         butlerTrip.servantRequested(System.currentTimeMillis());
-        Microbot.log("Construction: Call Servant request dispatched; suppressing duplicate calls");
+        logAction("Call Servant request dispatched; suppressing duplicate calls");
         boolean dialogueOpened = sleepUntil(Rs2Dialogue::isInDialogue, Rs2Random.between(2000, 5000));
         Microbot.log(dialogueOpened
                 ? "Construction: Call Servant opened dialogue"
                 : "Construction: Call Servant timed out waiting for dialogue");
         return true;
+    }
+
+    private boolean hasOverflowDialogue() {
+        return Rs2Dialogue.hasDialogueOption("Take them back to the bank")
+                || Rs2Dialogue.hasDialogueOption("Thanks");
+    }
+
+    private void handleOverflowDialogue(ConstructionConfig config) {
+        long now = System.currentTimeMillis();
+        if (now - lastOverflowActionAt < 2_000L) return;
+        lastOverflowActionAt = now;
+
+        int currentPlanks = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+        if (overflowStage == OverflowStage.COLLECT) {
+            logAction("Collecting " + expectedOverflowPlanks + " held overflow planks");
+        } else {
+            int delivered = Math.max(0, currentPlanks - minimumPlanksDuringTrip);
+            expectedOverflowPlanks = Math.max(1, DEMON_BUTLER_CAPACITY - delivered);
+            overflowStage = OverflowStage.BUILD_ONE;
+            butlerTrip.reset();
+            logAction("Inventory full; Butler is holding " + expectedOverflowPlanks
+                    + " overflow planks. Dismissing dialogue to build once");
+        }
+
+        if (!Rs2Dialogue.clickOption("Thanks")) {
+            logAction("Could not select Thanks on overflow dialogue");
+            return;
+        }
+
+        sleepUntil(() -> !Rs2Dialogue.hasSelectAnOption(), 3_000);
+        dialogueState = "None";
+        if (overflowStage == OverflowStage.COLLECT) {
+            sleepUntil(() -> Rs2Inventory.count(config.selectedMode().getPlankItemId())
+                    > planksBeforeOverflowCollection, 3_000);
+            if (Rs2Inventory.count(config.selectedMode().getPlankItemId()) > planksBeforeOverflowCollection) {
+                overflowStage = OverflowStage.SEND_NEXT;
+                logAction("Collected held overflow planks; sending Butler for the next load");
+            }
+        }
+    }
+
+    private void processOverflowCycle(ConstructionConfig config, int actionDelay) {
+        if (overflowStage == OverflowStage.BUILD_ONE) {
+            if (Rs2Dialogue.isInDialogue()) return;
+            calculateState(config);
+            if (state == ConstructionState.Remove) {
+                removeSpace(config, actionDelay);
+                return;
+            }
+            if (state == ConstructionState.Build && buildSpace(config, actionDelay)) {
+                planksBeforeOverflowCollection = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+                overflowStage = OverflowStage.COLLECT;
+                logAction("Built one " + config.selectedMode() + "; collecting "
+                        + expectedOverflowPlanks + " held planks");
+            }
+            return;
+        }
+
+        if (overflowStage == OverflowStage.COLLECT) {
+            int currentPlanks = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+            if (currentPlanks > planksBeforeOverflowCollection) {
+                overflowStage = OverflowStage.SEND_NEXT;
+                logAction("Collected held overflow planks; sending Butler for the next load");
+                return;
+            }
+            if (Rs2Dialogue.hasContinue()) {
+                Rs2Dialogue.clickContinue();
+                sleepUntil(() -> Rs2Inventory.count(config.selectedMode().getPlankItemId())
+                        > planksBeforeOverflowCollection || hasOverflowDialogue(), 3_000);
+                return;
+            }
+            if (Rs2Dialogue.isInDialogue()) return;
+
+            long now = System.currentTimeMillis();
+            if (now - lastOverflowActionAt < 3_000L) return;
+            lastOverflowActionAt = now;
+            Rs2NpcModel butler = getButler();
+            if (butler == null) {
+                logAction("Waiting for Butler to collect held overflow planks");
+                return;
+            }
+            logAction("Talking to Butler to collect held overflow planks");
+            if (butler.click("Talk-to")) {
+                sleepUntil(() -> Rs2Dialogue.isInDialogue()
+                        || Rs2Inventory.count(config.selectedMode().getPlankItemId())
+                        > planksBeforeOverflowCollection, Rs2Random.between(2000, 5000));
+            }
+            return;
+        }
+
+        if (overflowStage == OverflowStage.SEND_NEXT) {
+            butler(config, actionDelay);
+            if (butlerTrip.isTripInProgress()) {
+                overflowStage = OverflowStage.NONE;
+                logAction("Overflow cycle complete; Butler dispatched for the next 26 planks");
+            }
+        }
+    }
+
+    private String getDialogueState() {
+        if (hasOverflowDialogue()) return "Overflow planks";
+        if (hasDialogueOptionToUnnote()) return "Un-note delivery";
+        if (hasPayButlerDialogue() || hasDialogueOptionToPay()) return "Butler payment";
+        if (hasDialogueRepeatLastTask()) return "Repeat last task";
+        if (Rs2Widget.findWidget("Go to the bank", null) != null) return "Bank request";
+        if (Rs2Dialogue.hasSelectAnOption()) return "Unknown options";
+        return Rs2Dialogue.isInDialogue() ? "Continue" : "None";
+    }
+
+    private void updateDebugSnapshot(ConstructionConfig config) {
+        butlerPresent = getButler() != null;
+        plankCount = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+        freeSlots = Rs2Inventory.emptySlotCount();
+        dialogueState = getDialogueState();
+        if (butlerTrip.isTripInProgress() && "None".equals(dialogueState)) {
+            minimumPlanksDuringTrip = Math.min(minimumPlanksDuringTrip, plankCount);
+        }
+        if (!dialogueState.equals(lastLoggedDialogueState)) {
+            Microbot.log("Construction dialogue: %s -> %s (planks=%d, free=%d, overflow=%s)",
+                    lastLoggedDialogueState, dialogueState, plankCount, freeSlots, overflowStage);
+            lastLoggedDialogueState = dialogueState;
+        }
+    }
+
+    private void logAction(String action) {
+        if (action.equals(lastAction)) return;
+        lastAction = action;
+        Microbot.log("Construction: " + action);
     }
 
     private boolean hasRemoveInterfaceOpen(ConstructionConfig config) {
@@ -436,4 +602,16 @@ public class ConstructionScript extends Script {
     public ConstructionState getState() {
         return state;
     }
+
+    public String getButlerFlow() { return butlerTrip.getStatus(System.currentTimeMillis()); }
+    public String getOverflowFlow() {
+        return overflowStage == OverflowStage.NONE
+                ? overflowStage.name()
+                : overflowStage.name() + " (" + expectedOverflowPlanks + " held)";
+    }
+    public String getDialogueStateForOverlay() { return dialogueState; }
+    public String getLastAction() { return lastAction; }
+    public boolean isButlerPresent() { return butlerPresent; }
+    public int getPlankCount() { return plankCount; }
+    public int getFreeSlots() { return freeSlots; }
 }
