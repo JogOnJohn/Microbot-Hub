@@ -565,8 +565,9 @@ public class ConstructionScript extends Script {
                 }
                 if (!Rs2Dialogue.isInDialogue()
                         && System.currentTimeMillis() - overflowCollectionObservedAt >= 1_500L) {
+                    butlerTrip.reset();
                     overflowStage = OverflowStage.SEND_NEXT;
-                    logAction("Held overflow collection confirmed; pre-dispatching next Butler trip");
+                    logAction("Held overflow collection confirmed; tracker cleared for next Butler trip");
                 }
                 return;
             }
