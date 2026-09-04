@@ -28,6 +28,7 @@ public class ConstructionScript extends Script {
     private static final int DEMON_BUTLER_CAPACITY = 26;
     private static final int OVERFLOW_BUILDS_BEFORE_COLLECTION = 2;
     private static final int DIRECT_BUTLER_RANGE = 3;
+    private static final long CALL_SERVANT_RETRY_MS = 3_000L;
     private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
     private static final int CALL_SERVANT_WIDGET_ID = 24248342;
     private ConstructionState state = ConstructionState.Idle;
@@ -50,6 +51,7 @@ public class ConstructionScript extends Script {
     private boolean overflowCollectionObserved;
     private long overflowCollectionObservedAt;
     private long lastOverflowActionAt;
+    private long lastCallServantAttemptAt;
 
     private enum OverflowStage {
         NONE,
@@ -447,6 +449,9 @@ public class ConstructionScript extends Script {
 
     private boolean callServant() {
         if (butlerTrip.isTripInProgress()) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastCallServantAttemptAt < CALL_SERVANT_RETRY_MS) return false;
+        lastCallServantAttemptAt = now;
         Rs2Tab.switchTo(InterfaceTab.SETTINGS);
 
         boolean houseOptionsAvailable = sleepUntil(() ->
@@ -493,10 +498,10 @@ public class ConstructionScript extends Script {
     }
 
     private int distanceToButler(Rs2NpcModel butler) {
-        WorldPoint playerLocation = Rs2Player.getWorldLocation();
-        WorldPoint butlerLocation = butler == null ? null : butler.getWorldLocation();
+        var playerLocation = Rs2Player.getLocalLocation();
+        var butlerLocation = butler == null ? null : butler.getLocalLocation();
         if (playerLocation == null || butlerLocation == null) return -1;
-        return playerLocation.distanceTo(butlerLocation);
+        return (int) Math.ceil(playerLocation.distanceTo(butlerLocation) / 128.0);
     }
 
     private boolean hasOverflowDialogue() {
