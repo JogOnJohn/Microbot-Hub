@@ -409,6 +409,7 @@ public class ConstructionScript extends Script {
     private void butler(net.runelite.client.plugins.microbot.construction.ConstructionConfig config,
                         int actionDelay,
                         boolean forceCallServant) {
+        int planksBeforeInteraction = Rs2Inventory.count(config.selectedMode().getPlankItemId());
         var butler = getButler();
         if (butlerTrip.isAwaitingReturn() && !Rs2Dialogue.isInDialogue()) return;
 
@@ -463,6 +464,18 @@ public class ConstructionScript extends Script {
                 logAction("Repeating Butler bank trip (carrying " + minimumPlanksDuringTrip + ")");
                 Rs2Keyboard.keyPress('1');
             }
+        }
+
+        int planksAfterInteraction = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+        if (!forceCallServant
+                && !butlerTrip.isTripInProgress()
+                && planksAfterInteraction > planksBeforeInteraction
+                && !hasOverflowDialogue()) {
+            butlerTrip.reset();
+            overflowStage = OverflowStage.SEND_NEXT;
+            logAction("Collected held planks outside overflow flow (planks="
+                    + planksBeforeInteraction + " -> " + planksAfterInteraction
+                    + "); queued immediate Call Servant redispatch");
         }
     }
 
@@ -582,8 +595,12 @@ public class ConstructionScript extends Script {
                     overflowCollectionObservedAt = System.currentTimeMillis();
                     logAction("Received held planks; waiting for Butler dialogue to settle");
                 }
-                if (!Rs2Dialogue.isInDialogue()
-                        && System.currentTimeMillis() - overflowCollectionObservedAt >= 1_500L) {
+                if (System.currentTimeMillis() - overflowCollectionObservedAt < 1_500L) return;
+                if (Rs2Dialogue.hasContinue()) {
+                    Rs2Dialogue.clickContinue();
+                    sleepUntil(() -> !Rs2Dialogue.isInDialogue(), 2_000);
+                }
+                if (!Rs2Dialogue.isInDialogue()) {
                     butlerTrip.reset();
                     overflowStage = OverflowStage.SEND_NEXT;
                     logAction("Held overflow collection confirmed; tracker cleared for next Butler trip");
