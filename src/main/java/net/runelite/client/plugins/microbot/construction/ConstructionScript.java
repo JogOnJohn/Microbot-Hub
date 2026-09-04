@@ -131,8 +131,19 @@ public class ConstructionScript extends Script {
                     processOverflowCycle(config, actionDelay);
                     return;
                 }
-                if (Rs2Dialogue.isInDialogue() && !hasRequiredPlanks(config)) {
+                if (Rs2Dialogue.isInDialogue()) {
                     dialogueState = getDialogueState();
+                    if (hasRemoveInterfaceOpen(config)) {
+                        Rs2Keyboard.keyPress('1');
+                    } else {
+                        butler(config, actionDelay);
+                    }
+                    return;
+                }
+                int currentPlanks = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+                if (!butlerTrip.isTripInProgress() && currentPlanks <= getRequiredPlanks(config)) {
+                    logAction("Planks at proactive refill threshold (" + currentPlanks
+                            + " <= " + getRequiredPlanks(config) + "); checking Butler before next build");
                     butler(config, actionDelay);
                     return;
                 }
@@ -140,19 +151,12 @@ public class ConstructionScript extends Script {
                 calculateState(config);
                 switch (state) {
                     case Build:
-                        if (grabPlanksWhileWeBuild(config, actionDelay)
-                                && buildSpace(config, actionDelay)) {
-                            setState(ConstructionState.Remove);
-                            removeSpace(config, actionDelay);
+                        if (grabPlanksWhileWeBuild(config, actionDelay)) {
+                            buildSpace(config, actionDelay);
                         }
                         break;
                     case Remove:
-                        if (removeSpace(config, actionDelay)) {
-                            setState(ConstructionState.Build);
-                            if (grabPlanksWhileWeBuild(config, actionDelay)) {
-                                buildSpace(config, actionDelay);
-                            }
-                        }
+                        removeSpace(config, actionDelay);
                         break;
                     case Butler:
                         grabPlanksWhileWeBuild(config, actionDelay);
@@ -405,6 +409,10 @@ public class ConstructionScript extends Script {
             lastConstructionClickAt = System.currentTimeMillis();
             System.out.println("Interacted with remove option: " + builtObject.getId());
             sleepUntilOnClientThread(() -> hasRemoveInterfaceOpen(config), 2500);
+            if (!hasRemoveInterfaceOpen(config)) {
+                logAction("Remove confirmation did not appear; waiting to retry");
+                return false;
+            }
             Rs2Keyboard.keyPress('1');
             sleepUntilOnClientThread(() -> workingObjectId() != spaceId, 2500);
             boolean objectReady = workingObjectId() != spaceId;
@@ -442,6 +450,10 @@ public class ConstructionScript extends Script {
         int planksBeforeInteraction = Rs2Inventory.count(config.selectedMode().getPlankItemId());
         var butler = getButler();
         if (butlerTrip.isAwaitingReturn() && !Rs2Dialogue.isInDialogue()) return;
+        if (hasOverflowDialogue()) {
+            handleOverflowDialogue(config);
+            return;
+        }
 
         if (!Rs2Dialogue.isInDialogue() && (forceCallServant || !isButlerNearby(butler))) {
             logAction(forceCallServant
@@ -459,6 +471,10 @@ public class ConstructionScript extends Script {
 
         if (Rs2Dialogue.isInDialogue()) {
             sleep(500);
+            if (hasOverflowDialogue()) {
+                handleOverflowDialogue(config);
+                return;
+            }
             Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
             sleep(400, 1000);
             if (Rs2Widget.findWidget("Go to the bank", null) != null) {
