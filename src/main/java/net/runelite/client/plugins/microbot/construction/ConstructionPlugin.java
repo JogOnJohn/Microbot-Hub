@@ -70,6 +70,7 @@ public class ConstructionPlugin extends Plugin {
     public String getDialogueState() { return ConstructionScript.getDialogueStateForOverlay(); }
     public String getLastAction() { return ConstructionScript.getLastAction(); }
     public boolean isButlerPresent() { return ConstructionScript.isButlerPresent(); }
+    public int getButlerDistance() { return ConstructionScript.getButlerDistance(); }
     public int getPlankCount() { return ConstructionScript.getPlankCount(); }
     public int getFreeSlots() { return ConstructionScript.getFreeSlots(); }
 }

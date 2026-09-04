@@ -27,6 +27,7 @@ public class ConstructionScript extends Script {
     private static final int DEFAULT_DELAY = 600;
     private static final int DEMON_BUTLER_CAPACITY = 26;
     private static final int OVERFLOW_BUILDS_BEFORE_COLLECTION = 2;
+    private static final int DIRECT_BUTLER_RANGE = 3;
     private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
     private static final int CALL_SERVANT_WIDGET_ID = 24248342;
     private ConstructionState state = ConstructionState.Idle;
@@ -38,6 +39,7 @@ public class ConstructionScript extends Script {
     private volatile String dialogueState = "None";
     private String lastLoggedDialogueState = "None";
     private volatile boolean butlerPresent;
+    private volatile int butlerDistance = -1;
     private volatile int plankCount;
     private volatile int freeSlots;
     private volatile OverflowStage overflowStage = OverflowStage.NONE;
@@ -166,12 +168,13 @@ public class ConstructionScript extends Script {
 
     public boolean grabPlanksWhileWeBuild(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay){
         int plankCount = Rs2Inventory.count(config.selectedMode().getPlankItemId());
-        if (plankCount >= getRequiredPlanks(config)) return true;
+        boolean enoughToBuild = plankCount >= getRequiredPlanks(config);
 
         Rs2NpcModel butler = getButler();
         ButlerTripTracker.Action tripAction = butlerTrip.observe(
                 Rs2Dialogue.isInDialogue(), butler != null, System.currentTimeMillis());
         if (tripAction == ButlerTripTracker.Action.WAIT) return true;
+        if (enoughToBuild && tripAction != ButlerTripTracker.Action.CLICK_CURRENT_TILE) return true;
         if (tripAction == ButlerTripTracker.Action.HANDLE_RETURN_DIALOGUE) {
             logAction("Handling Butler return dialogue: " + getDialogueState());
             butler(config, actionDelay);
@@ -391,7 +394,10 @@ public class ConstructionScript extends Script {
         var butler = getButler();
         if (butlerTrip.isAwaitingReturn() && !Rs2Dialogue.isInDialogue()) return;
 
-        if (!Rs2Dialogue.isInDialogue() && butler == null) {
+        if (!Rs2Dialogue.isInDialogue() && !isButlerNearby(butler)) {
+            logAction(butler == null
+                    ? "Butler is absent; using Call Servant"
+                    : "Butler is " + distanceToButler(butler) + " tiles away; using Call Servant instead of chasing");
             if (!callServant()) return;
             butler = getButler();
         } else if (!Rs2Dialogue.isInDialogue()) {
@@ -481,6 +487,18 @@ public class ConstructionScript extends Script {
         return true;
     }
 
+    private boolean isButlerNearby(Rs2NpcModel butler) {
+        int distance = distanceToButler(butler);
+        return distance >= 0 && distance <= DIRECT_BUTLER_RANGE;
+    }
+
+    private int distanceToButler(Rs2NpcModel butler) {
+        WorldPoint playerLocation = Rs2Player.getWorldLocation();
+        WorldPoint butlerLocation = butler == null ? null : butler.getWorldLocation();
+        if (playerLocation == null || butlerLocation == null) return -1;
+        return playerLocation.distanceTo(butlerLocation);
+    }
+
     private boolean hasOverflowDialogue() {
         return Rs2Dialogue.hasDialogueOption("Take them back to the bank")
                 || Rs2Dialogue.hasDialogueOption("Thanks");
@@ -559,8 +577,12 @@ public class ConstructionScript extends Script {
             if (now - lastOverflowActionAt < 3_000L) return;
             lastOverflowActionAt = now;
             Rs2NpcModel butler = getButler();
-            if (butler == null) {
-                logAction("Waiting for Butler to collect held overflow planks");
+            if (!isButlerNearby(butler)) {
+                logAction(butler == null
+                        ? "Butler absent during overflow collection; using Call Servant"
+                        : "Butler " + distanceToButler(butler)
+                        + " tiles away during collection; using Call Servant instead of chasing");
+                callServant();
                 return;
             }
             logAction("Talking to Butler to collect held overflow planks");
@@ -593,7 +615,9 @@ public class ConstructionScript extends Script {
     }
 
     private void updateDebugSnapshot(ConstructionConfig config) {
-        butlerPresent = getButler() != null;
+        Rs2NpcModel currentButler = getButler();
+        butlerPresent = currentButler != null;
+        butlerDistance = distanceToButler(currentButler);
         plankCount = Rs2Inventory.count(config.selectedMode().getPlankItemId());
         freeSlots = Rs2Inventory.emptySlotCount();
         dialogueState = getDialogueState();
@@ -648,6 +672,7 @@ public class ConstructionScript extends Script {
     public String getDialogueStateForOverlay() { return dialogueState; }
     public String getLastAction() { return lastAction; }
     public boolean isButlerPresent() { return butlerPresent; }
+    public int getButlerDistance() { return butlerDistance; }
     public int getPlankCount() { return plankCount; }
     public int getFreeSlots() { return freeSlots; }
 }

@@ -39,7 +39,9 @@ public class ConstructionOverlay extends OverlayPanel {
                 .build());
         panelComponent.getChildren().add(LineComponent.builder()
                 .left("Butler:")
-                .right(plugin.isButlerPresent() ? "Present" : "Absent")
+                .right(plugin.isButlerPresent()
+                        ? "Present (" + plugin.getButlerDistance() + " tiles)"
+                        : "Absent")
                 .build());
         panelComponent.getChildren().add(LineComponent.builder()
                 .left("Overflow:")
