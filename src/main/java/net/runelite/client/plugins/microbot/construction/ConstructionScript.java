@@ -52,7 +52,8 @@ public class ConstructionScript extends Script {
     private enum OverflowStage {
         NONE,
         BUILD_ONE,
-        COLLECT
+        COLLECT,
+        SEND_NEXT
     }
 
     // NOTE: For the arrays below, the first ID is the BUILD OBJECT ID, the second is the EMPTY OBJECT ID
@@ -388,12 +389,12 @@ public class ConstructionScript extends Script {
 
     private void butler(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
         var butler = getButler();
-        if (butlerTrip.isTripInProgress() && !Rs2Dialogue.isInDialogue()) return;
+        if (butlerTrip.isAwaitingReturn() && !Rs2Dialogue.isInDialogue()) return;
 
-        if (!Rs2Dialogue.isInDialogue() && (butler == null || !butler.isInteractingWithPlayer())) {
+        if (!Rs2Dialogue.isInDialogue() && butler == null) {
             if (!callServant()) return;
             butler = getButler();
-        } else if (!Rs2Dialogue.isInDialogue() && butler != null) {
+        } else if (!Rs2Dialogue.isInDialogue()) {
             if (!butler.click("Talk-to")
                     || !sleepUntil(Rs2Dialogue::isInDialogue, Rs2Random.between(2000, 5000))) return;
         }
@@ -419,8 +420,10 @@ public class ConstructionScript extends Script {
             } else if (hasDialogueOptionToUnnote()) {
                 Rs2Keyboard.keyPress('1');
                 sleepUntilOnClientThread(() -> !hasDialogueOptionToUnnote());
-                butlerTrip.reset();
-                logAction("Selected Butler un-note service");
+                minimumPlanksDuringTrip = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+                butlerTrip.dispatched(System.currentTimeMillis());
+                logAction("Selected Butler un-note service; Butler trip started (carrying "
+                        + minimumPlanksDuringTrip + ")");
             } else if (hasPayButlerDialogue() || hasDialogueOptionToPay()) {
                 Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
                 sleep(400, 1000);
@@ -470,7 +473,7 @@ public class ConstructionScript extends Script {
             return false;
         }
         butlerTrip.servantRequested(System.currentTimeMillis());
-        logAction("Call Servant request dispatched; suppressing duplicate calls");
+        logAction("Call Servant clicked; suppressing duplicate calls while dialogue opens");
         boolean dialogueOpened = sleepUntil(Rs2Dialogue::isInDialogue, Rs2Random.between(2000, 5000));
         Microbot.log(dialogueOpened
                 ? "Construction: Call Servant opened dialogue"
@@ -539,8 +542,8 @@ public class ConstructionScript extends Script {
                 }
                 if (!Rs2Dialogue.isInDialogue()
                         && System.currentTimeMillis() - overflowCollectionObservedAt >= 1_500L) {
-                    overflowStage = OverflowStage.NONE;
-                    logAction("Held overflow collection confirmed; resuming construction with current planks");
+                    overflowStage = OverflowStage.SEND_NEXT;
+                    logAction("Held overflow collection confirmed; pre-dispatching next Butler trip");
                 }
                 return;
             }
@@ -569,6 +572,14 @@ public class ConstructionScript extends Script {
             return;
         }
 
+        if (overflowStage == OverflowStage.SEND_NEXT) {
+            butler(config, actionDelay);
+            if (butlerTrip.isAwaitingReturn()) {
+                overflowStage = OverflowStage.NONE;
+                logAction("Next Butler trip dispatched; resuming construction during travel");
+            }
+        }
+
     }
 
     private String getDialogueState() {
@@ -586,7 +597,13 @@ public class ConstructionScript extends Script {
         plankCount = Rs2Inventory.count(config.selectedMode().getPlankItemId());
         freeSlots = Rs2Inventory.emptySlotCount();
         dialogueState = getDialogueState();
-        if (butlerTrip.isTripInProgress() && "None".equals(dialogueState)) {
+        if (butlerTrip.isAwaitingReturn()
+                && plankCount > minimumPlanksDuringTrip
+                && (butlerPresent || !"None".equals(dialogueState))) {
+            logAction("Butler delivery observed (planks=" + minimumPlanksDuringTrip
+                    + " -> " + plankCount + ")");
+            butlerTrip.reset();
+        } else if (butlerTrip.isTripInProgress() && "None".equals(dialogueState)) {
             minimumPlanksDuringTrip = Math.min(minimumPlanksDuringTrip, plankCount);
         }
         if (!dialogueState.equals(lastLoggedDialogueState)) {
