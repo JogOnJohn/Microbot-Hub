@@ -28,6 +28,7 @@ public class ConstructionScript extends Script {
     private static final int DEMON_BUTLER_CAPACITY = 26;
     private static final int DIRECT_BUTLER_RANGE = 3;
     private static final long CALL_SERVANT_RETRY_MS = 3_000L;
+    private static final long CONSTRUCTION_CLICK_GUARD_MS = 250L;
     private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
     private static final int CALL_SERVANT_WIDGET_ID = 24248342;
     private ConstructionState state = ConstructionState.Idle;
@@ -51,6 +52,7 @@ public class ConstructionScript extends Script {
     private long overflowCollectionObservedAt;
     private long lastOverflowActionAt;
     private long lastCallServantAttemptAt;
+    private long lastConstructionClickAt;
 
     private enum OverflowStage {
         NONE,
@@ -138,12 +140,19 @@ public class ConstructionScript extends Script {
                 calculateState(config);
                 switch (state) {
                     case Build:
-                        if (grabPlanksWhileWeBuild(config, actionDelay)) {
-                            buildSpace(config, actionDelay);
+                        if (grabPlanksWhileWeBuild(config, actionDelay)
+                                && buildSpace(config, actionDelay)) {
+                            setState(ConstructionState.Remove);
+                            removeSpace(config, actionDelay);
                         }
                         break;
                     case Remove:
-                        removeSpace(config, actionDelay);
+                        if (removeSpace(config, actionDelay)) {
+                            setState(ConstructionState.Build);
+                            if (grabPlanksWhileWeBuild(config, actionDelay)) {
+                                buildSpace(config, actionDelay);
+                            }
+                        }
                         break;
                     case Butler:
                         grabPlanksWhileWeBuild(config, actionDelay);
@@ -346,9 +355,8 @@ public class ConstructionScript extends Script {
     }
 
     private boolean buildSpace(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
-        Rs2TileObjectModel space = Microbot.getRs2TileObjectCache().query()
-                .where(o -> o.getWorldLocation().equals(workingTile))
-                .nearest();
+        if (!constructionClickReady()) return false;
+        Rs2TileObjectModel space = getWorkingObject();
         int spaceId = space != null ? space.getId() : -1;
         char buildKey = '1';
 
@@ -369,37 +377,59 @@ public class ConstructionScript extends Script {
         if (space == null) return false;
         int planksBeforeBuild = Rs2Inventory.count(config.selectedMode().getPlankItemId());
         if (space.click("Build")) {
+            lastConstructionClickAt = System.currentTimeMillis();
             System.out.println("Interacted with build space: " + space.getId());
             sleepUntilOnClientThread(this::hasFurnitureInterfaceOpen, 2500);
             System.out.println("Pressing key: " + buildKey);
             Rs2Keyboard.keyPress(buildKey); // Ensure this is the correct key for the selected build option
-            sleepUntilOnClientThread(() -> spaceId != space.getId(), 2500);
+            sleepUntilOnClientThread(() -> workingObjectId() != spaceId, 2500);
+            boolean objectReady = workingObjectId() != spaceId;
             System.out.println("Built object: " + config.selectedMode());
-            return Rs2Inventory.count(config.selectedMode().getPlankItemId()) < planksBeforeBuild;
+            return objectReady
+                    || Rs2Inventory.count(config.selectedMode().getPlankItemId()) < planksBeforeBuild;
         } else {
             System.out.println("Failed to interact with build space: " + space.getId());
         }
         return false;
     }
 
-    private void removeSpace(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
-        Rs2TileObjectModel builtObject = Microbot.getRs2TileObjectCache().query()
-                .where(o -> o.getWorldLocation().equals(workingTile))
-                .nearest();
+    private boolean removeSpace(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
+        if (!constructionClickReady()) return false;
+        Rs2TileObjectModel builtObject = getWorkingObject();
         int spaceId = builtObject != null ? builtObject.getId() : -1;
 
-        if (builtObject == null) return;
-        if(builtObject.getId() == 15328 || builtObject.getId() == 15403 || builtObject.getId() == 15298 || builtObject.getId() == 31986) return;
+        if (builtObject == null) return false;
+        if(builtObject.getId() == 15328 || builtObject.getId() == 15403 || builtObject.getId() == 15298 || builtObject.getId() == 31986) return false;
 
         if (builtObject.click("Remove")) {
+            lastConstructionClickAt = System.currentTimeMillis();
             System.out.println("Interacted with remove option: " + builtObject.getId());
             sleepUntilOnClientThread(() -> hasRemoveInterfaceOpen(config), 2500);
             Rs2Keyboard.keyPress('1');
-            sleepUntilOnClientThread(() -> spaceId != builtObject.getId(), 2500);
+            sleepUntilOnClientThread(() -> workingObjectId() != spaceId, 2500);
+            boolean objectReady = workingObjectId() != spaceId;
             System.out.println("Removed object: " + config.selectedMode());
+            return objectReady;
         } else {
             System.out.println("Failed to interact with remove option: " + builtObject.getId());
         }
+        return false;
+    }
+
+    private boolean constructionClickReady() {
+        return System.currentTimeMillis() - lastConstructionClickAt >= CONSTRUCTION_CLICK_GUARD_MS;
+    }
+
+    private Rs2TileObjectModel getWorkingObject() {
+        if (workingTile == null) return null;
+        return Microbot.getRs2TileObjectCache().query()
+                .where(o -> o.getWorldLocation().equals(workingTile))
+                .nearestOnClientThread();
+    }
+
+    private int workingObjectId() {
+        Rs2TileObjectModel current = getWorkingObject();
+        return current == null ? -1 : current.getId();
     }
 
     private void butler(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
