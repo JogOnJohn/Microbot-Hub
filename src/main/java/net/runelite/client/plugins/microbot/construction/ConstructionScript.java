@@ -26,7 +26,6 @@ public class ConstructionScript extends Script {
 
     private static final int DEFAULT_DELAY = 600;
     private static final int DEMON_BUTLER_CAPACITY = 26;
-    private static final int OVERFLOW_BUILDS_BEFORE_COLLECTION = 2;
     private static final int DIRECT_BUTLER_RANGE = 3;
     private static final long CALL_SERVANT_RETRY_MS = 3_000L;
     private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
@@ -297,6 +296,17 @@ public class ConstructionScript extends Script {
         }
     }
 
+    static int overflowBuildsBeforeCollection(ConstructionConfig.ConstructionMode mode) {
+        switch (mode) {
+            case OAK_LARDER:
+            case OAK_DUNGEON_DOOR:
+            case MAHOGANY_TABLE:
+                return 1;
+            default:
+                throw new IllegalArgumentException("Unsupported construction mode: " + mode);
+        }
+    }
+
     private void returnToTheHouse(){
         long now = System.currentTimeMillis();
         if (now - lastHouseRecoveryAttempt < 5_000L) return;
@@ -393,13 +403,22 @@ public class ConstructionScript extends Script {
     }
 
     private void butler(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
+        butler(config, actionDelay, false);
+    }
+
+    private void butler(net.runelite.client.plugins.microbot.construction.ConstructionConfig config,
+                        int actionDelay,
+                        boolean forceCallServant) {
         var butler = getButler();
         if (butlerTrip.isAwaitingReturn() && !Rs2Dialogue.isInDialogue()) return;
 
-        if (!Rs2Dialogue.isInDialogue() && !isButlerNearby(butler)) {
-            logAction(butler == null
-                    ? "Butler is absent; using Call Servant"
-                    : "Butler is " + distanceToButler(butler) + " tiles away; using Call Servant instead of chasing");
+        if (!Rs2Dialogue.isInDialogue() && (forceCallServant || !isButlerNearby(butler))) {
+            logAction(forceCallServant
+                    ? "Calling Butler from House Options for immediate redispatch"
+                    : butler == null
+                            ? "Butler is absent; using Call Servant"
+                            : "Butler is " + distanceToButler(butler)
+                                    + " tiles away; using Call Servant instead of chasing");
             if (!callServant()) return;
             butler = getButler();
         } else if (!Rs2Dialogue.isInDialogue()) {
@@ -523,12 +542,12 @@ public class ConstructionScript extends Script {
         } else {
             int delivered = Math.max(0, currentPlanks - minimumPlanksDuringTrip);
             expectedOverflowPlanks = Math.max(1, DEMON_BUTLER_CAPACITY - delivered);
-            overflowBuildsRemaining = OVERFLOW_BUILDS_BEFORE_COLLECTION;
+            overflowBuildsRemaining = overflowBuildsBeforeCollection(config.selectedMode());
             overflowCollectionObserved = false;
             overflowStage = OverflowStage.BUILD_ONE;
             butlerTrip.reset();
             logAction("Inventory full; Butler is holding at least " + expectedOverflowPlanks
-                    + " overflow planks. Leaving dialogue untouched and building twice");
+                    + " overflow planks. Leaving dialogue untouched and building once before collection");
         }
     }
 
@@ -601,7 +620,7 @@ public class ConstructionScript extends Script {
         }
 
         if (overflowStage == OverflowStage.SEND_NEXT) {
-            butler(config, actionDelay);
+            butler(config, actionDelay, true);
             if (butlerTrip.isAwaitingReturn()) {
                 overflowStage = OverflowStage.NONE;
                 logAction("Next Butler trip dispatched; resuming construction during travel");
