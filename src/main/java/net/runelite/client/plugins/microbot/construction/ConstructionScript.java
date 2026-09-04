@@ -331,7 +331,7 @@ public class ConstructionScript extends Script {
 
     private void butler(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay) {
         var butler = getButler();
-        if (butlerTrip.isTripInProgress()) return;
+        if (butlerTrip.isTripInProgress() && !Rs2Dialogue.isInDialogue()) return;
 
         if (!Rs2Dialogue.isInDialogue() && (butler == null || !butler.isInteractingWithPlayer())) {
             if (!callServant()) return;
@@ -360,6 +360,8 @@ public class ConstructionScript extends Script {
             } else if (hasDialogueOptionToUnnote()) {
                 Rs2Keyboard.keyPress('1');
                 sleepUntilOnClientThread(() -> !hasDialogueOptionToUnnote());
+                butlerTrip.reset();
+                Microbot.log("Construction: Butler delivery completed");
             } else if (hasPayButlerDialogue() || hasDialogueOptionToPay()) {
                 Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
                 sleep(400, 1000);
@@ -407,11 +409,13 @@ public class ConstructionScript extends Script {
             Microbot.log("Construction: Failed to click Call Servant");
             return false;
         }
+        butlerTrip.servantRequested(System.currentTimeMillis());
+        Microbot.log("Construction: Call Servant request dispatched; suppressing duplicate calls");
         boolean dialogueOpened = sleepUntil(Rs2Dialogue::isInDialogue, Rs2Random.between(2000, 5000));
         Microbot.log(dialogueOpened
                 ? "Construction: Call Servant opened dialogue"
                 : "Construction: Call Servant timed out waiting for dialogue");
-        return dialogueOpened;
+        return true;
     }
 
     private boolean hasRemoveInterfaceOpen(ConstructionConfig config) {

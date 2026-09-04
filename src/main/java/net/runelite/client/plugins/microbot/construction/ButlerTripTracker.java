@@ -13,6 +13,7 @@ final class ButlerTripTracker {
 
     private enum Phase {
         IDLE,
+        SERVANT_REQUESTED,
         AWAITING_DEPARTURE,
         AWAY
     }
@@ -20,6 +21,12 @@ final class ButlerTripTracker {
     private Phase phase = Phase.IDLE;
     private long phaseStartedAt;
     private boolean repositionRequested;
+
+    void servantRequested(long now) {
+        phase = Phase.SERVANT_REQUESTED;
+        phaseStartedAt = now;
+        repositionRequested = false;
+    }
 
     void dispatched(long now) {
         phase = Phase.AWAITING_DEPARTURE;
@@ -33,6 +40,16 @@ final class ButlerTripTracker {
         }
 
         long elapsed = now - phaseStartedAt;
+        if (phase == Phase.SERVANT_REQUESTED) {
+            if (dialogueOpen) return Action.HANDLE_RETURN_DIALOGUE;
+            if (butlerPresent) return Action.TALK_TO_RETURNED_BUTLER;
+            if (elapsed >= BLOCKED_RETURN_GRACE_MS && !repositionRequested) {
+                repositionRequested = true;
+                return Action.CLICK_CURRENT_TILE;
+            }
+            return Action.WAIT;
+        }
+
         if (phase == Phase.AWAITING_DEPARTURE) {
             if (!dialogueOpen && !butlerPresent) {
                 phase = Phase.AWAY;
@@ -47,11 +64,9 @@ final class ButlerTripTracker {
         }
 
         if (dialogueOpen) {
-            reset();
             return Action.HANDLE_RETURN_DIALOGUE;
         }
         if (butlerPresent) {
-            reset();
             return Action.TALK_TO_RETURNED_BUTLER;
         }
         if (elapsed >= BLOCKED_RETURN_GRACE_MS && !repositionRequested) {
