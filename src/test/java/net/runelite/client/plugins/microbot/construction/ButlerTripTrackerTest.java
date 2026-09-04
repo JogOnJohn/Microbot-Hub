@@ -30,18 +30,23 @@ class ButlerTripTrackerTest {
     }
 
     @Test
-    void retriesWhenDispatchNeverCompletes() {
+    void repositionsInsteadOfRedispatchingWhenServantCannotReturn() {
         tracker.dispatched(1_000L);
-        assertEquals(ButlerTripTracker.Action.RETRY_DISPATCH,
-                tracker.observe(false, true, 1_000L + ButlerTripTracker.DEPARTURE_TIMEOUT_MS));
-        assertFalse(tracker.isTripInProgress());
+        assertEquals(ButlerTripTracker.Action.REPOSITION_FOR_RETURN,
+                tracker.observe(false, true, 1_000L + ButlerTripTracker.BLOCKED_RETURN_GRACE_MS));
+        assertTrue(tracker.isTripInProgress());
+        assertEquals(ButlerTripTracker.Action.WAIT,
+                tracker.observe(false, false, 20_000L));
     }
 
     @Test
-    void retriesWhenReturnIsMissedForTooLong() {
+    void requestsOnlyOneRepositionWhileWaitingForReturn() {
         tracker.dispatched(1_000L);
         tracker.observe(false, false, 2_000L);
-        assertEquals(ButlerTripTracker.Action.RETRY_DISPATCH,
-                tracker.observe(false, false, 2_000L + ButlerTripTracker.RETURN_TIMEOUT_MS));
+        assertEquals(ButlerTripTracker.Action.REPOSITION_FOR_RETURN,
+                tracker.observe(false, false, 1_000L + ButlerTripTracker.BLOCKED_RETURN_GRACE_MS));
+        assertEquals(ButlerTripTracker.Action.WAIT,
+                tracker.observe(false, false, 60_000L));
+        assertTrue(tracker.isTripInProgress());
     }
 }

@@ -1,15 +1,14 @@
 package net.runelite.client.plugins.microbot.construction;
 
 final class ButlerTripTracker {
-    static final long DEPARTURE_TIMEOUT_MS = 8_000L;
-    static final long RETURN_TIMEOUT_MS = 45_000L;
+    static final long BLOCKED_RETURN_GRACE_MS = 10_000L;
 
     enum Action {
         NONE,
         WAIT,
         HANDLE_RETURN_DIALOGUE,
         TALK_TO_RETURNED_BUTLER,
-        RETRY_DISPATCH
+        REPOSITION_FOR_RETURN
     }
 
     private enum Phase {
@@ -20,10 +19,12 @@ final class ButlerTripTracker {
 
     private Phase phase = Phase.IDLE;
     private long phaseStartedAt;
+    private boolean repositionRequested;
 
     void dispatched(long now) {
         phase = Phase.AWAITING_DEPARTURE;
         phaseStartedAt = now;
+        repositionRequested = false;
     }
 
     Action observe(boolean dialogueOpen, boolean butlerPresent, long now) {
@@ -35,12 +36,12 @@ final class ButlerTripTracker {
         if (phase == Phase.AWAITING_DEPARTURE) {
             if (!dialogueOpen && !butlerPresent) {
                 phase = Phase.AWAY;
-                phaseStartedAt = now;
                 return Action.WAIT;
             }
-            if (elapsed >= DEPARTURE_TIMEOUT_MS) {
-                reset();
-                return Action.RETRY_DISPATCH;
+            if (elapsed >= BLOCKED_RETURN_GRACE_MS && !repositionRequested) {
+                phase = Phase.AWAY;
+                repositionRequested = true;
+                return Action.REPOSITION_FOR_RETURN;
             }
             return Action.WAIT;
         }
@@ -53,9 +54,9 @@ final class ButlerTripTracker {
             reset();
             return Action.TALK_TO_RETURNED_BUTLER;
         }
-        if (elapsed >= RETURN_TIMEOUT_MS) {
-            reset();
-            return Action.RETRY_DISPATCH;
+        if (elapsed >= BLOCKED_RETURN_GRACE_MS && !repositionRequested) {
+            repositionRequested = true;
+            return Action.REPOSITION_FOR_RETURN;
         }
         return Action.WAIT;
     }
@@ -67,5 +68,6 @@ final class ButlerTripTracker {
     void reset() {
         phase = Phase.IDLE;
         phaseStartedAt = 0L;
+        repositionRequested = false;
     }
 }
