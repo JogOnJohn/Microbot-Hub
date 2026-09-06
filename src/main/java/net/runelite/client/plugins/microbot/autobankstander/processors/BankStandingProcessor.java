@@ -33,6 +33,15 @@ public interface BankStandingProcessor {
      * @return true if processing completed successfully
      */
     boolean process();
+
+    /**
+     * Clear processor-owned terminal state before the script retries via banking.
+     * Implementations return false when recovery is exhausted and the script
+     * should stop instead of cycling back into the same failure.
+     */
+    default boolean recoverFromProcessingFailure() {
+        return true;
+    }
     
     /**
      * check if there are more items available to process

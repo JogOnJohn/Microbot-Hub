@@ -14,6 +14,7 @@ import net.runelite.api.gameval.ItemID;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.autobankstander.processors.BankStandingProcessor;
 import net.runelite.client.plugins.microbot.autobankstander.processing.BatchTransaction;
+import net.runelite.client.plugins.microbot.autobankstander.processing.BatchRecoveryPolicy;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.CleanHerbMode;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.Herb;
 import net.runelite.client.plugins.microbot.autobankstander.skills.herblore.enums.HerblorePotion;
@@ -87,11 +88,13 @@ public class HerbloreProcessor implements BankStandingProcessor {
     private static final int BATCH_ACK_TIMEOUT_TICKS = 5;
     private static final int BATCH_PROGRESS_TIMEOUT_TICKS = 12;
     private static final int MAX_BATCH_RETRIES = 2;
+    private static final int MAX_BATCH_RECOVERIES = 3;
     private long batchGeneration = 0;
     private BatchTransaction batchTransaction;
     private int batchRetryCount = 0;
     private int batchSecondaryItemId = -1;
     private int batchSecondaryRatio = 1;
+    private final BatchRecoveryPolicy batchRecoveryPolicy = new BatchRecoveryPolicy(MAX_BATCH_RECOVERIES);
 
     private static final Pattern CHEMISTRY_CHECK_PATTERN = Pattern.compile(
             "^Your amulet of chemistry has (\\d+) charges? left\\.$", Pattern.CASE_INSENSITIVE);
@@ -272,6 +275,24 @@ public class HerbloreProcessor implements BankStandingProcessor {
         }
         
         return false;
+    }
+
+    @Override
+    public boolean recoverFromProcessingFailure() {
+        if (batchTransaction == null || batchTransaction.getState() != BatchTransaction.State.FAILED) {
+            log.info("No terminal failed batch is available to reset");
+            return false;
+        }
+        if (!batchRecoveryPolicy.tryAcquire()) {
+            log.info("Batch recovery limit reached after generation {}", batchTransaction.getGeneration());
+            return false;
+        }
+
+        log.info("Resetting failed batch generation {} for bounded recovery {}/{}",
+                batchTransaction.getGeneration(), batchRecoveryPolicy.getRecoveries(), MAX_BATCH_RECOVERIES);
+        batchTransaction = null;
+        batchRetryCount = 0;
+        return true;
     }
 
     @Override
@@ -965,6 +986,7 @@ public class HerbloreProcessor implements BankStandingProcessor {
         batchRetryCount = 0;
         batchSecondaryItemId = -1;
         batchSecondaryRatio = 1;
+        batchRecoveryPolicy.reset();
         refreshProcessingProgress();
     }
 

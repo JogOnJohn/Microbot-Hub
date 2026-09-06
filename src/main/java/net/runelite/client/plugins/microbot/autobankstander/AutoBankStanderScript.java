@@ -31,6 +31,7 @@ public class AutoBankStanderScript extends Script {
     private volatile ConfigData configData;
     private long stateStartTime = System.currentTimeMillis(); // remember when we started this state for timeout checking
     private volatile BankStandingProcessor processor;
+    private final ProcessingRecoveryController recoveryController = new ProcessingRecoveryController();
     private AutoBankStanderPlugin plugin;
     private final AtomicLong loopCount = new AtomicLong();
     private final AtomicLong sessionHerbsCleaned = new AtomicLong();
@@ -247,9 +248,16 @@ public class AutoBankStanderScript extends Script {
             return;
         }
         
-        // try to recover by going back to banking
-        log.info("Attempting recovery - going to banking");
-        changeState(AutoBankStanderState.BANKING); // try to recover by going to banking
+        ProcessingRecoveryController.Decision decision = recoveryController.recover(processor);
+        if (decision == ProcessingRecoveryController.Decision.STOP) {
+            log.info("Processor recovery exhausted - shutting down");
+            Microbot.status = "Processing recovery exhausted";
+            shutdown();
+            return;
+        }
+
+        log.info("Processor state reset - going to banking");
+        changeState(AutoBankStanderState.BANKING);
     }
 
     private BankStandingProcessor createProcessor() {
