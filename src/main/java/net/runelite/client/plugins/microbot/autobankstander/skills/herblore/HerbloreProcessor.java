@@ -296,6 +296,19 @@ public class HerbloreProcessor implements BankStandingProcessor {
     }
 
     @Override
+    public boolean recoverAfterLogin() {
+        if (batchTransaction == null) return false;
+
+        log.info("Discarding interrupted batch generation {} after login (state {}, progress {}/{})",
+                batchTransaction.getGeneration(), batchTransaction.getState(),
+                batchTransaction.getCompletedOperations(), batchSize);
+        batchTransaction = null;
+        batchRetryCount = 0;
+        batchRecoveryPolicy.reset();
+        return true;
+    }
+
+    @Override
     public boolean isActivelyProcessing() {
         if (batchTransaction == null) return false;
         BatchTransaction.State previous = batchTransaction.getState();

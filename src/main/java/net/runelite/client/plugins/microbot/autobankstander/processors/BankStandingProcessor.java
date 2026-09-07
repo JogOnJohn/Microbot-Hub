@@ -42,6 +42,15 @@ public interface BankStandingProcessor {
     default boolean recoverFromProcessingFailure() {
         return true;
     }
+
+    /**
+     * Reconcile processor-owned state after logout interrupted active work.
+     * Return true when the outer script must perform a full banking pass before
+     * processing resumes.
+     */
+    default boolean recoverAfterLogin() {
+        return false;
+    }
     
     /**
      * check if there are more items available to process

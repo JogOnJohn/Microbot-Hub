@@ -32,6 +32,7 @@ public class AutoBankStanderScript extends Script {
     private long stateStartTime = System.currentTimeMillis(); // remember when we started this state for timeout checking
     private volatile BankStandingProcessor processor;
     private final ProcessingRecoveryController recoveryController = new ProcessingRecoveryController();
+    private boolean forceProcessorBanking;
     private AutoBankStanderPlugin plugin;
     private final AtomicLong loopCount = new AtomicLong();
     private final AtomicLong sessionHerbsCleaned = new AtomicLong();
@@ -60,6 +61,8 @@ public class AutoBankStanderScript extends Script {
         this.loopCount.set(0);
         this.lastAction = "Starting";
         this.processor = null; // clear any existing processor
+        this.forceProcessorBanking = false;
+        this.recoveryController.reset();
         log.info("Starting Auto Bank Stander script with config: {}", configData);
         
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
@@ -81,12 +84,28 @@ public class AutoBankStanderScript extends Script {
                     lastAction = processor.getStatusMessage();
                     return;
                 }
+                if (!Microbot.isLoggedIn()) {
+                    recoveryController.observeLoggedOut();
+                }
                 boolean readyToRun = super.run();
                 ScriptHeartbeatRegistry.recordHeartbeat(PLUGIN_HEARTBEAT_KEY);
                 loopCount.incrementAndGet();
                 if (processor != null && Microbot.isLoggedIn()) {
                     processor.refreshDiagnostics();
                     captureProcessorStats();
+                }
+                ProcessingRecoveryController.LoginDecision loginDecision = Microbot.isLoggedIn()
+                        ? recoveryController.resumeAfterLogin(readyToRun, processor)
+                        : ProcessingRecoveryController.LoginDecision.CONTINUE;
+                if (loginDecision == ProcessingRecoveryController.LoginDecision.WAIT_FOR_SCRIPT_GUARD) {
+                    log.info("Login restored; waiting for script pause guard before recovery");
+                    return;
+                }
+                if (loginDecision == ProcessingRecoveryController.LoginDecision.FORCE_BANKING) {
+                    log.info("Login restored after interrupted processing - forcing banking reconciliation");
+                    forceProcessorBanking = true;
+                    changeState(AutoBankStanderState.BANKING);
+                    return;
                 }
                 if (!readyToRun) {
                     log.info("Super.run() returned false, stopping");
@@ -183,7 +202,7 @@ public class AutoBankStanderScript extends Script {
         }
         
         // check if we already have all the required items
-        if (processor.hasRequiredItems()) {
+        if (!forceProcessorBanking && processor.hasRequiredItems()) {
             log.info("Have all required items - switching to processing");
             Rs2Bank.closeBank(); // close the bank interface
             changeState(AutoBankStanderState.PROCESSING); // switch to processing mode
@@ -193,6 +212,7 @@ public class AutoBankStanderScript extends Script {
         // perform banking operations via processor
         boolean bankingSuccess = processor.performBanking();
         if (bankingSuccess) {
+            forceProcessorBanking = false;
             log.info("Banking complete - switching to processing");
             Rs2Bank.closeBank(); // close the bank interface
             changeState(AutoBankStanderState.PROCESSING); // switch to processing mode

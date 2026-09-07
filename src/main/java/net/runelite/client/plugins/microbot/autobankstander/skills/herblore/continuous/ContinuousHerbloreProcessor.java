@@ -112,6 +112,15 @@ public final class ContinuousHerbloreProcessor implements BankStandingProcessor 
     @Override public boolean performBanking() { return true; }
 
     @Override
+    public boolean recoverAfterLogin() {
+        if (phaseWorker == null || !phaseWorker.recoverAfterLogin()) return false;
+
+        log.info("Discarded interrupted {} worker after login; phase will reconcile through banking",
+                workerPhase);
+        return true;
+    }
+
+    @Override
     public boolean process() {
         long now = System.currentTimeMillis();
         if (saleWaitStage == SaleWaitStage.LOGOUT_BREAK && Microbot.isLoggedIn()) {

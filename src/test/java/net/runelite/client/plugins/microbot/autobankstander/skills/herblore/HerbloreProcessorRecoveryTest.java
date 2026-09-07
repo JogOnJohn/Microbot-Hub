@@ -31,6 +31,16 @@ public final class HerbloreProcessorRecoveryTest {
         set(processor, "batchTransaction", failedTransaction(4));
         expect(!processor.recoverFromProcessingFailure(),
                 "fourth consecutive terminal batch recovery must stop");
+
+        BatchTransaction interrupted = acknowledgedTransaction(5);
+        set(processor, "batchTransaction", interrupted);
+        set(processor, "batchRetryCount", 2);
+        expect(processor.recoverAfterLogin(),
+                "an interrupted in-flight batch should require banking reconciliation");
+        expect(get(processor, "batchTransaction") == null,
+                "login recovery must discard the stale pre-logout transaction");
+        expect((int) get(processor, "batchRetryCount") == 0,
+                "login recovery must clear pre-logout retries");
         System.out.println("HerbloreProcessorRecoveryTest PASSED");
     }
 
@@ -40,6 +50,15 @@ public final class HerbloreProcessorRecoveryTest {
                 new BatchTransaction.Observation(100, 14, 14, false, false),
                 1, 5, 12);
         transaction.observe(new BatchTransaction.Observation(105, 14, 14, false, false));
+        return transaction;
+    }
+
+    private static BatchTransaction acknowledgedTransaction(long generation) {
+        BatchTransaction transaction = new BatchTransaction(
+                generation,
+                new BatchTransaction.Observation(100, 14, 14, false, false),
+                1, 5, 12);
+        transaction.observe(new BatchTransaction.Observation(101, 8, 8, true, false));
         return transaction;
     }
 
