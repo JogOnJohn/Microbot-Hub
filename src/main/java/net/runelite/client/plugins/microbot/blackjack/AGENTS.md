@@ -27,6 +27,10 @@ Prioritize these `client.log` messages during smoke tests:
 - `Unexpected movement after pickpocket click`
 - `Idle full-inventory signal`
 - `Combat reset staged`
+- `Southern tent phase`
+- `Lure dispatched`
+- `Lure confirmed`
+- `Evicted Menaphite Thug released`
 - `Blackjack stopped`
 
 Do not infer a menu miss from a disappearing menu alone. Correlate the verified cursor point, target animation, dispatch time, overhead/chat result, and first pickpocket timing.
@@ -35,3 +39,9 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 - The standing lower-hull anchor is preserved across the Knock-Out animation by target index and world tile. While the target is unconscious, reuse the standing screen point when it remains safe, otherwise use the nearest hull point within the bounded correction radius. Discard it after repeated menu-resolution misses, target replacement, or target movement. Retain all live hull, viewport, and menu-entry checks.
 - Host source is authoritative for hot reload. `operator-work\scripts\build\blackjack-host-hot-reload.ps1` builds the host worktree, refuses active/enabled plugins, stages by verified hash, archives the previous guest artifact, and confirms a two-plugin reload. The guest `Blackjack Continuous Build` task is disabled and the guest checkout is a read-only synchronized mirror.
+
+## Pending Live Validation
+
+- Menaphite Thug startup now prepares the southern tent automatically. With no thug inside, it leaves through the exact outer curtain at `3350,2957,0`, finds a reachable thug, completes the Lure dialogue at a bounded pace, confirms sustained following, leads it to the main room, turns back, and closes the curtain.
+- If more than one Menaphite Thug is inside, the current target is retained where possible and one extra thug is lured outside. The script closes the curtain, waits for the evicted thug to stop following, re-enters, closes the curtain again, and reassesses until one thug remains. Street urchins and villagers are deliberately ignored.
+- These paths compile and package but remain gameplay-unverified. Preserve commit `527b3242564d` as the rollback baseline until both workflows pass live testing.

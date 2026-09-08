@@ -51,6 +51,9 @@ public class BlackjackScript extends Script
     private static final WorldArea SOUTH_THUG_TENT_REAR_ROOM = new WorldArea(3349, 2947, 3, 5, 0);
     private static final WorldPoint SOUTH_THUG_TENT_HALLWAY = new WorldPoint(3350, 2952, 0);
     private static final WorldPoint SOUTH_THUG_TENT_CENTRE = new WorldPoint(3349, 2954, 0);
+    private static final WorldArea SOUTH_THUG_LURE_SEARCH_AREA = new WorldArea(3346, 2942, 18, 25, 0);
+    private static final WorldPoint SOUTH_THUG_LURE_SEARCH_TILE = new WorldPoint(3350, 2959, 0);
+    private static final WorldPoint SOUTH_THUG_LURE_OUTSIDE_LEAD_TILE = new WorldPoint(3352, 2960, 0);
     private static final WorldPoint SOUTH_THUG_COMBAT_STAGING_TILE = new WorldPoint(3351, 2956, 0);
     private static final WorldPoint SOUTH_THUG_COMBAT_SAFE_TILE = new WorldPoint(3351, 2953, 0);
     private static final WorldPoint COMBAT_STAGING_TILE = new WorldPoint(3359, 2995, 0);
@@ -75,6 +78,7 @@ public class BlackjackScript extends Script
 
     private static final String PICKPOCKET_ACTION = "Pickpocket";
     private static final String KNOCKOUT_ACTION = "Knock-Out";
+    private static final String LURE_ACTION = "Lure";
 
     private static final long FAILED_KNOCKOUT_RETRY_MS = 450;
     private static final long PICKPOCKET_BURST_TIMEOUT_MS = 2_800;
@@ -121,6 +125,17 @@ public class BlackjackScript extends Script
     private static final long WINE_MERCHANT_RESOLUTION_TIMEOUT_MS = 12_000;
     private static final long WINE_EXIT_STATE_TIMEOUT_MS = 20_000;
     private static final long WINE_EXIT_DIAGNOSTIC_INTERVAL_MS = 1_000;
+    private static final long SOUTH_TENT_POPULATION_CHECK_MS = 500;
+    private static final long SOUTH_TENT_PREPARATION_TIMEOUT_MS = 120_000;
+    private static final long SOUTH_TENT_TRANSIT_TIMEOUT_MS = 20_000;
+    private static final long SOUTH_TENT_PHASE_TIMEOUT_MS = 12_000;
+    private static final long LURE_DIALOGUE_OPEN_TIMEOUT_MS = 4_000;
+    private static final long LURE_DIALOGUE_QUIET_MS = 700;
+    private static final long LURE_FOLLOW_CHECK_INTERVAL_MS = 500;
+    private static final long LURE_RELEASE_TIMEOUT_MS = 12_000;
+    private static final int LURE_MAX_ATTEMPTS = 5;
+    private static final int LURE_FOLLOW_CONFIRMATIONS_REQUIRED = 3;
+    private static final int LURE_FOLLOW_MAX_DISTANCE = 3;
     private static final int TARGET_CAMERA_PITCH = 332;
     private static final int TARGET_CAMERA_PITCH_TOLERANCE = 8;
     private static final long HUMANIZER_MOUSE_MIN_INTERVAL_MS = 45_000;
@@ -147,6 +162,32 @@ public class BlackjackScript extends Script
         REEQUIPPING,
         RECOVERING_WINE,
         FALLBACK
+    }
+
+    private enum SouthernTentLureMode
+    {
+        NONE,
+        INTO_TENT,
+        OUT_OF_TENT
+    }
+
+    private enum SouthernTentPhase
+    {
+        ASSESSING,
+        LEAVING_TO_SEARCH,
+        SEARCHING_TARGET,
+        APPROACHING_TARGET,
+        STARTING_LURE,
+        WAITING_FOR_DIALOGUE,
+        ADVANCING_DIALOGUE,
+        VERIFYING_FOLLOW,
+        MOVING_TO_CURTAIN,
+        OPENING_CURTAIN,
+        LEADING_THROUGH_CURTAIN,
+        POSITIONING_TO_CLOSE,
+        CLOSING_CURTAIN,
+        WAITING_FOR_RELEASE,
+        RETURNING_TO_TENT
     }
 
     private enum Outcome
@@ -204,6 +245,18 @@ public class BlackjackScript extends Script
     private int startXp;
     private int lastObservedThievingXp;
     private int targetIndex = -1;
+    private int southernTentLureTargetIndex = -1;
+    private SouthernTentLureMode southernTentLureMode = SouthernTentLureMode.NONE;
+    private SouthernTentPhase southernTentPhase = SouthernTentPhase.ASSESSING;
+    private long southernTentPhaseEnteredAt;
+    private long nextSouthernTentActionAt;
+    private long nextSouthernTentPopulationCheckAt;
+    private long lureDialogueLastSeenAt;
+    private long lureFollowNextCheckAt;
+    private long lureReleaseClearSince;
+    private int lureAttempts;
+    private int lureContinueClicks;
+    private int lureFollowConfirmations;
     private long stateEnteredAt;
     private long lastInteractionAt;
     private long lastDrinkAt;
@@ -292,6 +345,8 @@ public class BlackjackScript extends Script
         humanizerStatus = config.humanizerEnabled() ? "Scheduled" : "Disabled";
         humanizerEvents = 0;
         targetIndex = -1;
+        resetSouthernTentPreparation();
+        nextSouthernTentPopulationCheckAt = 0;
         npcInteractionSince = 0;
         ignoreCombatUntil = 0;
         knockoutClickIssuedAt = 0;
@@ -400,6 +455,12 @@ public class BlackjackScript extends Script
                     }
                 }
 
+                if (handleSouthernTentPopulationPriority())
+                {
+                    executeState();
+                    return;
+                }
+
                 if (state != BlackjackState.POSITIONING_COMBAT_RESET
                         && state != BlackjackState.ESCAPING_COMBAT
                         && state != BlackjackState.WAITING_FOR_COMBAT_CLEAR
@@ -439,6 +500,9 @@ public class BlackjackScript extends Script
                 break;
             case RETURNING_TO_HOUSE:
                 returnToHouse();
+                break;
+            case PREPARING_SOUTHERN_TENT:
+                prepareSouthernTent();
                 break;
             case FINDING_TARGET:
                 acquireTarget();
@@ -535,6 +599,12 @@ public class BlackjackScript extends Script
             return;
         }
 
+        if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
+        {
+            beginSouthernTentPreparation("Prepare southern tent");
+            return;
+        }
+
         if (!isInsideHouse())
         {
             transition(BlackjackState.RETURNING_TO_HOUSE, "Return to marked house");
@@ -545,6 +615,11 @@ public class BlackjackScript extends Script
 
     private void returnToHouse()
     {
+        if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
+        {
+            beginSouthernTentPreparation("Prepare southern tent");
+            return;
+        }
         if (isInsideHouse())
         {
             transition(BlackjackState.FINDING_TARGET, "Find level-appropriate target");
@@ -557,14 +632,929 @@ public class BlackjackScript extends Script
         }
     }
 
+    private boolean handleSouthernTentPopulationPriority()
+    {
+        if (selectedTarget() != BlackjackTarget.MENAPHITE_THUG
+                || state == BlackjackState.PREPARING_SOUTHERN_TENT
+                || (state != BlackjackState.FINDING_TARGET
+                && state != BlackjackState.KNOCKING_OUT
+                && state != BlackjackState.PICKPOCKETING
+                && state != BlackjackState.WAITING_FOR_TARGET_CLEAR))
+        {
+            return false;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now < nextSouthernTentPopulationCheckAt)
+        {
+            return false;
+        }
+        nextSouthernTentPopulationCheckAt = now + SOUTH_TENT_POPULATION_CHECK_MS;
+
+        List<Rs2NpcModel> occupants = southernTentTargets();
+        if (occupants.size() <= 1)
+        {
+            return false;
+        }
+
+        log.info("Southern tent population changed to {} Menaphite Thugs; pausing blackjack to evict one",
+                occupants.size());
+        beginSouthernTentPreparation("Remove extra Menaphite Thug from southern tent");
+        return true;
+    }
+
+    private void beginSouthernTentPreparation(String action)
+    {
+        if (state != BlackjackState.PREPARING_SOUTHERN_TENT)
+        {
+            resetSouthernTentPreparation();
+            resetActiveBlackjackCycleForTentPreparation();
+            transition(BlackjackState.PREPARING_SOUTHERN_TENT, action);
+            return;
+        }
+        nextAction = action;
+    }
+
+    private void prepareSouthernTent()
+    {
+        if (selectedTarget() != BlackjackTarget.MENAPHITE_THUG)
+        {
+            resetSouthernTentPreparation();
+            transition(BlackjackState.RETURNING_TO_HOUSE, "Return to marked Bandit house");
+            return;
+        }
+        if (elapsedInState() >= SOUTH_TENT_PREPARATION_TIMEOUT_MS)
+        {
+            fail("Southern tent preparation timed out");
+            return;
+        }
+
+        switch (southernTentPhase)
+        {
+            case ASSESSING:
+                assessSouthernTent();
+                break;
+            case LEAVING_TO_SEARCH:
+                transitSouthernTent(false);
+                break;
+            case SEARCHING_TARGET:
+                searchForSouthernLureTarget();
+                break;
+            case APPROACHING_TARGET:
+                approachSouthernLureTarget();
+                break;
+            case STARTING_LURE:
+                startSouthernLure();
+                break;
+            case WAITING_FOR_DIALOGUE:
+                waitForSouthernLureDialogue();
+                break;
+            case ADVANCING_DIALOGUE:
+                advanceSouthernLureDialogue();
+                break;
+            case VERIFYING_FOLLOW:
+                verifySouthernLureFollow();
+                break;
+            case MOVING_TO_CURTAIN:
+                moveLuredTargetToCurtain();
+                break;
+            case OPENING_CURTAIN:
+                openSouthernTentCurtainForLure();
+                break;
+            case LEADING_THROUGH_CURTAIN:
+                leadTargetThroughSouthernCurtain();
+                break;
+            case POSITIONING_TO_CLOSE:
+                positionToCloseSouthernCurtain();
+                break;
+            case CLOSING_CURTAIN:
+                closeSouthernCurtainAfterLure();
+                break;
+            case WAITING_FOR_RELEASE:
+                waitForEvictedTargetRelease();
+                break;
+            case RETURNING_TO_TENT:
+                transitSouthernTent(true);
+                break;
+            default:
+                setSouthernTentPhase(SouthernTentPhase.ASSESSING, "Reassess southern tent");
+                break;
+        }
+    }
+
+    private void assessSouthernTent()
+    {
+        List<Rs2NpcModel> occupants = southernTentTargets();
+        WorldPoint player = Rs2Player.getWorldLocation();
+        if (player == null)
+        {
+            nextAction = "Wait for player location";
+            return;
+        }
+
+        if (occupants.isEmpty())
+        {
+            targetIndex = -1;
+            targetDescription = expectedTargetDescription();
+            setSouthernTentPhase(isInsideSouthTent(player)
+                            ? SouthernTentPhase.LEAVING_TO_SEARCH
+                            : SouthernTentPhase.SEARCHING_TARGET,
+                    isInsideSouthTent(player)
+                            ? "Leave empty southern tent to find a thug"
+                            : "Find a Menaphite Thug to lure");
+            return;
+        }
+
+        if (occupants.size() == 1)
+        {
+            Rs2NpcModel occupant = occupants.get(0);
+            targetIndex = occupant.getIndex();
+            targetDescription = occupant.getName() + " (level " + occupant.getCombatLevel() + ")";
+
+            Rs2TileObjectModel closedCurtain = findSouthTentCurtain("Open");
+            if (isInsideSouthTent(player) && closedCurtain != null)
+            {
+                log.info("Southern tent prepared with one Menaphite Thug at {}", occupant.getWorldLocation());
+                resetSouthernTentPreparation();
+                transition(BlackjackState.FINDING_TARGET, "Use isolated Menaphite Thug");
+                return;
+            }
+
+            setSouthernTentPhase(SouthernTentPhase.RETURNING_TO_TENT,
+                    isInsideSouthTent(player)
+                            ? "Close southern tent curtain"
+                            : "Enter southern tent with existing thug");
+            return;
+        }
+
+        if (!isInsideSouthTent(player))
+        {
+            setSouthernTentPhase(SouthernTentPhase.RETURNING_TO_TENT,
+                    "Enter southern tent before removing extra thug");
+            return;
+        }
+
+        Rs2NpcModel retained = chooseRetainedSouthernTarget(occupants);
+        Rs2NpcModel extra = chooseExtraSouthernTarget(occupants, retained == null ? -1 : retained.getIndex());
+        if (retained == null || extra == null)
+        {
+            nextAction = "Wait for southern tent population to settle";
+            return;
+        }
+
+        targetIndex = retained.getIndex();
+        beginSouthernLure(SouthernTentLureMode.OUT_OF_TENT, extra,
+                "Lure extra Menaphite Thug outside");
+        log.info("Southern tent has {} thugs; retaining index={} at {} and evicting index={} at {}",
+                occupants.size(), retained.getIndex(), retained.getWorldLocation(),
+                extra.getIndex(), extra.getWorldLocation());
+    }
+
+    private void searchForSouthernLureTarget()
+    {
+        if (!southernTentTargets().isEmpty())
+        {
+            setSouthernTentPhase(SouthernTentPhase.ASSESSING,
+                    "A Menaphite Thug entered the southern tent");
+            return;
+        }
+
+        Rs2NpcModel candidate = findOutsideSouthernLureTarget();
+        if (candidate != null)
+        {
+            beginSouthernLure(SouthernTentLureMode.INTO_TENT, candidate,
+                    "Approach Menaphite Thug for Lure");
+            return;
+        }
+
+        WorldPoint player = Rs2Player.getWorldLocation();
+        if (player != null && player.distanceTo2D(SOUTH_THUG_LURE_SEARCH_TILE) > 2)
+        {
+            walkSouthernRoute(SOUTH_THUG_LURE_SEARCH_TILE, true,
+                    "Move outside southern tent to find a thug");
+            return;
+        }
+        nextAction = "Waiting for reachable Menaphite Thug near southern tent";
+    }
+
+    private void beginSouthernLure(SouthernTentLureMode mode, Rs2NpcModel target, String action)
+    {
+        southernTentLureMode = mode;
+        southernTentLureTargetIndex = target.getIndex();
+        lureAttempts = 0;
+        lureContinueClicks = 0;
+        lureFollowConfirmations = 0;
+        lureDialogueLastSeenAt = 0;
+        lureFollowNextCheckAt = 0;
+        lureReleaseClearSince = 0;
+        setSouthernTentPhase(SouthernTentPhase.APPROACHING_TARGET, action);
+    }
+
+    private void approachSouthernLureTarget()
+    {
+        Rs2NpcModel target = southernTentLureTarget();
+        if (target == null)
+        {
+            restartSouthernTentAssessment("Lure target disappeared while approaching");
+            return;
+        }
+        WorldPoint player = Rs2Player.getWorldLocation();
+        WorldPoint targetLocation = target.getWorldLocation();
+        if (player == null || targetLocation == null)
+        {
+            nextAction = "Wait for lure target location";
+            return;
+        }
+
+        if (player.distanceTo2D(targetLocation) <= 2 && target.hasLineOfSight())
+        {
+            setSouthernTentPhase(SouthernTentPhase.STARTING_LURE, "Use Lure on Menaphite Thug");
+            return;
+        }
+        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_TRANSIT_TIMEOUT_MS)
+        {
+            restartSouthernTentAssessment("Could not reach Menaphite Thug for Lure");
+            return;
+        }
+        walkSouthernRoute(targetLocation, true, "Approach Menaphite Thug for Lure");
+    }
+
+    private void startSouthernLure()
+    {
+        long now = System.currentTimeMillis();
+        if (now < nextSouthernTentActionAt)
+        {
+            return;
+        }
+
+        Rs2NpcModel target = southernTentLureTarget();
+        if (target == null)
+        {
+            restartSouthernTentAssessment("Lure target disappeared before interaction");
+            return;
+        }
+        if (lureAttempts >= LURE_MAX_ATTEMPTS)
+        {
+            restartSouthernTentAssessment("Lure was not accepted after " + lureAttempts + " attempts");
+            return;
+        }
+
+        lureAttempts++;
+        if (!target.click(LURE_ACTION))
+        {
+            nextSouthernTentActionAt = now + randomBetween(600, 951);
+            nextAction = "Retry Lure interaction (" + lureAttempts + "/" + LURE_MAX_ATTEMPTS + ")";
+            return;
+        }
+
+        lastInteractionAt = now;
+        lureContinueClicks = 0;
+        lureDialogueLastSeenAt = 0;
+        setSouthernTentPhase(SouthernTentPhase.WAITING_FOR_DIALOGUE,
+                "Wait for Lure dialogue (" + lureAttempts + "/" + LURE_MAX_ATTEMPTS + ")");
+        log.info("Lure dispatched: mode={} targetIndex={} attempt={}",
+                southernTentLureMode, southernTentLureTargetIndex, lureAttempts);
+    }
+
+    private void waitForSouthernLureDialogue()
+    {
+        if (Rs2Dialogue.isInDialogue())
+        {
+            lureDialogueLastSeenAt = System.currentTimeMillis();
+            nextSouthernTentActionAt = lureDialogueLastSeenAt + randomBetween(550, 901);
+            setSouthernTentPhase(SouthernTentPhase.ADVANCING_DIALOGUE,
+                    "Complete Lure dialogue deliberately");
+            return;
+        }
+        if (elapsedInSouthernTentPhase() >= LURE_DIALOGUE_OPEN_TIMEOUT_MS)
+        {
+            retrySouthernLure("Lure dialogue did not open");
+        }
+    }
+
+    private void advanceSouthernLureDialogue()
+    {
+        long now = System.currentTimeMillis();
+        if (Rs2Dialogue.isInDialogue())
+        {
+            lureDialogueLastSeenAt = now;
+            if (Rs2Dialogue.hasSelectAnOption())
+            {
+                nextAction = "Wait for known Lure dialogue continuation";
+                if (elapsedInSouthernTentPhase() >= SOUTH_TENT_PHASE_TIMEOUT_MS)
+                {
+                    retrySouthernLure("Unexpected option in Lure dialogue");
+                }
+                return;
+            }
+            if (Rs2Dialogue.hasContinue() && now >= nextSouthernTentActionAt)
+            {
+                Rs2Dialogue.clickContinue();
+                lureContinueClicks++;
+                lastInteractionAt = now;
+                nextSouthernTentActionAt = now + randomBetween(550, 901);
+                nextAction = "Continue Lure dialogue (" + lureContinueClicks + ")";
+            }
+            return;
+        }
+
+        if (lureContinueClicks == 0 || now - lureDialogueLastSeenAt < LURE_DIALOGUE_QUIET_MS)
+        {
+            nextAction = "Wait for Lure dialogue to settle";
+            return;
+        }
+
+        lureFollowConfirmations = 0;
+        lureFollowNextCheckAt = now + LURE_FOLLOW_CHECK_INTERVAL_MS;
+        setSouthernTentPhase(SouthernTentPhase.VERIFYING_FOLLOW,
+                "Confirm Menaphite Thug is following");
+    }
+
+    private void verifySouthernLureFollow()
+    {
+        long now = System.currentTimeMillis();
+        if (now < lureFollowNextCheckAt)
+        {
+            return;
+        }
+        lureFollowNextCheckAt = now + LURE_FOLLOW_CHECK_INTERVAL_MS;
+
+        Rs2NpcModel target = southernTentLureTarget();
+        WorldPoint player = Rs2Player.getWorldLocation();
+        WorldPoint targetLocation = target == null ? null : target.getWorldLocation();
+        boolean following = target != null
+                && player != null
+                && targetLocation != null
+                && target.isInteractingWithPlayer()
+                && player.distanceTo2D(targetLocation) <= LURE_FOLLOW_MAX_DISTANCE;
+        if (!following)
+        {
+            retrySouthernLure("Lure rejected or follow signal ended");
+            return;
+        }
+
+        lureFollowConfirmations++;
+        nextAction = "Confirm Lure follow " + lureFollowConfirmations
+                + "/" + LURE_FOLLOW_CONFIRMATIONS_REQUIRED;
+        if (lureFollowConfirmations < LURE_FOLLOW_CONFIRMATIONS_REQUIRED)
+        {
+            return;
+        }
+
+        Rs2Player.toggleRunEnergy(false);
+        setSouthernTentPhase(SouthernTentPhase.MOVING_TO_CURTAIN,
+                southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                        ? "Lead Menaphite Thug to southern curtain"
+                        : "Lead extra Menaphite Thug to southern curtain");
+        log.info("Lure confirmed after {} sustained follow checks: mode={} targetIndex={}",
+                lureFollowConfirmations, southernTentLureMode, southernTentLureTargetIndex);
+    }
+
+    private void retrySouthernLure(String reason)
+    {
+        log.warn("{}: mode={} targetIndex={} attempt={}/{}",
+                reason, southernTentLureMode, southernTentLureTargetIndex,
+                lureAttempts, LURE_MAX_ATTEMPTS);
+        lureContinueClicks = 0;
+        lureFollowConfirmations = 0;
+        lureDialogueLastSeenAt = 0;
+        lureFollowNextCheckAt = 0;
+        nextSouthernTentActionAt = System.currentTimeMillis() + randomBetween(600, 951);
+        if (lureAttempts >= LURE_MAX_ATTEMPTS || southernTentLureTarget() == null)
+        {
+            restartSouthernTentAssessment(reason);
+            return;
+        }
+        setSouthernTentPhase(SouthernTentPhase.STARTING_LURE,
+                "Retry Lure (" + (lureAttempts + 1) + "/" + LURE_MAX_ATTEMPTS + ")");
+    }
+
+    private void moveLuredTargetToCurtain()
+    {
+        Rs2NpcModel target = southernTentLureTarget();
+        if (target == null)
+        {
+            restartSouthernTentAssessment("Lured target disappeared before curtain");
+            return;
+        }
+        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_TRANSIT_TIMEOUT_MS)
+        {
+            retrySouthernLure("Lured target did not reach southern curtain");
+            return;
+        }
+
+        WorldPoint player = Rs2Player.getWorldLocation();
+        WorldPoint targetLocation = target.getWorldLocation();
+        if (player == null || targetLocation == null)
+        {
+            nextAction = "Wait for lure route location";
+            return;
+        }
+        if (target.isInteractingWithPlayer()
+                && player.distanceTo2D(targetLocation) > LURE_FOLLOW_MAX_DISTANCE)
+        {
+            nextAction = "Wait for lured thug to catch up";
+            return;
+        }
+
+        WorldPoint approach = southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                ? SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE
+                : SOUTH_THUG_WINE_DOOR_INSIDE_TILE;
+        if (player.distanceTo2D(approach) <= 1)
+        {
+            setSouthernTentPhase(SouthernTentPhase.OPENING_CURTAIN,
+                    "Open southern curtain for lured thug");
+            return;
+        }
+        walkSouthernRoute(approach, false, "Walk lured thug to southern curtain");
+    }
+
+    private void openSouthernTentCurtainForLure()
+    {
+        if (findSouthTentCurtain("Close") != null)
+        {
+            setSouthernTentPhase(SouthernTentPhase.LEADING_THROUGH_CURTAIN,
+                    southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                            ? "Lead Menaphite Thug inside"
+                            : "Lead extra Menaphite Thug outside");
+            return;
+        }
+
+        Rs2TileObjectModel closedCurtain = findSouthTentCurtain("Open");
+        if (closedCurtain != null)
+        {
+            interactWithSouthTentCurtain(closedCurtain, "Open", "Open southern curtain for Lure");
+            return;
+        }
+        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_PHASE_TIMEOUT_MS)
+        {
+            restartSouthernTentAssessment("Southern curtain could not be opened for Lure");
+            return;
+        }
+        nextAction = "Wait for southern curtain to resolve";
+    }
+
+    private void leadTargetThroughSouthernCurtain()
+    {
+        Rs2NpcModel target = southernTentLureTarget();
+        if (target == null)
+        {
+            restartSouthernTentAssessment("Lured target disappeared while crossing curtain");
+            return;
+        }
+        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_TRANSIT_TIMEOUT_MS)
+        {
+            restartSouthernTentAssessment("Lured target did not cross southern curtain");
+            return;
+        }
+
+        WorldPoint player = Rs2Player.getWorldLocation();
+        WorldPoint targetLocation = target.getWorldLocation();
+        if (player == null || targetLocation == null)
+        {
+            nextAction = "Wait for curtain crossing location";
+            return;
+        }
+        if (target.isInteractingWithPlayer()
+                && player.distanceTo2D(targetLocation) > LURE_FOLLOW_MAX_DISTANCE)
+        {
+            nextAction = "Wait for lured thug at southern curtain";
+            return;
+        }
+
+        WorldPoint destination = southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                ? SOUTH_THUG_TENT_CENTRE
+                : SOUTH_THUG_LURE_OUTSIDE_LEAD_TILE;
+        boolean playerCrossed = southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                ? isInsideSouthTent(player)
+                : !isInsideSouthTent(player);
+        boolean targetCrossed = southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                ? isInsideSouthTent(targetLocation)
+                : !isInsideSouthTent(targetLocation);
+        if (playerCrossed && targetCrossed && player.distanceTo2D(destination) <= 1)
+        {
+            setSouthernTentPhase(SouthernTentPhase.POSITIONING_TO_CLOSE,
+                    "Turn back to close southern curtain");
+            return;
+        }
+        walkSouthernRoute(destination, false,
+                southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                        ? "Lead Menaphite Thug a few tiles inside"
+                        : "Lead extra Menaphite Thug a few tiles outside");
+    }
+
+    private void positionToCloseSouthernCurtain()
+    {
+        Rs2NpcModel target = southernTentLureTarget();
+        WorldPoint player = Rs2Player.getWorldLocation();
+        WorldPoint targetLocation = target == null ? null : target.getWorldLocation();
+        if (target == null || player == null || targetLocation == null)
+        {
+            restartSouthernTentAssessment("Lured target disappeared before closing curtain");
+            return;
+        }
+
+        boolean targetOnRequiredSide = southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                ? isInsideSouthTent(targetLocation)
+                : !isInsideSouthTent(targetLocation);
+        if (!targetOnRequiredSide)
+        {
+            nextAction = "Wait for lured thug to clear southern curtain";
+            if (elapsedInSouthernTentPhase() >= SOUTH_TENT_PHASE_TIMEOUT_MS)
+            {
+                restartSouthernTentAssessment("Lured target crossed back through southern curtain");
+            }
+            return;
+        }
+
+        WorldPoint closePosition = southernTentLureMode == SouthernTentLureMode.INTO_TENT
+                ? SOUTH_THUG_WINE_DOOR_INSIDE_TILE
+                : SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE;
+        if (player.distanceTo2D(closePosition) <= 1)
+        {
+            setSouthernTentPhase(SouthernTentPhase.CLOSING_CURTAIN,
+                    "Close southern curtain after Lure");
+            return;
+        }
+        walkSouthernRoute(closePosition,
+                southernTentLureMode == SouthernTentLureMode.OUT_OF_TENT,
+                "Turn back toward southern curtain");
+    }
+
+    private void closeSouthernCurtainAfterLure()
+    {
+        if (findSouthTentCurtain("Open") != null)
+        {
+            if (southernTentLureMode == SouthernTentLureMode.OUT_OF_TENT)
+            {
+                lureReleaseClearSince = 0;
+                setSouthernTentPhase(SouthernTentPhase.WAITING_FOR_RELEASE,
+                        "Wait for evicted thug to stop following");
+            }
+            else
+            {
+                finishSouthernLureIntoTent();
+            }
+            return;
+        }
+
+        Rs2TileObjectModel openCurtain = findSouthTentCurtain("Close");
+        if (openCurtain != null)
+        {
+            interactWithSouthTentCurtain(openCurtain, "Close", "Close southern curtain after Lure");
+            return;
+        }
+        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_PHASE_TIMEOUT_MS)
+        {
+            restartSouthernTentAssessment("Southern curtain could not be closed after Lure");
+            return;
+        }
+        nextAction = "Confirm southern curtain closed";
+    }
+
+    private void finishSouthernLureIntoTent()
+    {
+        Rs2NpcModel target = southernTentLureTarget();
+        if (target != null && isInsideSouthTent(target.getWorldLocation()))
+        {
+            targetIndex = target.getIndex();
+        }
+        log.info("Menaphite Thug secured inside southern tent: targetIndex={}", targetIndex);
+        southernTentLureMode = SouthernTentLureMode.NONE;
+        southernTentLureTargetIndex = -1;
+        setSouthernTentPhase(SouthernTentPhase.ASSESSING,
+                "Verify isolated Menaphite Thug");
+    }
+
+    private void waitForEvictedTargetRelease()
+    {
+        Rs2NpcModel target = southernTentLureTarget();
+        long now = System.currentTimeMillis();
+        if (target == null || !target.isInteractingWithPlayer())
+        {
+            if (lureReleaseClearSince == 0)
+            {
+                lureReleaseClearSince = now;
+            }
+            if (now - lureReleaseClearSince >= LURE_DIALOGUE_QUIET_MS)
+            {
+                log.info("Evicted Menaphite Thug released outside southern tent: targetIndex={}",
+                        southernTentLureTargetIndex);
+                southernTentLureMode = SouthernTentLureMode.NONE;
+                southernTentLureTargetIndex = -1;
+                setSouthernTentPhase(SouthernTentPhase.RETURNING_TO_TENT,
+                        "Return inside to retained Menaphite Thug");
+            }
+            return;
+        }
+
+        lureReleaseClearSince = 0;
+        nextAction = "Wait outside for evicted thug to stop following";
+        if (elapsedInSouthernTentPhase() >= LURE_RELEASE_TIMEOUT_MS)
+        {
+            fail("Evicted Menaphite Thug did not stop following outside southern tent");
+        }
+    }
+
+    private void transitSouthernTent(boolean entering)
+    {
+        WorldPoint player = Rs2Player.getWorldLocation();
+        if (player == null)
+        {
+            nextAction = "Wait for southern curtain transit location";
+            return;
+        }
+        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_TRANSIT_TIMEOUT_MS)
+        {
+            fail(entering
+                    ? "Unable to enter southern tent during preparation"
+                    : "Unable to leave southern tent to find a thug");
+            return;
+        }
+
+        boolean inside = isInsideSouthTent(player);
+        Rs2TileObjectModel closedCurtain = findSouthTentCurtain("Open");
+        Rs2TileObjectModel openCurtain = findSouthTentCurtain("Close");
+        if (entering)
+        {
+            if (inside)
+            {
+                if (closedCurtain != null)
+                {
+                    setSouthernTentPhase(SouthernTentPhase.ASSESSING,
+                            "Reassess secured southern tent");
+                }
+                else if (openCurtain != null)
+                {
+                    if (player.distanceTo2D(SOUTH_THUG_WINE_DOOR_INSIDE_TILE) > 2)
+                    {
+                        walkSouthernRoute(SOUTH_THUG_WINE_DOOR_INSIDE_TILE, true,
+                                "Approach southern curtain from inside");
+                    }
+                    else
+                    {
+                        interactWithSouthTentCurtain(openCurtain, "Close",
+                                "Close southern curtain behind player");
+                    }
+                }
+                else
+                {
+                    nextAction = "Wait for southern curtain after entering";
+                }
+                return;
+            }
+
+            if (player.distanceTo2D(SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE) > 2)
+            {
+                walkSouthernRoute(SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE, true,
+                        "Approach southern curtain");
+                return;
+            }
+
+            if (openCurtain != null)
+            {
+                walkSouthernRoute(SOUTH_THUG_TENT_CENTRE, true,
+                        "Step inside southern tent");
+            }
+            else if (closedCurtain != null)
+            {
+                interactWithSouthTentCurtain(closedCurtain, "Open",
+                        "Open southern curtain to enter");
+            }
+            else
+            {
+                nextAction = "Wait for southern curtain to enter";
+            }
+            return;
+        }
+
+        if (inside && player.distanceTo2D(SOUTH_THUG_WINE_DOOR_INSIDE_TILE) > 2)
+        {
+            walkSouthernRoute(SOUTH_THUG_WINE_DOOR_INSIDE_TILE, true,
+                    "Approach southern curtain from inside");
+            return;
+        }
+
+        if (!inside)
+        {
+            if (openCurtain != null)
+            {
+                interactWithSouthTentCurtain(openCurtain, "Close",
+                        "Close empty southern tent before searching");
+            }
+            else if (closedCurtain != null)
+            {
+                setSouthernTentPhase(SouthernTentPhase.SEARCHING_TARGET,
+                        "Find a Menaphite Thug to lure");
+            }
+            else
+            {
+                nextAction = "Wait for southern curtain after leaving";
+            }
+            return;
+        }
+
+        if (openCurtain != null)
+        {
+            walkSouthernRoute(SOUTH_THUG_LURE_SEARCH_TILE, true,
+                    "Step outside empty southern tent");
+        }
+        else if (closedCurtain != null)
+        {
+            interactWithSouthTentCurtain(closedCurtain, "Open",
+                    "Open southern curtain to search outside");
+        }
+        else
+        {
+            nextAction = "Wait for southern curtain to leave";
+        }
+    }
+
+    private void walkSouthernRoute(WorldPoint destination, boolean run, String action)
+    {
+        long now = System.currentTimeMillis();
+        if (now < nextSouthernTentActionAt || Rs2Player.isMoving())
+        {
+            return;
+        }
+        boolean dispatched = Rs2Walker.walkFastCanvas(destination, run);
+        if (!dispatched)
+        {
+            dispatched = Rs2Walker.walkTo(destination, 0);
+        }
+        lastInteractionAt = now;
+        nextSouthernTentActionAt = now + randomBetween(550, 851);
+        nextAction = action;
+        log.debug("Southern tent walk dispatched={} destination={} run={} phase={}",
+                dispatched, destination, run, southernTentPhase);
+    }
+
+    private boolean interactWithSouthTentCurtain(
+            Rs2TileObjectModel curtain, String action, String description)
+    {
+        long now = System.currentTimeMillis();
+        if (curtain == null || now < nextSouthernTentActionAt
+                || !readyForInteraction(DOOR_INTERACTION_DELAY_MS))
+        {
+            return false;
+        }
+        if (!curtain.click(action))
+        {
+            nextSouthernTentActionAt = now + randomBetween(500, 801);
+            return false;
+        }
+        lastInteractionAt = now;
+        nextSouthernTentActionAt = now + randomBetween(650, 951);
+        nextAction = description;
+        log.info("Southern curtain action dispatched: action={} phase={} player={}",
+                action, southernTentPhase, Rs2Player.getWorldLocation());
+        return true;
+    }
+
+    private Rs2NpcModel chooseRetainedSouthernTarget(List<Rs2NpcModel> occupants)
+    {
+        for (Rs2NpcModel occupant : occupants)
+        {
+            if (occupant.getIndex() == targetIndex)
+            {
+                return occupant;
+            }
+        }
+        return occupants.stream()
+                .max(Comparator.comparingInt(npc -> npc.getWorldLocation()
+                        .distanceTo2D(SOUTH_THUG_WINE_CURTAIN_TILE)))
+                .orElse(null);
+    }
+
+    private Rs2NpcModel chooseExtraSouthernTarget(List<Rs2NpcModel> occupants, int retainedIndex)
+    {
+        return occupants.stream()
+                .filter(npc -> npc.getIndex() != retainedIndex)
+                .min(Comparator
+                        .comparingInt((Rs2NpcModel npc) ->
+                                npc.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS ? 1 : 0)
+                        .thenComparingInt(npc -> npc.getWorldLocation()
+                                .distanceTo2D(SOUTH_THUG_WINE_CURTAIN_TILE)))
+                .orElse(null);
+    }
+
+    private Rs2NpcModel findOutsideSouthernLureTarget()
+    {
+        return Microbot.getRs2NpcCache().query()
+                .where(npc -> isSelectedTargetType(npc)
+                        && SOUTH_THUG_LURE_SEARCH_AREA.contains(npc.getWorldLocation())
+                        && !isInsideSouthTent(npc.getWorldLocation())
+                        && npc.hasLineOfSight())
+                .toListOnClientThread().stream()
+                .min(Comparator.comparingInt(Rs2NpcModel::getDistanceFromPlayer))
+                .orElse(null);
+    }
+
+    private List<Rs2NpcModel> southernTentTargets()
+    {
+        return Microbot.getRs2NpcCache().query()
+                .where(npc -> isSelectedTargetType(npc)
+                        && isInsideSouthTent(npc.getWorldLocation()))
+                .toListOnClientThread();
+    }
+
+    private Rs2NpcModel southernTentLureTarget()
+    {
+        if (southernTentLureTargetIndex < 0)
+        {
+            return null;
+        }
+        return Microbot.getRs2NpcCache().query()
+                .where(npc -> npc.getIndex() == southernTentLureTargetIndex
+                        && isSelectedTargetType(npc))
+                .nearestOnClientThread();
+    }
+
+    private void restartSouthernTentAssessment(String reason)
+    {
+        log.warn("Southern tent preparation recovery: {}", reason);
+        southernTentLureMode = SouthernTentLureMode.NONE;
+        southernTentLureTargetIndex = -1;
+        lureContinueClicks = 0;
+        lureFollowConfirmations = 0;
+        lureDialogueLastSeenAt = 0;
+        lureFollowNextCheckAt = 0;
+        lureReleaseClearSince = 0;
+        setSouthernTentPhase(SouthernTentPhase.ASSESSING, "Recover: " + reason);
+    }
+
+    private void setSouthernTentPhase(SouthernTentPhase phase, String action)
+    {
+        if (southernTentPhase != phase)
+        {
+            log.info("Southern tent phase {} -> {} ({})", southernTentPhase, phase, action);
+            southernTentPhase = phase;
+            southernTentPhaseEnteredAt = System.currentTimeMillis();
+        }
+        nextAction = action;
+        Microbot.status = "Blackjack: " + action;
+    }
+
+    private long elapsedInSouthernTentPhase()
+    {
+        return System.currentTimeMillis() - southernTentPhaseEnteredAt;
+    }
+
+    private void resetSouthernTentPreparation()
+    {
+        southernTentLureTargetIndex = -1;
+        southernTentLureMode = SouthernTentLureMode.NONE;
+        southernTentPhase = SouthernTentPhase.ASSESSING;
+        southernTentPhaseEnteredAt = System.currentTimeMillis();
+        nextSouthernTentActionAt = 0;
+        lureDialogueLastSeenAt = 0;
+        lureFollowNextCheckAt = 0;
+        lureReleaseClearSince = 0;
+        lureAttempts = 0;
+        lureContinueClicks = 0;
+        lureFollowConfirmations = 0;
+    }
+
+    private void resetActiveBlackjackCycleForTentPreparation()
+    {
+        knockoutResult = KnockoutResult.NONE;
+        knockoutClickIssuedAt = 0;
+        knockoutBurstReleaseAt = 0;
+        knockoutFallbackReleased = false;
+        pickpocketBurstStartedAt = 0;
+        nextPickpocketClickAt = 0;
+        lastPickpocketClickAt = 0;
+        nextKnockoutArmedAt = 0;
+        secondPickpocketInteractionSeen = false;
+        secondPickpocketInteractionComplete = false;
+        pendingInventoryFullAt = 0;
+        picksThisKnockout = 0;
+        burstClickPoint = null;
+        clearStandingClickAnchor();
+    }
+
     private void acquireTarget()
     {
+        if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
+        {
+            List<Rs2NpcModel> occupants = southernTentTargets();
+            if (occupants.size() != 1 || isSouthTentCurtainOpen())
+            {
+                beginSouthernTentPreparation(occupants.isEmpty()
+                        ? "Lure a Menaphite Thug into the southern tent"
+                        : occupants.size() > 1
+                        ? "Remove extra Menaphite Thug from southern tent"
+                        : "Secure southern tent curtain");
+                return;
+            }
+        }
+
         Rs2NpcModel target = findEligibleTarget();
         if (target == null)
         {
             targetIndex = -1;
             targetDescription = expectedTargetDescription();
-            nextAction = "Waiting for pre-lured target";
+            nextAction = "Waiting for selected target";
             if (elapsedInState() > 30_000)
             {
                 fail("No eligible target in marked house");
@@ -1713,23 +2703,7 @@ public class BlackjackScript extends Script
         Rs2TileObjectModel door;
         if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
         {
-            int expectedId;
-            if ("Open".equalsIgnoreCase(action))
-            {
-                expectedId = CLOSED_CURTAIN_ID;
-            }
-            else if ("Close".equalsIgnoreCase(action))
-            {
-                expectedId = OPEN_CURTAIN_ID;
-            }
-            else
-            {
-                return null;
-            }
-            door = Microbot.getRs2TileObjectCache().query()
-                    .withId(expectedId)
-                    .where(object -> SOUTH_THUG_WINE_CURTAIN_TILE.equals(object.getWorldLocation()))
-                    .first();
+            door = findSouthTentCurtain(action);
         }
         else
         {
@@ -1749,6 +2723,32 @@ public class BlackjackScript extends Script
             wineDoorMissingSince = 0;
         }
         return door;
+    }
+
+    private Rs2TileObjectModel findSouthTentCurtain(String action)
+    {
+        int expectedId;
+        if ("Open".equalsIgnoreCase(action))
+        {
+            expectedId = CLOSED_CURTAIN_ID;
+        }
+        else if ("Close".equalsIgnoreCase(action))
+        {
+            expectedId = OPEN_CURTAIN_ID;
+        }
+        else
+        {
+            return null;
+        }
+        return Microbot.getRs2TileObjectCache().query()
+                .withId(expectedId)
+                .where(object -> SOUTH_THUG_WINE_CURTAIN_TILE.equals(object.getWorldLocation()))
+                .first();
+    }
+
+    private boolean isSouthTentCurtainOpen()
+    {
+        return findSouthTentCurtain("Close") != null;
     }
 
     private boolean hasObjectAction(Rs2TileObjectModel object, String action)
@@ -2185,8 +3185,12 @@ public class BlackjackScript extends Script
 
     private boolean isEligibleTarget(Rs2NpcModel npc)
     {
-        if (npc == null || npc.getName() == null || npc.getWorldLocation() == null
-                || !isInsideActiveHouse(npc.getWorldLocation()))
+        return isSelectedTargetType(npc) && isInsideActiveHouse(npc.getWorldLocation());
+    }
+
+    private boolean isSelectedTargetType(Rs2NpcModel npc)
+    {
+        if (npc == null || npc.getName() == null || npc.getWorldLocation() == null)
         {
             return false;
         }
@@ -2275,9 +3279,15 @@ public class BlackjackScript extends Script
         {
             return BANDIT_HOUSE.contains(location);
         }
-        return SOUTH_THUG_TENT_MAIN_ROOM.contains(location)
+        return isInsideSouthTent(location);
+    }
+
+    private boolean isInsideSouthTent(WorldPoint location)
+    {
+        return location != null
+                && (SOUTH_THUG_TENT_MAIN_ROOM.contains(location)
                 || SOUTH_THUG_TENT_REAR_ROOM.contains(location)
-                || SOUTH_THUG_TENT_HALLWAY.equals(location);
+                || SOUTH_THUG_TENT_HALLWAY.equals(location));
     }
 
     private WorldPoint activeHouseCentre()
@@ -3388,6 +4398,8 @@ public class BlackjackScript extends Script
                     .anyMatch(npc -> npc != null && npc.getNpc() != null
                             && npc.getNpc().getWorldLocation() != null
                             && isInsideActiveHouse(npc.getNpc().getWorldLocation())
+                            && !(state == BlackjackState.PREPARING_SOUTHERN_TENT
+                            && npc.getIndex() == southernTentLureTargetIndex)
                             && npc.getNpc().getInteracting() == player);
         }).orElse(false);
     }
