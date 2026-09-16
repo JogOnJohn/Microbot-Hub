@@ -39,4 +39,14 @@ public interface AutoHunterConfig extends Config {
     default boolean humanizerEnabled() {
         return true;
     }
+
+    @ConfigItem(
+            position = 4,
+            keyName = "avoidOccupiedWorlds",
+            name = "Avoid occupied worlds",
+            description = "After login or a world change, scan for competing hunters and prefer a safe Australian world"
+    )
+    default boolean avoidOccupiedWorlds() {
+        return true;
+    }
 }

@@ -19,6 +19,15 @@ class AutoHunterPlannerTest {
     }
 
     @Test
+    void identifiesCompetingHuntersWithoutTreatingPassersByAsOccupied() {
+        assertTrue(AutoHunterPlanner.isHuntingAreaOccupied(1, 1, false));
+        assertTrue(AutoHunterPlanner.isHuntingAreaOccupied(0, 2, false));
+        assertTrue(AutoHunterPlanner.isHuntingAreaOccupied(1, 0, true));
+        assertFalse(AutoHunterPlanner.isHuntingAreaOccupied(1, 0, false));
+        assertFalse(AutoHunterPlanner.isHuntingAreaOccupied(0, 1, false));
+    }
+
+    @Test
     void derivesNormalBoxTrapLimit() {
         assertEquals(1, AutoHunterPlanner.normalBoxTrapLimit(19));
         assertEquals(2, AutoHunterPlanner.normalBoxTrapLimit(20));

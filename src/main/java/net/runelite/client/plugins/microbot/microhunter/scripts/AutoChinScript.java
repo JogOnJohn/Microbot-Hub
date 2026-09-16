@@ -23,12 +23,18 @@ import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.player.Rs2PlayerModel;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
+import net.runelite.http.api.worlds.World;
+import net.runelite.http.api.worlds.WorldRegion;
+import net.runelite.http.api.worlds.WorldResult;
+import net.runelite.http.api.worlds.WorldType;
 
 import java.awt.Rectangle;
 import java.awt.Polygon;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +51,9 @@ public class AutoChinScript extends Script {
         MOVING,
         REACTING,
         WAITING_FOR_CONFIRMATION,
+        SCANNING_HUNTING_AREA,
+        HOPPING_WORLD,
+        VERIFYING_WORLD,
         BREAK_PENDING,
         STOPPED
     }
@@ -68,6 +77,17 @@ public class AutoChinScript extends Script {
     private static final long SPAWN_EXPIRY_MS = 600_000;
     private static final long MOUSE_WANDER_MIN_INTERVAL_MS = 45_000;
     private static final long MOUSE_WANDER_MAX_INTERVAL_MS = 120_001;
+    private static final long LOGIN_SCENE_SETTLE_MS = 1_800;
+    private static final long OCCUPANCY_SCAN_MS = 7_000;
+    private static final long PLAYER_PERSISTENCE_MS = 3_500;
+    private static final long WORLD_HOP_TIMEOUT_MS = 15_000;
+    private static final long REJECTED_WORLD_COOLDOWN_MS = 600_000;
+    private static final int MAX_WORLD_HOP_ATTEMPTS = 5;
+    private static final EnumSet<WorldType> UNSAFE_WORLD_TYPES = EnumSet.of(
+            WorldType.PVP, WorldType.BOUNTY, WorldType.PVP_ARENA, WorldType.SKILL_TOTAL,
+            WorldType.QUEST_SPEEDRUNNING, WorldType.HIGH_RISK, WorldType.LAST_MAN_STANDING,
+            WorldType.BETA_WORLD, WorldType.LEGACY_ONLY, WorldType.EOC_ONLY, WorldType.NOSAVE_MODE,
+            WorldType.TOURNAMENT, WorldType.FRESH_START_WORLD, WorldType.DEADMAN, WorldType.SEASONAL);
     private final Set<WorldPoint> managedTiles = ConcurrentHashMap.newKeySet();
     private final List<WorldPoint> layoutSlots = new ArrayList<>();
     private final Map<WorldPoint, SpawnObservation> spawnObservations = new ConcurrentHashMap<>();
@@ -105,6 +125,17 @@ public class AutoChinScript extends Script {
     private WorldPoint preparedTrapTile;
     private long preparedTrapExpiresAt;
     private boolean preparedTrapNeedsReacquire;
+    private final Map<Integer, Long> rejectedWorlds = new ConcurrentHashMap<>();
+    private boolean wasLoggedIn;
+    private boolean worldArrivalPending;
+    private int observedWorld = -1;
+    private long scanReadyAt;
+    private long scanEndsAt;
+    private long nearbyPlayerSeenSince;
+    private int worldHopAttempts;
+    private int hopTargetWorld = -1;
+    private int hopSourceWorld = -1;
+    private long hopStartedAt;
 
     public boolean run(AutoHunterConfig config) {
         resetSession();
@@ -147,20 +178,52 @@ public class AutoChinScript extends Script {
         lastCanvasMoveAt = 0;
         clearPreparedTrap();
         clearDelayedAction();
+        rejectedWorlds.clear();
+        wasLoggedIn = false;
+        worldArrivalPending = false;
+        observedWorld = -1;
+        worldHopAttempts = 0;
+        hopTargetWorld = -1;
+        hopSourceWorld = -1;
+        hopStartedAt = 0;
     }
 
     private void pulse(AutoHunterConfig config) {
         try {
-            if (!Microbot.isLoggedIn() || !super.run()) return;
+            if (!Microbot.isLoggedIn()) {
+                wasLoggedIn = false;
+                return;
+            }
+            int currentWorld = Microbot.getClient().getWorld();
+            if (!wasLoggedIn || currentWorld != observedWorld) {
+                observedWorld = currentWorld;
+                worldArrivalPending = true;
+            }
+            wasLoggedIn = true;
+            if (!super.run()) return;
             if (currentState == State.STOPPED) return;
+
+            huntingRadius = Math.max(1, config.huntingRadius());
+            humanizerEnabled = config.humanizerEnabled();
+            if (worldArrivalPending) {
+                beginWorldArrival(config, currentWorld);
+                worldArrivalPending = false;
+            }
+            if (currentState == State.HOPPING_WORLD) {
+                monitorWorldHop();
+                return;
+            }
+            if (currentState == State.SCANNING_HUNTING_AREA
+                    || currentState == State.VERIFYING_WORLD) {
+                scanHuntingArea(config);
+                return;
+            }
 
             if (startTile == null) {
                 startTile = Rs2Player.getWorldLocation();
                 baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
             }
 
-            huntingRadius = Math.max(1, config.huntingRadius());
-            humanizerEnabled = config.humanizerEnabled();
             if (Microbot.getClient().isMenuOpen()) {
                 clearPreparedTrap();
             } else if (Rs2Player.isMoving() && preparedTrapTile != null) {
@@ -212,6 +275,172 @@ public class AutoChinScript extends Script {
         } catch (Exception ex) {
             Microbot.logStackTrace(getClass().getSimpleName(), ex);
         }
+    }
+
+    private void beginWorldArrival(AutoHunterConfig config, int world) {
+        boolean verifyingHop = hopSourceWorld > 0 && world != hopSourceWorld;
+        clearWorldSessionState();
+        startTile = Rs2Player.getWorldLocation();
+        baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
+        hopTargetWorld = -1;
+        hopSourceWorld = -1;
+        hopStartedAt = 0;
+        nearbyPlayerSeenSince = 0;
+        if (!config.avoidOccupiedWorlds()) {
+            worldHopAttempts = 0;
+            transition(State.MONITORING, "World occupancy scan disabled");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        scanReadyAt = now + LOGIN_SCENE_SETTLE_MS;
+        scanEndsAt = now + OCCUPANCY_SCAN_MS;
+        transition(verifyingHop ? State.VERIFYING_WORLD : State.SCANNING_HUNTING_AREA,
+                "Waiting for world " + world + " scene to settle");
+        Microbot.log("AutoHunter occupancy: scanning world " + world
+                + (verifyingHop ? " after hop" : " after login"));
+    }
+
+    private void clearWorldSessionState() {
+        managedTiles.clear();
+        layoutSlots.clear();
+        spawnObservations.clear();
+        observedTrapSignatures.clear();
+        pending = null;
+        moveTarget = null;
+        moveTargetStartedAt = 0;
+        moveTargetClickAttempts = 0;
+        blockedSetupTile = null;
+        blockedSetupTileUntil = 0;
+        layoutCenter = null;
+        bestSpawnTile = null;
+        bestRingTile = null;
+        spawnSummary = "none";
+        activeTraps = 0;
+        clearPreparedTrap();
+        clearDelayedAction();
+    }
+
+    private void scanHuntingArea(AutoHunterConfig config) {
+        long now = System.currentTimeMillis();
+        if (now < scanReadyAt) return;
+        WorldPoint center = startTile == null ? Rs2Player.getWorldLocation() : startTile;
+        if (center == null) {
+            transition(currentState, "Waiting for local player location before occupancy scan");
+            return;
+        }
+
+        int nearbyPlayers = countNearbyPlayers(center, huntingRadius);
+        int nearbyTraps = countNearbyTrapEvidence(center, huntingRadius);
+        if (nearbyPlayers > 0) {
+            if (nearbyPlayerSeenSince == 0) nearbyPlayerSeenSince = now;
+        } else {
+            nearbyPlayerSeenSince = 0;
+        }
+
+        boolean persistentPlayer = nearbyPlayerSeenSince > 0
+                && now - nearbyPlayerSeenSince >= PLAYER_PERSISTENCE_MS;
+        if (AutoHunterPlanner.isHuntingAreaOccupied(nearbyPlayers, nearbyTraps, persistentPlayer)) {
+            String reason = "occupied: players=" + nearbyPlayers + " traps=" + nearbyTraps;
+            rejectCurrentWorld(reason);
+            requestAustralianWorldHop(reason);
+            return;
+        }
+
+        if (now >= scanEndsAt) {
+            int world = Microbot.getClient().getWorld();
+            worldHopAttempts = 0;
+            nearbyPlayerSeenSince = 0;
+            transition(State.MONITORING, "World " + world + " hunting area is clear");
+            Microbot.log("AutoHunter occupancy: world " + world + " clear; starting layout");
+        } else {
+            transition(currentState, "Scanning area: players=" + nearbyPlayers + " traps=" + nearbyTraps);
+        }
+    }
+
+    private int countNearbyPlayers(WorldPoint center, int radius) {
+        Rs2PlayerModel local = Rs2Player.getLocalPlayer();
+        return (int) Microbot.getRs2PlayerCache().query()
+                .where(player -> player.getWorldLocation() != null
+                        && player.getWorldLocation().getPlane() == center.getPlane()
+                        && player.getWorldLocation().distanceTo(center) <= radius
+                        && (local == null || player.getId() != local.getId()))
+                .toList().size();
+    }
+
+    private int countNearbyTrapEvidence(WorldPoint center, int radius) {
+        Set<WorldPoint> trapTiles = ConcurrentHashMap.newKeySet();
+        Microbot.getRs2TileObjectCache().query().within(center, radius)
+                .where(this::isBoxTrapObject)
+                .toList().forEach(object -> trapTiles.add(object.getWorldLocation()));
+        Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP).within(center, radius)
+                .toList().forEach(item -> trapTiles.add(item.getWorldLocation()));
+        trapTiles.remove(null);
+        return trapTiles.size();
+    }
+
+    private boolean isBoxTrapObject(Rs2TileObjectModel object) {
+        if (object == null) return false;
+        String name = object.getName();
+        return name != null && ("Box trap".equalsIgnoreCase(name)
+                || "Shaking box".equalsIgnoreCase(name));
+    }
+
+    private void rejectCurrentWorld(String reason) {
+        int world = Microbot.getClient().getWorld();
+        rejectedWorlds.put(world, System.currentTimeMillis() + REJECTED_WORLD_COOLDOWN_MS);
+        Microbot.log("AutoHunter occupancy: rejecting world " + world + " (" + reason + ")");
+    }
+
+    private void requestAustralianWorldHop(String reason) {
+        if (worldHopAttempts >= MAX_WORLD_HOP_ATTEMPTS) {
+            stopSafely("No clear Australian hunting world after " + MAX_WORLD_HOP_ATTEMPTS + " attempts");
+            return;
+        }
+        Integer target = selectAustralianWorld();
+        if (target == null) {
+            stopSafely("No eligible Australian world is currently available");
+            return;
+        }
+        worldHopAttempts++;
+        hopSourceWorld = Microbot.getClient().getWorld();
+        hopTargetWorld = target;
+        hopStartedAt = System.currentTimeMillis();
+        transition(State.HOPPING_WORLD, "Hopping to Australian world " + target + " (" + reason + ")");
+        Microbot.log("AutoHunter occupancy: hopping " + hopSourceWorld + " -> " + target
+                + " attempt=" + worldHopAttempts);
+        Microbot.hopToWorld(target);
+    }
+
+    private Integer selectAustralianWorld() {
+        long now = System.currentTimeMillis();
+        rejectedWorlds.entrySet().removeIf(entry -> entry.getValue() <= now);
+        WorldResult result = Microbot.getWorldService() == null ? null : Microbot.getWorldService().getWorlds();
+        if (result == null || result.getWorlds() == null) return null;
+        boolean members = Rs2Player.isMember();
+        int currentWorld = Microbot.getClient().getWorld();
+        List<World> candidates = new ArrayList<>();
+        for (World world : result.getWorlds()) {
+            if (world == null || world.getId() == currentWorld || world.getRegion() != WorldRegion.AUSTRALIA) continue;
+            Set<WorldType> types = world.getTypes();
+            if (types == null || types.contains(WorldType.MEMBERS) != members) continue;
+            if (!Collections.disjoint(types, UNSAFE_WORLD_TYPES)) continue;
+            if (world.getPlayers() < 0 || world.getPlayers() >= 1_900) continue;
+            if (rejectedWorlds.containsKey(world.getId())) continue;
+            candidates.add(world);
+        }
+        Collections.shuffle(candidates);
+        return candidates.isEmpty() ? null : candidates.get(0).getId();
+    }
+
+    private void monitorWorldHop() {
+        int currentWorld = Microbot.getClient().getWorld();
+        if (hopSourceWorld > 0 && currentWorld != hopSourceWorld) return;
+        if (System.currentTimeMillis() - hopStartedAt < WORLD_HOP_TIMEOUT_MS) return;
+        if (hopTargetWorld > 0) {
+            rejectedWorlds.put(hopTargetWorld, System.currentTimeMillis() + REJECTED_WORLD_COOLDOWN_MS);
+            Microbot.log("AutoHunter occupancy: hop to world " + hopTargetWorld + " timed out");
+        }
+        requestAustralianWorldHop("previous hop timed out");
     }
 
     private boolean interactWithManagedTrap(AutoHunterPlanner.TrapState targetState, Action action) {

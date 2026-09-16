@@ -23,6 +23,13 @@ public final class AutoHunterPlanner {
         return managedTrapCount < trapLimit;
     }
 
+    static boolean isHuntingAreaOccupied(int nearbyPlayers, int nearbyTraps,
+                                         boolean playerPersisted) {
+        return (nearbyPlayers > 0 && nearbyTraps > 0)
+                || nearbyTraps >= 2
+                || playerPersisted;
+    }
+
     public static int normalBoxTrapLimit(int hunterLevel) {
         if (hunterLevel >= 80) return 5;
         if (hunterLevel >= 60) return 4;
