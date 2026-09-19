@@ -54,6 +54,7 @@ public class AutoChinScript extends Script {
         SCANNING_HUNTING_AREA,
         HOPPING_WORLD,
         VERIFYING_WORLD,
+        BREAK_RECOVERY,
         BREAK_PENDING,
         STOPPED
     }
@@ -61,6 +62,8 @@ public class AutoChinScript extends Script {
     private enum Action {
         RESET_CAUGHT("Reset"),
         RESET("Reset"),
+        CHECK("Check"),
+        DISMANTLE("Dismantle"),
         TAKE("Take"),
         LAY("Lay");
 
@@ -82,6 +85,7 @@ public class AutoChinScript extends Script {
     private static final long PLAYER_PERSISTENCE_MS = 3_500;
     private static final long WORLD_HOP_TIMEOUT_MS = 15_000;
     private static final long REJECTED_WORLD_COOLDOWN_MS = 600_000;
+    private static final long BREAK_RECOVERY_CLEAR_MS = 1_500;
     private static final int MAX_WORLD_HOP_ATTEMPTS = 5;
     private static final EnumSet<WorldType> UNSAFE_WORLD_TYPES = EnumSet.of(
             WorldType.PVP, WorldType.BOUNTY, WorldType.PVP_ARENA, WorldType.SKILL_TOTAL,
@@ -136,6 +140,11 @@ public class AutoChinScript extends Script {
     private int hopTargetWorld = -1;
     private int hopSourceWorld = -1;
     private long hopStartedAt;
+    private boolean breakRecoveryRequested;
+    private boolean breakRecoveryComplete;
+    private boolean breakRecoveryLockHeld;
+    private long breakRecoveryClearSince;
+    private int breakRecoveryRecoveredCount;
 
     public boolean run(AutoHunterConfig config) {
         resetSession();
@@ -167,7 +176,8 @@ public class AutoChinScript extends Script {
         moveTargetClickAttempts = 0;
         blockedSetupTile = null;
         blockedSetupTileUntil = 0;
-        startTile = Rs2Player.getWorldLocation();
+        startTile = Microbot.isLoggedIn() ? Rs2Player.getWorldLocation() : null;
+        if (startTile != null) Microbot.log("AutoHunter session origin: " + startTile);
         layoutCenter = null;
         baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
         nextRingEvaluationAt = 0;
@@ -186,6 +196,11 @@ public class AutoChinScript extends Script {
         hopTargetWorld = -1;
         hopSourceWorld = -1;
         hopStartedAt = 0;
+        breakRecoveryRequested = false;
+        breakRecoveryComplete = false;
+        breakRecoveryLockHeld = false;
+        breakRecoveryClearSince = 0;
+        breakRecoveryRecoveredCount = 0;
     }
 
     private void pulse(AutoHunterConfig config) {
@@ -193,6 +208,18 @@ public class AutoChinScript extends Script {
             if (!Microbot.isLoggedIn()) {
                 wasLoggedIn = false;
                 return;
+            }
+            if (startTile == null) {
+                startTile = Rs2Player.getWorldLocation();
+                baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
+                if (startTile != null) Microbot.log("AutoHunter session origin: " + startTile);
+            }
+            boolean breakImminent = BreakHandlerScript.breakIn > 0
+                    && BreakHandlerScript.breakIn <= 60;
+            if (breakImminent && !breakRecoveryComplete) requestBreakRecovery();
+            if (!breakImminent && !BreakHandlerScript.isBreakActive()
+                    && breakRecoveryComplete) {
+                breakRecoveryComplete = false;
             }
             int currentWorld = Microbot.getClient().getWorld();
             if (!wasLoggedIn || currentWorld != observedWorld) {
@@ -219,11 +246,6 @@ public class AutoChinScript extends Script {
                 return;
             }
 
-            if (startTile == null) {
-                startTile = Rs2Player.getWorldLocation();
-                baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
-            }
-
             if (Microbot.getClient().isMenuOpen()) {
                 clearPreparedTrap();
             } else if (Rs2Player.isMoving() && preparedTrapTile != null) {
@@ -240,15 +262,16 @@ public class AutoChinScript extends Script {
                 return;
             }
 
+            if (breakRecoveryRequested) {
+                recoverTrapsForBreak();
+                return;
+            }
+
             if (Rs2Inventory.emptySlotCount() == 0) {
                 stopSafely("Inventory full; catches are never dropped or banked automatically");
                 return;
             }
 
-            if (BreakHandlerScript.breakIn > 0 && BreakHandlerScript.breakIn <= 60) {
-                transition(State.BREAK_PENDING, "Break pending; manual trap recovery required");
-                return;
-            }
             if (currentState == State.BREAK_PENDING) transition(State.MONITORING, "Break window cleared");
 
             if (moveTarget != null) {
@@ -280,7 +303,6 @@ public class AutoChinScript extends Script {
     private void beginWorldArrival(AutoHunterConfig config, int world) {
         boolean verifyingHop = hopSourceWorld > 0 && world != hopSourceWorld;
         clearWorldSessionState();
-        startTile = Rs2Player.getWorldLocation();
         baselineUntil = System.currentTimeMillis() + SCENE_BASELINE_MS;
         hopTargetWorld = -1;
         hopSourceWorld = -1;
@@ -441,6 +463,108 @@ public class AutoChinScript extends Script {
             Microbot.log("AutoHunter occupancy: hop to world " + hopTargetWorld + " timed out");
         }
         requestAustralianWorldHop("previous hop timed out");
+    }
+
+    private void requestBreakRecovery() {
+        if (!breakRecoveryRequested) {
+            breakRecoveryRequested = true;
+            breakRecoveryClearSince = 0;
+            breakRecoveryRecoveredCount = 0;
+            clearMoveTarget();
+            clearPreparedTrap();
+            clearDelayedAction();
+            Microbot.log("AutoHunter break recovery: locking Break Handler until traps are in inventory");
+        }
+        BreakHandlerScript.setLockState(true);
+        breakRecoveryLockHeld = true;
+        transition(State.BREAK_RECOVERY, "Recovering traps before break");
+    }
+
+    private void recoverTrapsForBreak() {
+        transition(State.BREAK_RECOVERY, "Recovering " + managedTiles.size() + " trap tile(s) before break");
+
+        if (recoverFallenTrapForBreak()) {
+            breakRecoveryClearSince = 0;
+            return;
+        }
+
+        WorldPoint tile = oldestBreakRecoveryTrap();
+        if (tile != null) {
+            breakRecoveryClearSince = 0;
+            Rs2TileObjectModel trap = trapAt(tile);
+            AutoHunterPlanner.TrapState state = classify(trap);
+            Action action = state == AutoHunterPlanner.TrapState.CAUGHT
+                    ? Action.CHECK : Action.DISMANTLE;
+            if (!readyForHumanizedAction(action, tile)) return;
+            if (trap != null && trap.click(action.menuAction)) {
+                clearDelayedAction();
+                beginPending(action, tile, trapSignature(trap), true);
+                Microbot.log("AutoHunter break recovery: " + action + " dispatched at " + tile);
+            } else {
+                clearDelayedAction();
+            }
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (breakRecoveryClearSince == 0) {
+            breakRecoveryClearSince = now;
+            transition(State.BREAK_RECOVERY, "Verifying all traps are back in inventory");
+            return;
+        }
+        if (now - breakRecoveryClearSince < BREAK_RECOVERY_CLEAR_MS) return;
+
+        managedTiles.clear();
+        layoutSlots.clear();
+        layoutCenter = null;
+        breakRecoveryRequested = false;
+        breakRecoveryComplete = true;
+        breakRecoveryClearSince = 0;
+        releaseBreakRecoveryLock();
+        transition(State.BREAK_PENDING, "All traps recovered; Break Handler unlocked");
+        Microbot.log("AutoHunter break recovery: complete; recovered " + breakRecoveryRecoveredCount
+                + " trap(s) and unlocked Break Handler");
+    }
+
+    private boolean recoverFallenTrapForBreak() {
+        for (WorldPoint tile : managedTiles) {
+            if (hasAnyObjectAt(tile)) continue;
+            if (Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP)
+                    .within(tile, 0).count() == 0) continue;
+            if (!readyForHumanizedAction(Action.TAKE, tile)) return true;
+            if (Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP)
+                    .within(tile, 0).interact("Take")) {
+                clearDelayedAction();
+                beginPending(Action.TAKE, tile, "ground-item", true);
+            } else {
+                clearDelayedAction();
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private WorldPoint oldestBreakRecoveryTrap() {
+        Map<WorldPoint, HunterTrap> timers = hunterPlugin == null ? new HashMap<>()
+                : Microbot.getClientThread().runOnClientThreadOptional(
+                () -> new HashMap<>(hunterPlugin.getTraps())).orElseGet(HashMap::new);
+        return managedTiles.stream()
+                .filter(tile -> {
+                    AutoHunterPlanner.TrapState state = classify(trapAt(tile));
+                    return state == AutoHunterPlanner.TrapState.CAUGHT
+                            || state == AutoHunterPlanner.TrapState.FAILED
+                            || state == AutoHunterPlanner.TrapState.ACTIVE;
+                })
+                .min(Comparator.comparing(tile -> {
+                    HunterTrap timer = timers.get(tile);
+                    return timer == null ? java.time.Instant.MAX : timer.getPlacedOn();
+                })).orElse(null);
+    }
+
+    private void releaseBreakRecoveryLock() {
+        if (!breakRecoveryLockHeld) return;
+        BreakHandlerScript.setLockState(false);
+        breakRecoveryLockHeld = false;
     }
 
     private boolean interactWithManagedTrap(AutoHunterPlanner.TrapState targetState, Action action) {
@@ -718,6 +842,8 @@ public class AutoChinScript extends Script {
                 delay = randomBetween(120, 421);
                 break;
             case TAKE:
+            case CHECK:
+            case DISMANTLE:
                 delay = randomBetween(180, 521);
                 break;
             default:
@@ -784,8 +910,14 @@ public class AutoChinScript extends Script {
     }
 
     private void beginPending(Action action, WorldPoint tile, String beforeSignature) {
+        beginPending(action, tile, beforeSignature, false);
+    }
+
+    private void beginPending(Action action, WorldPoint tile, String beforeSignature,
+                              boolean breakRecovery) {
         long now = System.currentTimeMillis();
-        pending = new PendingAction(action, tile, beforeSignature, Rs2Inventory.count(), now,
+        pending = new PendingAction(action, tile, beforeSignature, Rs2Inventory.count(),
+                Rs2Inventory.count(ItemID.BOX_TRAP), breakRecovery, now,
                 now + (humanizerEnabled ? randomBetween(220, 651) : 0));
         transition(State.WAITING_FOR_CONFIRMATION, action + " dispatched at " + tile);
         Microbot.log("AutoHunter action: " + action + " dispatched at " + tile);
@@ -811,6 +943,17 @@ public class AutoChinScript extends Script {
                 confirmed = inventoryChanged || Microbot.getRs2TileItemCache().query()
                         .withId(ItemID.BOX_TRAP).within(action.tile, 0).count() == 0;
                 break;
+            case CHECK:
+            case DISMANTLE:
+                action.sawTransition |= objectChanged || Rs2Player.getAnimation() == 5207
+                        || Rs2Player.getAnimation() == 5212 || Rs2Player.getAnimation() == 5208;
+                confirmed = action.sawTransition
+                        && Rs2Inventory.count(ItemID.BOX_TRAP) > action.boxTrapCount
+                        && Rs2Player.getAnimation() == -1
+                        && object == null
+                        && Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP)
+                        .within(action.tile, 0).count() == 0;
+                break;
             default:
                 action.sawTransition |= inventoryChanged || objectChanged
                         || Rs2Player.getAnimation() == 5212 || Rs2Player.getAnimation() == 5208;
@@ -828,13 +971,20 @@ public class AutoChinScript extends Script {
             if (action.action == Action.LAY) managedTiles.add(action.tile);
             if (action.action == Action.RESET_CAUGHT) catches++;
             if (action.action == Action.RESET) resets++;
+            if (action.breakRecovery) {
+                managedTiles.remove(action.tile);
+                breakRecoveryRecoveredCount++;
+            }
             pending = null;
-            transition(State.MONITORING, action.action + " full rebuild confirmed at " + action.tile);
+            transition(action.breakRecovery ? State.BREAK_RECOVERY : State.MONITORING,
+                    action.action + (action.breakRecovery ? " recovery" : " full rebuild")
+                            + " confirmed at " + action.tile);
             Microbot.log("AutoHunter action: " + action.action + " confirmed at " + action.tile);
         } else if (System.currentTimeMillis() - action.startedAt >=
-                (action.action == Action.TAKE ? ACTION_TIMEOUT_MS : REBUILD_TIMEOUT_MS)) {
+                (isResetAction(action.action) ? REBUILD_TIMEOUT_MS : ACTION_TIMEOUT_MS)) {
             pending = null;
-            transition(State.MONITORING, action.action + " timed out at " + action.tile);
+            transition(action.breakRecovery ? State.BREAK_RECOVERY : State.MONITORING,
+                    action.action + " timed out at " + action.tile);
             Microbot.log("AutoHunter action: " + action.action + " bounded timeout at " + action.tile);
         }
     }
@@ -1098,6 +1248,7 @@ public class AutoChinScript extends Script {
     @Override
     public void shutdown() {
         super.shutdown();
+        releaseBreakRecoveryLock();
         managedTiles.clear();
         layoutSlots.clear();
         spawnObservations.clear();
@@ -1126,6 +1277,8 @@ public class AutoChinScript extends Script {
         private final WorldPoint tile;
         private final String beforeSignature;
         private final int inventoryCount;
+        private final int boxTrapCount;
+        private final boolean breakRecovery;
         private final long startedAt;
         private boolean sawTransition;
         private WorldPoint preHoverTile;
@@ -1136,11 +1289,14 @@ public class AutoChinScript extends Script {
         private long nextPreHoverFidgetAt;
 
         private PendingAction(Action action, WorldPoint tile, String beforeSignature,
-                              int inventoryCount, long startedAt, long nextPreHoverAttemptAt) {
+                              int inventoryCount, int boxTrapCount, boolean breakRecovery,
+                              long startedAt, long nextPreHoverAttemptAt) {
             this.action = action;
             this.tile = tile;
             this.beforeSignature = beforeSignature;
             this.inventoryCount = inventoryCount;
+            this.boxTrapCount = boxTrapCount;
+            this.breakRecovery = breakRecovery;
             this.startedAt = startedAt;
             this.nextPreHoverAttemptAt = nextPreHoverAttemptAt;
         }
