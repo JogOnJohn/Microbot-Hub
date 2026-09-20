@@ -393,11 +393,14 @@ public class AutoChinScript extends Script {
         Set<WorldPoint> trapTiles = ConcurrentHashMap.newKeySet();
         Microbot.getRs2TileObjectCache().query().within(center, radius)
                 .where(this::isBoxTrapObject)
-                .toList().forEach(object -> trapTiles.add(object.getWorldLocation()));
+                .toList().forEach(object -> addTrapTileIfPresent(trapTiles, object.getWorldLocation()));
         Microbot.getRs2TileItemCache().query().withId(ItemID.BOX_TRAP).within(center, radius)
-                .toList().forEach(item -> trapTiles.add(item.getWorldLocation()));
-        trapTiles.remove(null);
+                .toList().forEach(item -> addTrapTileIfPresent(trapTiles, item.getWorldLocation()));
         return trapTiles.size();
+    }
+
+    private void addTrapTileIfPresent(Set<WorldPoint> trapTiles, WorldPoint tile) {
+        if (tile != null) trapTiles.add(tile);
     }
 
     private boolean isBoxTrapObject(Rs2TileObjectModel object) {
