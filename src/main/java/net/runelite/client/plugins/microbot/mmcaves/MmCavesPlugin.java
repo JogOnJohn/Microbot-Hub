@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameTick;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
@@ -73,6 +74,7 @@ public class MmCavesPlugin extends Plugin {
 
     @Override
     protected void shutDown() {
+        script.stopHoverTracking();
         script.shutdown();
         overlayManager.remove(mmCavesOverlay);
     }
@@ -109,6 +111,11 @@ public class MmCavesPlugin extends Plugin {
 
     public boolean isWorldChecked(int world) {
         return checkedWorlds.contains(world);
+    }
+
+    @Subscribe
+    public void onClientTick(ClientTick clientTick) {
+        script.onClientTick();
     }
 
     public Set<Integer> getCheckedWorlds() {

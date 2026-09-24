@@ -27,9 +27,6 @@ import net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban;
 import net.runelite.client.plugins.microbot.util.antiban.enums.ActivityIntensity;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.Skill;
-import net.runelite.api.Perspective;
-import net.runelite.api.Point;
-import net.runelite.api.coords.LocalPoint;
 
 import javax.inject.Inject;
 import java.time.Instant;
@@ -59,8 +56,19 @@ public class MmCavesScript extends Script {
     private boolean stackReady = false;
     private int readySamples = 0;
     private int unreadySamples = 0;
-    private WorldPoint pendingPreHoverStandingTile;
-    private WorldPoint pendingPreHoverWallTile;
+    private final MmCavesHoverTracker hoverTracker = new MmCavesHoverTracker();
+
+    void onClientTick() {
+        if (state != State.FIGHT) {
+            hoverTracker.stop();
+            return;
+        }
+        hoverTracker.onClientTick();
+    }
+
+    void stopHoverTracking() {
+        hoverTracker.stop();
+    }
 
     public void setConfig(MmCavesConfig config) {
         this.config = config;
@@ -98,8 +106,7 @@ public class MmCavesScript extends Script {
         stackReady = false;
         readySamples = 0;
         unreadySamples = 0;
-        pendingPreHoverStandingTile = null;
-        pendingPreHoverWallTile = null;
+        hoverTracker.stop();
         Rs2Antiban.setActivityIntensity(ActivityIntensity.MODERATE);
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
@@ -245,8 +252,7 @@ public class MmCavesScript extends Script {
             stackReady = false;
             readySamples = 0;
             unreadySamples = 0;
-            pendingPreHoverStandingTile = null;
-            pendingPreHoverWallTile = null;
+            hoverTracker.stop();
             return State.RESET_AGGRO;
         }
 
@@ -328,17 +334,15 @@ public class MmCavesScript extends Script {
         Rs2Player.drinkPrayerPotion();
         Rs2Inventory.dropAll("Vial");
 
-        if (healWithBass()) return;
-        if (drinkDivinePotionIfNeeded()) return;
+        if (healWithBass()) { hoverTracker.stop(); return; }
+        if (drinkDivinePotionIfNeeded()) { hoverTracker.stop(); return; }
 
         if (mode == Mode.RANGE && !config.clickRangedAttackTargets()) {
             updateStackReadiness();
             if (stackReady) {
-                pendingPreHoverStandingTile = null;
-                pendingPreHoverWallTile = null;
+                hoverTracker.stop();
                 return;
             }
-            preHoverIfArrived();
         }
 
         if (Rs2Inventory.emptySlotCount() > 0) {
@@ -347,6 +351,7 @@ public class MmCavesScript extends Script {
                 GroundItem item = cell.getValue();
                 if (item != null) {
                     if (item.getId() == 143) {
+                        hoverTracker.stop();
                         Microbot.log("Picking up potion from the ground");
                         int previousAmount = Rs2Inventory.count(143);
                         Rs2GroundItem.pickup(143);
@@ -378,6 +383,7 @@ public class MmCavesScript extends Script {
     }
 
     private void handleAggroReset() {
+        hoverTracker.stop();
         Microbot.log("Resetting aggro...");
         if (
                 plugin.getMyWorldPoint().distanceTo(AGGRO_RESET_TILE) > 2 &&
@@ -397,6 +403,7 @@ public class MmCavesScript extends Script {
     }
 
     private void stopAndLog() {
+        hoverTracker.stop();
         int exitAttempts = 0;
         while (isDownstairs() && exitAttempts < 3) {
             exitAttempts++;
@@ -443,34 +450,12 @@ public class MmCavesScript extends Script {
         }
 
         if (!Objects.equals(Rs2Player.getWorldLocation(), targetTile)) {
+            hoverTracker.stop();
             if (!Rs2Walker.walkFastCanvas(wallClick, true)) return false;
-            pendingPreHoverStandingTile = targetTile;
-            pendingPreHoverWallTile = FIGHTING_TILE_A.equals(targetTile) ? WALL_CLICK_TO_B : WALL_CLICK_TO_A;
+            hoverTracker.start(FIGHTING_TILE_A.equals(targetTile) ? WALL_CLICK_TO_B : WALL_CLICK_TO_A);
             sleepUntil(() -> targetTile.equals(plugin.getMyWorldPoint()), 1200);
-            preHoverIfArrived();
             return true;
         }
-        return true;
-    }
-
-    private void preHoverIfArrived() {
-        if (pendingPreHoverStandingTile == null || pendingPreHoverWallTile == null
-                || !pendingPreHoverStandingTile.equals(plugin.getMyWorldPoint())) return;
-        if (preHoverWallClick(pendingPreHoverWallTile)) {
-            pendingPreHoverStandingTile = null;
-            pendingPreHoverWallTile = null;
-        }
-    }
-
-    private boolean preHoverWallClick(WorldPoint wallTile) {
-        if (Microbot.naturalMouse == null || Microbot.getClient().isMenuOpen()) return false;
-        if (Microbot.getClient().getTopLevelWorldView() == null) return false;
-        LocalPoint local = LocalPoint.fromWorld(Microbot.getClient().getTopLevelWorldView(), wallTile);
-        if (local == null) return false;
-        Point canvas = Perspective.localToCanvas(Microbot.getClient(), local,
-                Microbot.getClient().getTopLevelWorldView().getPlane());
-        if (canvas == null || canvas.getX() < 0 || canvas.getY() < 0) return false;
-        Microbot.naturalMouse.moveTo(canvas.getX(), canvas.getY());
         return true;
     }
 
@@ -497,6 +482,7 @@ public class MmCavesScript extends Script {
 
     private boolean healWithBass() {
         if (!MmCavesDecisions.shouldHeal(Rs2Player.getHealthPercentage())) return false;
+        hoverTracker.stop();
 
         if (Rs2Inventory.contains(BASS_ID)) {
             if (System.currentTimeMillis() - lastBassEatAttempt < 1800) return true;
@@ -529,7 +515,10 @@ public class MmCavesScript extends Script {
         boolean drank = Rs2Inventory.all().stream()
                 .filter(item -> item.getName().startsWith(potionName))
                 .findFirst()
-                .map(item -> Rs2Inventory.interact(item, "Drink"))
+                .map(item -> {
+                    hoverTracker.stop();
+                    return Rs2Inventory.interact(item, "Drink");
+                })
                 .orElse(false);
         if (drank) lastDivinePotionAttempt = System.currentTimeMillis();
         return drank;
