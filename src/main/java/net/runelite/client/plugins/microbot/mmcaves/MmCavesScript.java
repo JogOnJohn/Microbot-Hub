@@ -424,9 +424,11 @@ public class MmCavesScript extends Script {
             }
         }
 
-        if (Rs2Inventory.emptySlotCount() > 0) {
+        // A dropped bass needs an inventory slot before it can be eaten.
+        if (Rs2Inventory.emptySlotCount() > 1) {
             Table<WorldPoint, Integer, GroundItem> groundItems = Rs2GroundItem.getGroundItems();
             for (Table.Cell<WorldPoint, Integer, GroundItem> cell : groundItems.cellSet()) {
+                if (Rs2Inventory.emptySlotCount() <= 1) break;
                 GroundItem item = cell.getValue();
                 if (item != null) {
                     if (item.getId() == 143) {
