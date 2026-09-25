@@ -28,8 +28,12 @@ import net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban;
 import net.runelite.client.plugins.microbot.util.antiban.enums.ActivityIntensity;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.Skill;
+import net.runelite.api.MenuAction;
+import net.runelite.api.Point;
+import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 
 import javax.inject.Inject;
+import java.awt.Rectangle;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -525,12 +529,30 @@ public class MmCavesScript extends Script {
         }
 
         if (!Objects.equals(Rs2Player.getWorldLocation(), targetTile)) {
+            MmCavesWallTarget clickTarget = hoverTracker.targetFor(wallClick);
             hoverTracker.stop();
-            if (!Rs2Walker.walkFastCanvas(wallClick, true)) return false;
+            if (!clickWallTarget(clickTarget)) return false;
             hoverTracker.start(FIGHTING_TILE_A.equals(targetTile) ? WALL_CLICK_TO_B : WALL_CLICK_TO_A);
             sleepUntil(() -> targetTile.equals(plugin.getMyWorldPoint()), 1200);
             return true;
         }
+        return true;
+    }
+
+    private boolean clickWallTarget(MmCavesWallTarget target) {
+        Point canvas = target.canvasPoint(Microbot.getClient());
+        if (canvas == null || canvas.getX() < 0 || canvas.getY() < 0
+                || canvas.getX() >= Microbot.getClient().getCanvasWidth()
+                || canvas.getY() >= Microbot.getClient().getCanvasHeight()) {
+            return Rs2Walker.walkFastCanvas(target.tile, true);
+        }
+        Rs2Player.toggleRunEnergy(true);
+        int x = canvas.getX();
+        int y = canvas.getY();
+        NewMenuEntry entry = new NewMenuEntry()
+                .param0(x).param1(y).type(MenuAction.WALK).identifier(0).itemId(0).option("Walk here");
+        Microbot.doInvoke(entry, new Rectangle(x, y,
+                Microbot.getClient().getCanvasWidth(), Microbot.getClient().getCanvasHeight()));
         return true;
     }
 
