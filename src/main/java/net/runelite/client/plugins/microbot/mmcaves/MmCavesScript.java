@@ -8,6 +8,7 @@ import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.mmcaves.enums.CombatStyle;
+import net.runelite.client.plugins.microbot.mmcaves.enums.DungeonRoute;
 import net.runelite.client.plugins.microbot.mmcaves.enums.Mode;
 import net.runelite.client.plugins.microbot.mmcaves.enums.State;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
@@ -45,8 +46,9 @@ public class MmCavesScript extends Script {
     }
 
     private MmCavesConfig config;
+    private DungeonRoute route;
     private Mode mode;
-    public static State state = State.WALK_TO_START;
+    public static State state = State.WALK_TO_ENTRANCE;
     public Instant startTime;
     public static long lastAggroResetTime = System.currentTimeMillis();
     private long lastAttackTime = System.currentTimeMillis();
@@ -57,6 +59,9 @@ public class MmCavesScript extends Script {
     private int readySamples = 0;
     private int unreadySamples = 0;
     private final MmCavesHoverTracker hoverTracker = new MmCavesHoverTracker();
+    private int routeWaypointIndex;
+    private long lastRouteProgressTime;
+    private long lastRouteClickTime;
 
     void onClientTick() {
         if (state != State.FIGHT) {
@@ -72,10 +77,14 @@ public class MmCavesScript extends Script {
 
     public void setConfig(MmCavesConfig config) {
         this.config = config;
+        this.route = config.dungeonRoute();
         this.mode = config.combatStyle() == CombatStyle.RANGING ? Mode.RANGE : Mode.MAGIC;
     }
 
-    private final WorldPoint START_TILE = new WorldPoint(2572, 9168, 1); // Upstairs
+    private static final WorldPoint DUNGEON_ENTRANCE = new WorldPoint(2715, 2788, 0);
+    private static final WorldPoint JUNGLE_GRASS_TILE = new WorldPoint(2714, 2788, 0);
+    private static final int JUNGLE_GRASS_ID = 28810;
+    private static final int ROUTE_STALL_MS = 15000;
     // The recorder shows clicks into the wall, with the player stopping one tile short.
     private final WorldPoint FIGHTING_TILE_A = new WorldPoint(2449, 9172, 1);
     private final WorldPoint FIGHTING_TILE_B = new WorldPoint(2448, 9173, 1);
@@ -94,7 +103,12 @@ public class MmCavesScript extends Script {
 
     @Override
     public boolean run() {
-        state = State.WALK_TO_START;
+        state = State.WALK_TO_ENTRANCE;
+        if (!route.isMapped()) {
+            Microbot.log("MM Caves " + route + " has no recorded navigation yet; stopping without moving");
+            scheduledExecutorService.schedule(() -> Microbot.stopPlugin(plugin), 0, TimeUnit.MILLISECONDS);
+            return false;
+        }
         firstFightStarted = false;
         resettingAggro = false;
         caveIsEmpty = false;
@@ -106,6 +120,9 @@ public class MmCavesScript extends Script {
         stackReady = false;
         readySamples = 0;
         unreadySamples = 0;
+        routeWaypointIndex = 0;
+        lastRouteProgressTime = System.currentTimeMillis();
+        lastRouteClickTime = 0;
         hoverTracker.stop();
         Rs2Antiban.setActivityIntensity(ActivityIntensity.MODERATE);
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
@@ -125,8 +142,14 @@ public class MmCavesScript extends Script {
                 }
                 state = getState();
                 switch (state) {
-                    case WALK_TO_START:
-                        handleWalkToStart();
+                    case WALK_TO_ENTRANCE:
+                        handleWalkToEntrance();
+                        break;
+                    case ENTER_DUNGEON:
+                        handleEnterDungeon();
+                        break;
+                    case FOLLOW_ROUTE:
+                        handleFollowRoute();
                         break;
                     case CHECK_EMPTY_CAVE:
                         handleCheckEmptyCave();
@@ -205,34 +228,16 @@ public class MmCavesScript extends Script {
         // We need to stop the script if the inventory has no prayer potions
         if (!Rs2Inventory.all().stream().anyMatch(name -> name.getName().toLowerCase().contains("prayer potion"))) return State.STOP;
 
-        // If not in the cave and far from starting tile -> walk to starting tile
-        if (
-                !isDownstairs() &&
-                plugin.getMyWorldPoint().distanceTo(START_TILE) > 5
-        ) return State.WALK_TO_START;
-
-        // If close to starter tile and world is not checked -> check if cave is empty
-        if (
-                plugin.getMyWorldPoint().distanceTo(START_TILE) < 5 &&
-                !plugin.isWorldChecked(Microbot.getClient().getWorld()) &&
-                !isDownstairs()
-        ) return State.CHECK_EMPTY_CAVE;
-
-        //  If close to starter tile and world is checked but is not empty and is not downstairs -> world hop
-        if (
-                plugin.getMyWorldPoint().distanceTo(START_TILE) < 5 &&
-                plugin.isWorldChecked(Microbot.getClient().getWorld()) &&
-                !caveIsEmpty &&
-                !isDownstairs()
-        ) return State.WORLD_HOP;
-
-        //  If close to starter tile and world is checked and is empty and is not downstairs -> enter cave
-        if (
-                plugin.getMyWorldPoint().distanceTo(START_TILE) < 5 &&
-                plugin.isWorldChecked(Microbot.getClient().getWorld()) &&
-                caveIsEmpty &&
-                !isDownstairs()
-        ) return State.ENTER_CAVE;
+        if (!isDownstairs()) {
+            WorldPoint location = plugin.getMyWorldPoint();
+            if (!isUpperDungeon()) {
+                return location.distanceTo(DUNGEON_ENTRANCE) <= 2
+                        ? State.ENTER_DUNGEON : State.WALK_TO_ENTRANCE;
+            }
+            if (location.distanceTo(route.checkTile()) > 2) return State.FOLLOW_ROUTE;
+            if (!plugin.isWorldChecked(Microbot.getClient().getWorld())) return State.CHECK_EMPTY_CAVE;
+            return caveIsEmpty ? State.ENTER_CAVE : State.WORLD_HOP;
+        }
 
         // If downstairs but not close to fighting spot -> walk to tile A
         if (
@@ -259,15 +264,85 @@ public class MmCavesScript extends Script {
         return State.FIGHT;
     }
 
-    private void handleWalkToStart() {
-        Microbot.log("Walking to start tile");
-        Rs2Walker.walkTo(START_TILE, 0);
-        sleepUntil(() -> plugin.getMyWorldPoint().distanceTo(START_TILE) < 5, 1000);
+    private boolean isUpperDungeon() {
+        WorldPoint location = plugin.getMyWorldPoint();
+        if (location == null || location.getPlane() != 1) return false;
+        int region = location.getRegionID();
+        return region == 10126 || region == 10127 || region == 10383;
+    }
+
+    private void handleWalkToEntrance() {
+        Microbot.log("Walking to Kruk's Dungeon entrance");
+        Rs2Walker.walkTo(DUNGEON_ENTRANCE, 2);
+        sleepUntil(() -> plugin.getMyWorldPoint() != null
+                && plugin.getMyWorldPoint().distanceTo(DUNGEON_ENTRANCE) <= 2, 1000);
+    }
+
+    private void handleEnterDungeon() {
+        Rs2TileObjectModel grass = Microbot.getRs2TileObjectCache().query()
+                .withId(JUNGLE_GRASS_ID).nearest();
+        if (grass == null || grass.getWorldLocation().distanceTo(JUNGLE_GRASS_TILE) > 1) {
+            grass = Microbot.getRs2TileObjectCache().query().withName("Jungle Grass").nearest();
+        }
+        if (grass == null || grass.getWorldLocation().distanceTo(JUNGLE_GRASS_TILE) > 1) {
+            Microbot.log("Jungle Grass entrance not found at the recorded position");
+            return;
+        }
+        grass.click("Investigate");
+        if (sleepUntil(this::isUpperDungeon, 7000)) {
+            routeWaypointIndex = 0;
+            lastRouteProgressTime = System.currentTimeMillis();
+        } else {
+            Microbot.log("Kruk's Dungeon entry was not confirmed");
+        }
+    }
+
+    private void handleFollowRoute() {
+        Rs2Prayer.toggle(Rs2PrayerEnum.PROTECT_MELEE, true);
+        WorldPoint current = plugin.getMyWorldPoint();
+        List<WorldPoint> waypoints = route.waypoints();
+
+        if (routeWaypointIndex == 0 && current.distanceTo(waypoints.get(0)) > 2) {
+            // A restart may occur partway along the route; only resume at an observed waypoint.
+            int resume = -1;
+            for (int i = 1; i < waypoints.size(); i++) {
+                if (current.distanceTo(waypoints.get(i)) <= 1) {
+                    resume = i;
+                    break;
+                }
+            }
+            if (resume < 0) {
+                Microbot.log("Cannot safely join " + route + " from " + current + "; stop and return to its entrance");
+                Microbot.stopPlugin(plugin);
+                return;
+            }
+            routeWaypointIndex = resume;
+        }
+
+        while (routeWaypointIndex < waypoints.size()
+                && current.distanceTo(waypoints.get(routeWaypointIndex)) <= 1) {
+            routeWaypointIndex++;
+            lastRouteProgressTime = System.currentTimeMillis();
+        }
+        if (routeWaypointIndex >= waypoints.size()) return;
+
+        long now = System.currentTimeMillis();
+        if (now - lastRouteProgressTime > ROUTE_STALL_MS) {
+            Microbot.log("Stopped: " + route + " stalled before waypoint " + (routeWaypointIndex + 1)
+                    + " at " + waypoints.get(routeWaypointIndex));
+            Microbot.stopPlugin(plugin);
+            return;
+        }
+        if (now - lastRouteClickTime >= 1800) {
+            if (Rs2Walker.walkFastCanvas(waypoints.get(routeWaypointIndex), true)) {
+                lastRouteClickTime = now;
+            }
+        }
     }
 
     private void handleCheckEmptyCave() {
         Microbot.log("Checking if cave is empty");
-        Rs2TileObjectModel hole = Microbot.getRs2TileObjectCache().query().withId(28772).nearest();
+        Rs2TileObjectModel hole = Microbot.getRs2TileObjectCache().query().withId(route.holeId()).nearest();
         if (hole != null) {
             hole.click("Look-in");
             sleepUntil(() -> caveIsEmpty, 3000);
@@ -296,7 +371,7 @@ public class MmCavesScript extends Script {
 
     private void handleEnterCave() {
         Microbot.log("Entering cave...");
-        Rs2TileObjectModel hole = Microbot.getRs2TileObjectCache().query().withId(28772).nearest();
+        Rs2TileObjectModel hole = Microbot.getRs2TileObjectCache().query().withId(route.holeId()).nearest();
         if (hole != null) {
             Rs2Prayer.toggle(Rs2PrayerEnum.PROTECT_MELEE, true);
 

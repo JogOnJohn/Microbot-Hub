@@ -5,10 +5,20 @@ import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
 import net.runelite.client.config.Range;
 import net.runelite.client.plugins.microbot.mmcaves.enums.CombatStyle;
+import net.runelite.client.plugins.microbot.mmcaves.enums.DungeonRoute;
 import net.runelite.client.plugins.microbot.mmcaves.enums.MagicSpell;
 
 @ConfigGroup("mmcaves")
 public interface MmCavesConfig extends Config {
+
+    @ConfigItem(
+            keyName = "dungeonRoute",
+            name = "Dungeon route",
+            description = "Choose the numbered hole. Only Hole 2 has a recorded path so far."
+    )
+    default DungeonRoute dungeonRoute() {
+        return DungeonRoute.HOLE_2;
+    }
 
 
     @ConfigItem(
