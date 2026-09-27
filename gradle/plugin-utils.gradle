@@ -234,7 +234,7 @@ ext {
     // Create shadow JAR task for plugin - returns task configuration closure
     getPluginJarTaskConfig = { plugin, pluginConfigName ->
         return {
-            from(sourceSets.main.output) {
+            from(sourceSets.getByName(plugin.sourceSetName).output) {
                 // Get the relative path of the plugin directory within the source tree
                 def pluginRelativePath = sourceSets.main.java.srcDirs.find { srcDir ->
                     plugin.dir.absolutePath.startsWith(srcDir.absolutePath)
