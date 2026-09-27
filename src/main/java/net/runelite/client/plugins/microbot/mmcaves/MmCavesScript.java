@@ -349,7 +349,9 @@ public class MmCavesScript extends Script {
         }
 
         while (routeWaypointIndex < waypoints.size()
-                && current.distanceTo(waypoints.get(routeWaypointIndex)) <= 1) {
+                && (route.pressurePadForWaypoint(routeWaypointIndex) != null
+                    ? current.equals(waypoints.get(routeWaypointIndex)) && !Rs2Player.isAnimating()
+                    : current.distanceTo(waypoints.get(routeWaypointIndex)) <= 1)) {
             routeWaypointIndex++;
             lastRouteProgressTime = System.currentTimeMillis();
         }
@@ -363,9 +365,35 @@ public class MmCavesScript extends Script {
             return;
         }
         if (now - lastRouteClickTime >= 1800) {
+            WorldPoint padTile = route.pressurePadForWaypoint(routeWaypointIndex);
+            if (padTile != null) {
+                passRoutePressurePad(padTile, waypoints.get(routeWaypointIndex));
+                return;
+            }
             if (Rs2Walker.walkFastCanvas(waypoints.get(routeWaypointIndex), true)) {
                 lastRouteClickTime = now;
             }
+        }
+    }
+
+    private void passRoutePressurePad(WorldPoint padTile, WorldPoint landing) {
+        if (Rs2Player.isAnimating()) return;
+        Rs2TileObjectModel pad = Microbot.getRs2TileObjectCache().query()
+                .withId(28758)
+                .where(object -> padTile.equals(object.getWorldLocation()))
+                .nearest();
+        if (pad == null) {
+            Microbot.log("Route pressure pad not loaded at " + padTile + "; waiting");
+            lastRouteClickTime = System.currentTimeMillis();
+            return;
+        }
+        lastRouteClickTime = System.currentTimeMillis();
+        if (!pad.click("Pass")) return;
+        if (sleepUntil(() -> landing.equals(plugin.getMyWorldPoint()) && !Rs2Player.isAnimating(), 7000)) {
+            routeWaypointIndex++;
+            lastRouteProgressTime = System.currentTimeMillis();
+        } else {
+            Microbot.log("Pressure pad crossing not confirmed at " + padTile);
         }
     }
 

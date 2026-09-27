@@ -19,7 +19,7 @@ public enum DungeonRoute {
             tile(2511, 9146),
             tile(2511, 9148),
             tile(2518, 9148),
-            tile(2519, 9150),
+            tile(2519, 9151), // Landing north of the second pressure pad
             tile(2524, 9155),
             tile(2527, 9160),
             tile(2534, 9165),
@@ -52,6 +52,15 @@ public enum DungeonRoute {
     public int holeId() { return holeId; }
     public List<WorldPoint> waypoints() { return waypoints; }
     public WorldPoint checkTile() { return waypoints.get(waypoints.size() - 1); }
+
+    /** Recorded obstacles keyed by their landing waypoint, not by a nearby tile. */
+    public WorldPoint pressurePadForWaypoint(int index) {
+        if (this != HOLE_2 || index < 0 || index >= waypoints.size()) return null;
+        WorldPoint landing = waypoints.get(index);
+        if (landing.equals(tile(2518, 9148))) return tile(2517, 9148);
+        if (landing.equals(tile(2519, 9151))) return tile(2519, 9150);
+        return null;
+    }
 
     @Override
     public String toString() { return label; }
