@@ -136,6 +136,12 @@ public class MmCavesScript extends Script {
                 if (!super.run()) return;
                 if (plugin.getMyWorldPoint() == null) return;
 
+                // Protect before navigation/state checks, including a fall off the upper route.
+                // These region checks intentionally cover both planes of the dungeon.
+                if (isUpperDungeon() || isDownstairs()) {
+                    Rs2Prayer.toggle(Rs2PrayerEnum.PROTECT_MELEE, true);
+                }
+
                 // Check if player has light source
                 boolean hasLightSource = MmCavesDecisions.hasLightSource(
                         Rs2Inventory::contains,
