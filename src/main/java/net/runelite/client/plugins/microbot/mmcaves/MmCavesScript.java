@@ -379,7 +379,7 @@ public class MmCavesScript extends Script {
         }
 
         while (routeWaypointIndex < waypoints.size()
-                && (route.pressurePadForWaypoint(routeWaypointIndex) != null
+                && (route.isObstacleWaypoint(routeWaypointIndex)
                     ? current.equals(waypoints.get(routeWaypointIndex)) && !Rs2Player.isAnimating()
                     : current.distanceTo(waypoints.get(routeWaypointIndex)) <= 1)) {
             routeWaypointIndex++;
@@ -397,7 +397,12 @@ public class MmCavesScript extends Script {
         if (now - lastRouteClickTime >= 1800) {
             WorldPoint padTile = route.pressurePadForWaypoint(routeWaypointIndex);
             if (padTile != null) {
-                passRoutePressurePad(padTile, waypoints.get(routeWaypointIndex));
+                crossRouteObstacle(28758, "Pass", padTile, waypoints.get(routeWaypointIndex));
+                return;
+            }
+            WorldPoint holeTile = route.squeezeHoleForWaypoint(routeWaypointIndex);
+            if (holeTile != null) {
+                crossRouteObstacle(28764, "Squeeze-through", holeTile, waypoints.get(routeWaypointIndex));
                 return;
             }
             if (Rs2Walker.walkFastCanvas(waypoints.get(routeWaypointIndex), true)) {
@@ -406,24 +411,24 @@ public class MmCavesScript extends Script {
         }
     }
 
-    private void passRoutePressurePad(WorldPoint padTile, WorldPoint landing) {
+    private void crossRouteObstacle(int objectId, String action, WorldPoint objectTile, WorldPoint landing) {
         if (Rs2Player.isAnimating()) return;
-        Rs2TileObjectModel pad = Microbot.getRs2TileObjectCache().query()
-                .withId(28758)
-                .where(object -> padTile.equals(object.getWorldLocation()))
+        Rs2TileObjectModel obstacle = Microbot.getRs2TileObjectCache().query()
+                .withId(objectId)
+                .where(object -> objectTile.equals(object.getWorldLocation()))
                 .nearest();
-        if (pad == null) {
-            Microbot.log("Route pressure pad not loaded at " + padTile + "; waiting");
+        if (obstacle == null) {
+            Microbot.log("Route obstacle " + objectId + " not loaded at " + objectTile + "; waiting");
             lastRouteClickTime = System.currentTimeMillis();
             return;
         }
         lastRouteClickTime = System.currentTimeMillis();
-        if (!pad.click("Pass")) return;
+        if (!obstacle.click(action)) return;
         if (sleepUntil(() -> landing.equals(plugin.getMyWorldPoint()) && !Rs2Player.isAnimating(), 7000)) {
             routeWaypointIndex++;
             lastRouteProgressTime = System.currentTimeMillis();
         } else {
-            Microbot.log("Pressure pad crossing not confirmed at " + padTile);
+            Microbot.log(action + " crossing not confirmed at " + objectTile);
         }
     }
 

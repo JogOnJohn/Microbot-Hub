@@ -10,6 +10,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DungeonRouteTest {
     @Test
+    void squeezeHolesMatchRecordedTargetsAndExits() {
+        DungeonRoute route = DungeonRoute.HOLE_2;
+        assertEquals(new WorldPoint(2521, 9155, 1), route.squeezeHoleForWaypoint(10));
+        assertEquals(new WorldPoint(2524, 9155, 1), route.waypoints().get(10));
+        assertEquals(new WorldPoint(2555, 9152, 1), route.squeezeHoleForWaypoint(18));
+        assertEquals(new WorldPoint(2558, 9152, 1), route.waypoints().get(18));
+        assertTrue(route.isObstacleWaypoint(10));
+        assertTrue(route.isObstacleWaypoint(18));
+        assertTrue(route.isObstacleWaypoint(21));
+        assertFalse(route.isObstacleWaypoint(17));
+    }
+
+    @Test
     void pressurePadsAreAttachedToTheirRecordedLandingTiles() {
         DungeonRoute route = DungeonRoute.HOLE_2;
         assertEquals(new WorldPoint(2517, 9148, 1), route.pressurePadForWaypoint(8));

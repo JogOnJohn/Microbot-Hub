@@ -63,6 +63,18 @@ public enum DungeonRoute {
         return null;
     }
 
+    public WorldPoint squeezeHoleForWaypoint(int index) {
+        if (this != HOLE_2 || index < 0 || index >= waypoints.size()) return null;
+        WorldPoint landing = waypoints.get(index);
+        if (landing.equals(tile(2524, 9155))) return tile(2521, 9155);
+        if (landing.equals(tile(2558, 9152))) return tile(2555, 9152);
+        return null;
+    }
+
+    public boolean isObstacleWaypoint(int index) {
+        return pressurePadForWaypoint(index) != null || squeezeHoleForWaypoint(index) != null;
+    }
+
     @Override
     public String toString() { return label; }
 

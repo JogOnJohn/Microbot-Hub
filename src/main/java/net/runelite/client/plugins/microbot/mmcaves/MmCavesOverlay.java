@@ -56,7 +56,8 @@ public class MmCavesOverlay extends OverlayPanel {
             int index = script.routeWaypointIndex();
             line("Waypoint", Math.min(index + 1, route.waypoints().size()) + " / "
                     + route.waypoints().size(), Color.WHITE);
-            line("Next action", route.pressurePadForWaypoint(index) == null ? "Walk" : "Pass pressure pad", ACCENT);
+            line("Next action", route.pressurePadForWaypoint(index) != null ? "Pass pressure pad"
+                    : route.squeezeHoleForWaypoint(index) != null ? "Squeeze-through hole" : "Walk", ACCENT);
         }
         if (state == State.FIGHT && config.combatStyle() == CombatStyle.RANGING) {
             line("Stack action", config.clickRangedAttackTargets() ? "Explicit attacks enabled"
