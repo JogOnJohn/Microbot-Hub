@@ -1821,8 +1821,8 @@ public class GiantsFoundryScript extends Script
         {
             return 0;
         }
-        int price = Microbot.getClientThread().runOnClientThreadOptional(
-                () -> Microbot.getItemManager().getItemPrice(itemId)).orElse(0);
+        long price = Microbot.getClientThread().runOnClientThreadOptional(
+                () -> Microbot.getItemManager().getItemPrice(itemId)).orElse(0L);
         return (long) Math.max(0, price) * material.getQuantity();
     }
 
