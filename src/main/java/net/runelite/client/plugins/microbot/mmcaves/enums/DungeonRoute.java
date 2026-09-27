@@ -31,7 +31,7 @@ public enum DungeonRoute {
             tile(2558, 9152),
             tile(2562, 9156),
             tile(2567, 9156),
-            tile(2574, 9165),
+            tile(2574, 9166), // Landing beyond the final pressure pad
             tile(2572, 9168) // Look-in / Enter hole
     )),
     HOLE_3("Hole 3 (unmapped)", -1, Collections.emptyList()),
@@ -59,6 +59,7 @@ public enum DungeonRoute {
         WorldPoint landing = waypoints.get(index);
         if (landing.equals(tile(2518, 9148))) return tile(2517, 9148);
         if (landing.equals(tile(2519, 9151))) return tile(2519, 9150);
+        if (landing.equals(tile(2574, 9166))) return tile(2574, 9165);
         return null;
     }
 

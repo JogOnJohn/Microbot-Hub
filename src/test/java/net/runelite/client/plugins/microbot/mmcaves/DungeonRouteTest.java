@@ -16,6 +16,8 @@ class DungeonRouteTest {
         assertEquals(new WorldPoint(2518, 9148, 1), route.waypoints().get(8));
         assertEquals(new WorldPoint(2519, 9150, 1), route.pressurePadForWaypoint(9));
         assertEquals(new WorldPoint(2519, 9151, 1), route.waypoints().get(9));
+        assertEquals(new WorldPoint(2574, 9165, 1), route.pressurePadForWaypoint(21));
+        assertEquals(new WorldPoint(2574, 9166, 1), route.waypoints().get(21));
         assertEquals(null, route.pressurePadForWaypoint(7));
         assertEquals(null, route.pressurePadForWaypoint(10));
     }
