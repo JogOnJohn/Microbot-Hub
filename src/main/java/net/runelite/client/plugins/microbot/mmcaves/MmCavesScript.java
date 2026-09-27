@@ -31,6 +31,7 @@ import net.runelite.api.Skill;
 import net.runelite.api.MenuAction;
 import net.runelite.api.Point;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
+import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
 
 import javax.inject.Inject;
 import java.awt.Rectangle;
@@ -283,6 +284,11 @@ public class MmCavesScript extends Script {
     }
 
     private void handleEnterDungeon() {
+        // Resume an entry confirmation already open when the plugin starts.
+        if (hasDungeonEntryConfirmation()) {
+            confirmDungeonEntry();
+            return;
+        }
         Rs2TileObjectModel grass = Microbot.getRs2TileObjectCache().query()
                 .withId(JUNGLE_GRASS_ID).nearest();
         if (grass == null || grass.getWorldLocation().distanceTo(JUNGLE_GRASS_TILE) > 1) {
@@ -293,6 +299,19 @@ public class MmCavesScript extends Script {
             return;
         }
         grass.click("Investigate");
+        sleepUntil(() -> isUpperDungeon() || hasDungeonEntryConfirmation(), 7000);
+        confirmDungeonEntry();
+    }
+
+    private boolean hasDungeonEntryConfirmation() {
+        return Rs2Dialogue.hasDialogueOptionTitle("Climb into the secret entrance?", true)
+                && Rs2Dialogue.hasDialogueOption("Yes", true);
+    }
+
+    private void confirmDungeonEntry() {
+        if (hasDungeonEntryConfirmation()) {
+            Rs2Dialogue.clickOption("Yes", true);
+        }
         if (sleepUntil(this::isUpperDungeon, 7000)) {
             routeWaypointIndex = 0;
             lastRouteProgressTime = System.currentTimeMillis();
