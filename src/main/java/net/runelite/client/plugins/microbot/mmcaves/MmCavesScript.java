@@ -53,18 +53,19 @@ public class MmCavesScript extends Script {
     private MmCavesConfig config;
     private DungeonRoute route;
     private Mode mode;
-    public static State state = State.WALK_TO_ENTRANCE;
+    public static volatile State state = State.WALK_TO_ENTRANCE;
     public Instant startTime;
-    public static long lastAggroResetTime = System.currentTimeMillis();
+    public static volatile long lastAggroResetTime = System.currentTimeMillis();
     private long lastAttackTime = System.currentTimeMillis();
     private long lastDivinePotionAttempt = 0;
     private long lastBassEatAttempt = 0;
     private long lastStackStepTime = System.currentTimeMillis();
-    private boolean stackReady = false;
+    private volatile boolean stackReady = false;
+    private volatile MmCavesDecisions.StackCounts latestStackCounts;
     private int readySamples = 0;
     private int unreadySamples = 0;
     private final MmCavesHoverTracker hoverTracker = new MmCavesHoverTracker();
-    private int routeWaypointIndex;
+    private volatile int routeWaypointIndex;
     private long lastRouteProgressTime;
     private long lastRouteClickTime;
 
@@ -79,6 +80,11 @@ public class MmCavesScript extends Script {
     void stopHoverTracking() {
         hoverTracker.stop();
     }
+
+    int routeWaypointIndex() { return routeWaypointIndex; }
+    boolean stackReady() { return stackReady; }
+    MmCavesDecisions.StackCounts stackCounts() { return latestStackCounts; }
+    boolean hasStartedFight() { return firstFightStarted; }
 
     public void setConfig(MmCavesConfig config) {
         this.config = config;
@@ -102,7 +108,7 @@ public class MmCavesScript extends Script {
     private final int cavesUpstairs = 10383;
     private final long AGGRO_RESET_COOLDOWN = 10 * 60 * 1000; // RESET EVERY 10 MINUTES
 
-    private boolean firstFightStarted = false;
+    private volatile boolean firstFightStarted = false;
     private boolean resettingAggro = false;
     public boolean caveIsEmpty = false;
 
@@ -123,6 +129,7 @@ public class MmCavesScript extends Script {
         lastBassEatAttempt = 0;
         lastStackStepTime = System.currentTimeMillis();
         stackReady = false;
+        latestStackCounts = null;
         readySamples = 0;
         unreadySamples = 0;
         routeWaypointIndex = 0;
@@ -619,6 +626,7 @@ public class MmCavesScript extends Script {
                 .map(Rs2NpcModel::getWorldLocation)
                 .collect(Collectors.toList());
         MmCavesDecisions.StackCounts counts = MmCavesDecisions.countStack(monkeyTiles, FIGHTING_TILE_A, 8);
+        latestStackCounts = counts;
         boolean readyNow = counts.ready(config.minimumStackSize(), config.maximumOutsideStack());
         readySamples = readyNow ? readySamples + 1 : 0;
         unreadySamples = readyNow ? 0 : unreadySamples + 1;

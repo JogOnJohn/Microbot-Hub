@@ -44,6 +44,7 @@ public class MmCavesPlugin extends Plugin {
     }
 
     @Inject
+    @Getter
     private MmCavesScript script;
 
     @Inject
