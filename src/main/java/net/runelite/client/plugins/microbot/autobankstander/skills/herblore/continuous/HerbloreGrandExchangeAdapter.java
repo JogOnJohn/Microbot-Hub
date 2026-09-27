@@ -70,7 +70,7 @@ public final class HerbloreGrandExchangeAdapter {
         }
 
         int completed = details.getQuantitySold();
-        int actualCoins = details.getSpent();
+        long actualCoins = details.getSpent();
         if (completed < 0 || actualCoins < 0) {
             controller.stop("ambiguous GE completion accounting");
             return false;
