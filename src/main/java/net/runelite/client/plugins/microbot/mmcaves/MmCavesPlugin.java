@@ -77,6 +77,7 @@ public class MmCavesPlugin extends Plugin {
     protected void shutDown() {
         script.stopHoverTracking();
         script.shutdown();
+        script.releaseRangedPrayer();
         overlayManager.remove(mmCavesOverlay);
     }
 

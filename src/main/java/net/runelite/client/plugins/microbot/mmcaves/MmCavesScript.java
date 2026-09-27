@@ -62,6 +62,7 @@ public class MmCavesScript extends Script {
     private long lastStackStepTime = System.currentTimeMillis();
     private volatile boolean stackReady = false;
     private volatile MmCavesDecisions.StackCounts latestStackCounts;
+    private Rs2PrayerEnum ownedRangedPrayer;
     private int readySamples = 0;
     private int unreadySamples = 0;
     private final MmCavesHoverTracker hoverTracker = new MmCavesHoverTracker();
@@ -85,6 +86,27 @@ public class MmCavesScript extends Script {
     boolean stackReady() { return stackReady; }
     MmCavesDecisions.StackCounts stackCounts() { return latestStackCounts; }
     boolean hasStartedFight() { return firstFightStarted; }
+
+    void releaseRangedPrayer() {
+        if (ownedRangedPrayer != null && Microbot.isLoggedIn()) {
+            Rs2Prayer.toggle(ownedRangedPrayer, false);
+        }
+        ownedRangedPrayer = null;
+    }
+
+    private void updateRangedPrayer() {
+        if (state != State.FIGHT || mode != Mode.RANGE) {
+            releaseRangedPrayer();
+            return;
+        }
+        Rs2PrayerEnum prayer = Rs2Prayer.isRigourUnlocked() ? Rs2PrayerEnum.RIGOUR
+                : Rs2Player.getRealSkillLevel(Skill.PRAYER) >= 44 ? Rs2PrayerEnum.EAGLE_EYE : null;
+        if (prayer == null) return;
+        if (ownedRangedPrayer != null && ownedRangedPrayer != prayer) releaseRangedPrayer();
+        if (!Rs2Prayer.isPrayerActive(prayer)) {
+            if (Rs2Prayer.toggle(prayer, true)) ownedRangedPrayer = prayer;
+        }
+    }
 
     public void setConfig(MmCavesConfig config) {
         this.config = config;
@@ -159,6 +181,7 @@ public class MmCavesScript extends Script {
                     return;
                 }
                 state = getState();
+                updateRangedPrayer();
                 switch (state) {
                     case WALK_TO_ENTRANCE:
                         handleWalkToEntrance();
