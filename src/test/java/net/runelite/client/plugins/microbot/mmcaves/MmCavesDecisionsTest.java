@@ -61,6 +61,10 @@ class MmCavesDecisionsTest {
     void acceptsFiremakingCapeInInventory() {
         assertTrue(MmCavesDecisions.hasLightSource(
                 "Firemaking cape"::equals, name -> false));
+        assertTrue(MmCavesDecisions.hasLightSource(
+                "Firemaking cape(t)"::equals, name -> false));
+        assertTrue(MmCavesDecisions.hasLightSource(
+                name -> false, "Firemaking cape(t)"::equals));
     }
 
     @Test

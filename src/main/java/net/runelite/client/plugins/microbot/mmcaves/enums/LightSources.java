@@ -11,7 +11,7 @@ public enum LightSources {
     BRUMA_TORCH("Bruma torch"),
     ABBYSAL_LANTERN("Abbysal lantern"),
     FIREMAKING_CAPE("Firemaking cape"),
-    FIREMAKING_CAPE_T("Firemaking cape (t)");
+    FIREMAKING_CAPE_T("Firemaking cape(t)");
 
     private final String itemName;
 
