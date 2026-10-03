@@ -107,6 +107,8 @@ repositories {
 }
 
 dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.2'
     if (microbotClientPath) {
         def clientFile = file(microbotClientPath)
         if (!clientFile.exists()) {
@@ -120,6 +122,15 @@ dependencies {
         microbotRuntime "com.microbot:microbot:${microbotClientVersion}@jar"
         testImplementation "com.microbot:microbot:${microbotClientVersion}@jar"
     }
+    testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
+}
+
+test {
+    useJUnitPlatform()
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
 }
 
 application {
