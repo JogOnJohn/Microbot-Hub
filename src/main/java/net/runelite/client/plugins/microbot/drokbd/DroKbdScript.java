@@ -1941,7 +1941,7 @@ public class DroKbdScript extends Script
      * Inventory Setup quantities are authoritative.
      * Do not rewrite ammunition counts saved by the user (for example 40 bolts).
      */
-    private InventorySetup sanitizeTripSetup(InventorySetup source)
+    static InventorySetup sanitizeTripSetup(InventorySetup source)
     {
         return new InventorySetup(
                 copySetupItems(source.getInventory()),
@@ -1959,7 +1959,8 @@ public class DroKbdScript extends Script
                 source.isUnorderedHighlight(),
                 source.getSpellBook(),
                 source.isFavorite(),
-                source.getIconID());
+                source.getIconID(),
+                source.getAttackOption());
     }
 
     private static List<InventorySetupsItem> copySetupItems(List<InventorySetupsItem> source)
