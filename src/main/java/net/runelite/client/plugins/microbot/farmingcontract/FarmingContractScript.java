@@ -155,7 +155,7 @@ public class FarmingContractScript extends Script {
         for (Produce p : Produce.values()) {
             String contractName = FarmingContractData.CONTRACT_NAMES.getOrDefault(p, p.getName());
             if (normalizeContractCropName(contractName).equals(normalizedName)
-                    || normalizeContractCropName(p.getName()).equals(normalizedName)) {
+                || normalizeContractCropName(p.getName()).equals(normalizedName)) {
                 return p;
             }
         }
