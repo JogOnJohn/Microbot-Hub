@@ -31,6 +31,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 enum State {
@@ -141,7 +142,7 @@ public class AutoMiningScript extends Script {
                             }
                         }
 
-                        GameObject rock = Rs2GameObject.findReachableObject(activeRock.getName(), true, config.distanceToStray(), initialPlayerLocation);
+                        GameObject rock = findNearestReachableRock(activeRock, config.distanceToStray(), initialPlayerLocation);
 
                         if (rock != null) {
                             if (Rs2GameObject.interact(rock)) {
@@ -296,6 +297,23 @@ public class AutoMiningScript extends Script {
         }
 
         return false;
+    }
+
+    private GameObject findNearestReachableRock(Rocks rock, int distance, WorldPoint anchorPoint) {
+        if (rock == null || anchorPoint == null) {
+            return null;
+        }
+
+        Predicate<GameObject> rockNamePredicate = Rs2GameObject.nameMatches(rock.getName(), true);
+        WorldPoint playerLocation = Rs2Player.getWorldLocation();
+
+        return Rs2GameObject.getGameObjects(rockNamePredicate, anchorPoint, distance)
+                .stream()
+                .filter(Rs2GameObject::isReachable)
+                .min(Comparator.comparingInt(o -> playerLocation == null
+                        ? 0
+                        : o.getWorldLocation().distanceTo(playerLocation)))
+                .orElse(null);
     }
 
     private void updateStatus() {
