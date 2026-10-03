@@ -39,7 +39,7 @@ import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.prayer.Rs2Prayer;
 import net.runelite.client.plugins.microbot.util.prayer.Rs2PrayerEnum;
 import net.runelite.client.plugins.microbot.util.walker.Rs2PathApi;
-import net.runelite.client.plugins.microbot.util.walker.Rs2RouteResult;
+import net.runelite.client.plugins.microbot.shortestpath.pathfinder.Pathfinder;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 import net.runelite.client.plugins.skillcalculator.skills.MagicAction;
@@ -53,6 +53,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -124,7 +125,7 @@ public class BarrowsScript extends Script {
     long walkerDelay = Rs2Random.between(1000,2000);
 
     private WorldPoint FirstLoopTile;
-    private WorldPoint Chest = new WorldPoint(3552,9694,0);
+    private static final WorldPoint Chest = new WorldPoint(3552,9694,0);
 
     private Rs2PrayerEnum NeededPrayer;
     public static List<String> barrowsPieces = new ArrayList<>();
@@ -1835,18 +1836,12 @@ public class BarrowsScript extends Script {
             return Collections.emptyList();
         }
         try {
-            Optional<Rs2RouteResult> active = Rs2PathApi.getActiveRoute();
-            if(active.isPresent()){
-                Rs2RouteResult route = active.get();
-                List<WorldPoint> path = route.getPath();
-                if(path != null && path.size() >= 2){
-                    WorldPoint end = path.get(path.size() - 1);
-                    boolean towardChest = (end != null && end.distanceTo(Chest) <= 8)
-                            || (route.getTargets() != null && route.getTargets().stream()
-                            .anyMatch(t -> t != null && t.distanceTo(Chest) <= 8));
-                    if(towardChest){
-                        return path;
-                    }
+            Pathfinder active = Rs2PathApi.getPathfinder();
+            // Read a completed route rather than a path still being expanded by the planner.
+            if(active != null && active.isDone()){
+                List<WorldPoint> path = chestRoutePath(active.getPath(), active.getTargets());
+                if(!path.isEmpty()){
+                    return path;
                 }
             }
         } catch (Exception ignored) {
@@ -1861,6 +1856,17 @@ public class BarrowsScript extends Script {
             // empty
         }
         return Collections.emptyList();
+    }
+
+    static List<WorldPoint> chestRoutePath(List<WorldPoint> path, Set<WorldPoint> targets){
+        if(path == null || path.size() < 2){
+            return Collections.emptyList();
+        }
+        WorldPoint end = path.get(path.size() - 1);
+        boolean towardChest = (end != null && end.distanceTo(Chest) <= 8)
+                || (targets != null && targets.stream()
+                .anyMatch(t -> t != null && t.distanceTo(Chest) <= 8));
+        return towardChest ? new ArrayList<>(path) : Collections.emptyList();
     }
 
     /**
