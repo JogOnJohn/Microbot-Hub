@@ -3,6 +3,7 @@ package net.runelite.client.plugins.microbot.microhunter;
 import com.google.inject.Provides;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.events.NpcSpawned;
+import net.runelite.api.events.ClientTick;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -66,6 +67,11 @@ public class AutoHunterPlugin extends Plugin {
         if (overlayManager != null && autoHunterOverlay != null) {
             overlayManager.remove(autoHunterOverlay);
         }
+    }
+
+    @Subscribe
+    public void onClientTick(ClientTick event) {
+        if (autoChinScript != null) autoChinScript.onClientTick();
     }
 
     @Subscribe

@@ -126,7 +126,7 @@ public class AutoChinScript extends Script {
     private long delayedActionReadyAt;
     private WorldPoint lastCanvasMoveTile;
     private long lastCanvasMoveAt;
-    private WorldPoint preparedTrapTile;
+    private volatile WorldPoint preparedTrapTile;
     private long preparedTrapExpiresAt;
     private boolean preparedTrapNeedsReacquire;
     private final Map<Integer, Long> rejectedWorlds = new ConcurrentHashMap<>();
@@ -1114,6 +1114,39 @@ public class AutoChinScript extends Script {
             return clickbox == null ? null : clickbox.getBounds();
         }).orElse(null);
         return bounds == null || bounds.width < 3 || bounds.height < 3 ? null : bounds;
+    }
+
+    /** Follow the prepared trap's projection while reset movement shifts the camera. */
+    public void onClientTick() {
+        WorldPoint tile = preparedTrapTile;
+        if (tile == null || !Microbot.isLoggedIn() || Microbot.getClient().isMenuOpen()
+                || currentState == State.STOPPED || breakRecoveryRequested) {
+            return;
+        }
+        if (!Rs2Player.isMoving()) {
+            return;
+        }
+        Rs2TileObjectModel target = trapAt(tile);
+        AutoHunterPlanner.TrapState state = classify(target);
+        if (target == null || (state != AutoHunterPlanner.TrapState.CAUGHT
+                && state != AutoHunterPlanner.TrapState.FAILED)) {
+            clearPreparedTrap();
+            return;
+        }
+        java.awt.Shape shape = target.getClickbox();
+        if (shape == null) return;
+        Rectangle bounds = shape.getBounds();
+        int targetX = bounds.x + bounds.width / 2;
+        int targetY = bounds.y + bounds.height / 2;
+        if (!shape.contains(targetX, targetY)) return;
+        java.awt.Point cursor = Microbot.getMouse().getMousePosition();
+        if (cursor == null) return;
+        int x = cursor.x + (int) Math.round((targetX - cursor.x) * 0.25);
+        int y = cursor.y + (int) Math.round((targetY - cursor.y) * 0.25);
+        if (preparedTrapTile != null && preparedTrapTile.equals(tile)) {
+            Microbot.getMouse().move(x, y);
+            preparedTrapExpiresAt = System.currentTimeMillis() + 3_000;
+        }
     }
 
     private WorldPoint oldestActionableTrapExcluding(WorldPoint excluded) {
