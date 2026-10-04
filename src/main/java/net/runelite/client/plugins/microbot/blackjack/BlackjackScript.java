@@ -272,6 +272,7 @@ public class BlackjackScript extends Script
     private long pendingSouthernCurtainAt;
     private long pubStairActionAt;
     private long pubStairDiagnosticAt;
+    private long lastRunRestoreAttemptAt;
     private boolean restoreZoomAfterTravel;
     private long nextSouthernTentActionAt;
     private long nextSouthernTentPopulationCheckAt;
@@ -1899,6 +1900,26 @@ public class BlackjackScript extends Script
         }
     }
 
+    private void ensureRunAfterPreparation()
+    {
+        // Restore the actual run toggle, not just the saved auto-run preference.
+        if (autoRunBeforeLure != null || !Microbot.isLoggedIn()
+                || Microbot.getClient().isMenuOpen() || Rs2Player.isRunEnabled())
+        {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastRunRestoreAttemptAt < 2_000)
+        {
+            return;
+        }
+        lastRunRestoreAttemptAt = now;
+        if (Rs2Player.toggleRunEnergy(true))
+        {
+            log.info("Run re-enable requested after lure/restock: state={}", state);
+        }
+    }
+
     private void resetActiveBlackjackCycleForTentPreparation()
     {
         knockoutResult = KnockoutResult.NONE;
@@ -1919,6 +1940,7 @@ public class BlackjackScript extends Script
 
     private void acquireTarget()
     {
+        ensureRunAfterPreparation();
         if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
         {
             List<Rs2NpcModel> occupants = southernTentTargets();
@@ -2832,6 +2854,7 @@ public class BlackjackScript extends Script
 
     private void exitHouseForWine()
     {
+        ensureRunAfterPreparation();
         long now = System.currentTimeMillis();
         if (elapsedInState() >= WINE_EXIT_STATE_TIMEOUT_MS)
         {
@@ -2936,6 +2959,7 @@ public class BlackjackScript extends Script
 
     private void restockWine()
     {
+        ensureRunAfterPreparation();
         if (isInsideHouse())
         {
             transition(BlackjackState.EXITING_FOR_WINE, "Return outside before restocking");

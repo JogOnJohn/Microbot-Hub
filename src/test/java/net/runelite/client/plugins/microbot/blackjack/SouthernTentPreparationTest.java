@@ -12,6 +12,23 @@ import static org.junit.jupiter.api.Assertions.*;
 class SouthernTentPreparationTest
 {
     @Test
+    void runRestorationDoesNotInterruptActiveLure() throws Exception
+    {
+        BlackjackScript script = preparedScript(BlackjackScript.SouthernTentPhase.LEADING_THROUGH_CURTAIN);
+        try
+        {
+            set(script, "autoRunBeforeLure", Boolean.TRUE);
+            invoke(script, "ensureRunAfterPreparation");
+            assertEquals(0L, get(script, "lastRunRestoreAttemptAt"));
+            assertEquals(Boolean.TRUE, get(script, "autoRunBeforeLure"));
+        }
+        finally
+        {
+            dispose(script);
+        }
+    }
+
+    @Test
     void expiredPubResetStopsInsteadOfReassessingOnWrongFloor() throws Exception
     {
         for (BlackjackScript.SouthernTentPhase phase : new BlackjackScript.SouthernTentPhase[]{

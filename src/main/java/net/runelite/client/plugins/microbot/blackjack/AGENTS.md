@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.14 explicitly checks the game's run toggle during target acquisition after preparation and wine exit/restocking, restoring run when off with a two-second retry guard. Lure phases retain walking and the saved global auto-run preference remains unchanged.
+
 - Version 1.1.13 compares pub staircase menu coordinates converted through its world view with the model's footprint-origin world tile, not its local model centre. Refusal diagnostics report live menu identity/origin; off-screen staircase recovery faces the object at a bounded cadence. Synthetic invocation remains prohibited for these stairs. Automated stairs use is still pending live validation.
 
 - Version 1.1.12 avoids synthetic object invocation for the pub stairs after the 2026-10-04 client crash. Approach within two tiles, hover the visible live clickbox, require the exact top staircase ID/action/scene coordinates, then issue an ordinary mouse click. No off-screen synthetic fallback. The obfuscated ArrayIndexOutOfBoundsException does not establish the underlying client fault; treat this as a guarded workaround requiring live validation, not a proven client-engine fix.
