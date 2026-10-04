@@ -271,6 +271,7 @@ public class BlackjackScript extends Script
     private String pendingSouthernCurtainAction;
     private long pendingSouthernCurtainAt;
     private long pubStairActionAt;
+    private long pubStairDiagnosticAt;
     private boolean restoreZoomAfterTravel;
     private long nextSouthernTentActionAt;
     private long nextSouthernTentPopulationCheckAt;
@@ -746,7 +747,9 @@ public class BlackjackScript extends Script
                     || southernTentPhase == SouthernTentPhase.WAITING_UPSTAIRS
                     || southernTentPhase == SouthernTentPhase.DESCENDING_PUB_STAIRS)
             {
-                fail("Evicted Menaphite Thug did not stop following outside southern tent");
+                fail(southernTentPhase == SouthernTentPhase.WAITING_FOR_RELEASE
+                        ? "Evicted Menaphite Thug did not stop following outside southern tent"
+                        : "Pub follower reset timed out in " + southernTentPhase);
             }
             else if (southernTentPhase == SouthernTentPhase.WAITING_FOR_DIALOGUE
                     || southernTentPhase == SouthernTentPhase.ADVANCING_DIALOGUE
@@ -1459,6 +1462,12 @@ public class BlackjackScript extends Script
         Shape hull = Microbot.getClientThread().runOnClientThreadOptional(stairs::getClickbox).orElse(null);
         if (hull == null || Microbot.getClient().isMenuOpen())
         {
+            if (hull == null && System.currentTimeMillis() - pubStairDiagnosticAt >= 2_000)
+            {
+                pubStairDiagnosticAt = System.currentTimeMillis();
+                Rs2Camera.turnTo(stairs);
+                log.info("Pub staircase not visible; facing exact staircase {}", stairs.getWorldLocation());
+            }
             nextAction = "Wait for visible pub staircase";
             return false;
         }
@@ -1484,6 +1493,12 @@ public class BlackjackScript extends Script
         }
         if (point == null)
         {
+            if (System.currentTimeMillis() - pubStairDiagnosticAt >= 2_000)
+            {
+                pubStairDiagnosticAt = System.currentTimeMillis();
+                Rs2Camera.turnTo(stairs);
+                log.info("Pub staircase outside viewport; facing exact staircase {}", stairs.getWorldLocation());
+            }
             nextAction = "Pub staircase is outside viewport";
             return false;
         }
@@ -1498,11 +1513,21 @@ public class BlackjackScript extends Script
                 return false;
             }
             MenuEntry top = entries[entries.length - 1];
+            WorldPoint menuTile = stairs.getWorldView() == null ? null : WorldPoint.fromScene(
+                    stairs.getWorldView(), top.getParam0(), top.getParam1(), stairs.getPlane());
+            boolean matches = stairs.getWorldLocation().equals(menuTile);
+            if (System.currentTimeMillis() - pubStairDiagnosticAt >= 2_000)
+            {
+                pubStairDiagnosticAt = System.currentTimeMillis();
+                log.info("Pub staircase menu check: option={} id={} type={} menuTile={} expected={} originMatches={}",
+                        top.getOption(), top.getIdentifier(), top.getType(), menuTile,
+                        stairs.getWorldLocation(), matches);
+            }
             return action.equalsIgnoreCase(top.getOption())
                     && top.getIdentifier() == stairs.getId()
                     && top.getType() == net.runelite.api.MenuAction.GAME_OBJECT_FIRST_OPTION
-                    && top.getParam0() == stairs.getLocalLocation().getSceneX()
-                    && top.getParam1() == stairs.getLocalLocation().getSceneY();
+                    && matches
+                    && top.getWorldViewId() == stairs.getWorldView().getId();
         }).orElse(false);
         if (!verified)
         {

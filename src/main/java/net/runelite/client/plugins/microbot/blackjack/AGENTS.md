@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.13 compares pub staircase menu coordinates converted through its world view with the model's footprint-origin world tile, not its local model centre. Refusal diagnostics report live menu identity/origin; off-screen staircase recovery faces the object at a bounded cadence. Synthetic invocation remains prohibited for these stairs. Automated stairs use is still pending live validation.
+
 - Version 1.1.12 avoids synthetic object invocation for the pub stairs after the 2026-10-04 client crash. Approach within two tiles, hover the visible live clickbox, require the exact top staircase ID/action/scene coordinates, then issue an ordinary mouse click. No off-screen synthetic fallback. The obfuscated ArrayIndexOutOfBoundsException does not establish the underlying client fault; treat this as a guarded workaround requiring live validation, not a proven client-engine fix.
 
 - Version 1.1.11 adds a pub-stair follower reset after every completed outward lure: exact object 6242 at 3353,2958,0, confirmed plane 1, three-second upstairs wait, then exact object 6243 at 3353,2958,1 with live Climb-down action. Confirm ground-floor return and release before returning to the tent to recount occupants. Missing staircase/floor transitions stop at bounded deadlines. This is based on the operator's manual test and still requires automated live validation.
