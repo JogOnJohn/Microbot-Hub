@@ -12,6 +12,67 @@ import static org.junit.jupiter.api.Assertions.*;
 class SouthernTentPreparationTest
 {
     @Test
+    void expiredPubResetStopsInsteadOfReassessingOnWrongFloor() throws Exception
+    {
+        for (BlackjackScript.SouthernTentPhase phase : new BlackjackScript.SouthernTentPhase[]{
+                BlackjackScript.SouthernTentPhase.CLIMBING_PUB_STAIRS,
+                BlackjackScript.SouthernTentPhase.WAITING_UPSTAIRS,
+                BlackjackScript.SouthernTentPhase.DESCENDING_PUB_STAIRS})
+        {
+            BlackjackScript script = preparedScript(phase);
+            try
+            {
+                set(script, "southernTentPhaseEnteredAt", System.currentTimeMillis() - 21_000);
+                invoke(script, "prepareSouthernTent");
+                assertEquals(BlackjackState.ERROR, script.getState());
+            }
+            finally
+            {
+                dispose(script);
+            }
+        }
+    }
+
+    @Test
+    void expiredCurtainDispatchAllowsBoundedRetry() throws Exception
+    {
+        BlackjackScript script = preparedScript(BlackjackScript.SouthernTentPhase.OPENING_CURTAIN);
+        try
+        {
+            set(script, "pendingSouthernCurtain", new net.runelite.api.coords.WorldPoint(3350, 2957, 0));
+            set(script, "pendingSouthernCurtainAction", "Open");
+            set(script, "pendingSouthernCurtainAt", System.currentTimeMillis() - 3_100);
+            Method pending = BlackjackScript.class.getDeclaredMethod("southernCurtainActionPending");
+            pending.setAccessible(true);
+            assertEquals(false, pending.invoke(script));
+            assertNull(get(script, "pendingSouthernCurtain"));
+            assertNull(get(script, "pendingSouthernCurtainAction"));
+        }
+        finally
+        {
+            dispose(script);
+        }
+    }
+
+    @Test
+    void crossingDeadlineSurvivesRepeatedPhaseChanges() throws Exception
+    {
+        BlackjackScript script = preparedScript(BlackjackScript.SouthernTentPhase.OPENING_CURTAIN);
+        try
+        {
+            set(script, "southernTentPhaseEnteredAt", System.currentTimeMillis());
+            set(script, "southernCrossingStartedAt", System.currentTimeMillis() - 31_000);
+            invoke(script, "prepareSouthernTent");
+            assertEquals(BlackjackState.ERROR, script.getState());
+            assertTrue(script.getStopReason().contains("crossing did not complete"));
+        }
+        finally
+        {
+            dispose(script);
+        }
+    }
+
+    @Test
     void expiredCurtainPhasesRecoverBeforeAnyClientInteraction() throws Exception
     {
         for (BlackjackScript.SouthernTentPhase phase : new BlackjackScript.SouthernTentPhase[]{

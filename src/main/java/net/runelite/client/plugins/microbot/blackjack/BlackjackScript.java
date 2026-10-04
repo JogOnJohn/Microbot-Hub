@@ -187,6 +187,9 @@ public class BlackjackScript extends Script
         POSITIONING_TO_CLOSE(SOUTH_TENT_PHASE_TIMEOUT_MS),
         CLOSING_CURTAIN(SOUTH_TENT_PHASE_TIMEOUT_MS),
         WAITING_FOR_RELEASE(LURE_RELEASE_TIMEOUT_MS),
+        CLIMBING_PUB_STAIRS(20_000),
+        WAITING_UPSTAIRS(10_000),
+        DESCENDING_PUB_STAIRS(20_000),
         RETURNING_TO_TENT(SOUTH_TENT_TRANSIT_TIMEOUT_MS);
 
         private final long timeoutMs;
@@ -263,6 +266,12 @@ public class BlackjackScript extends Script
     private SouthernTentLureMode southernTentLureMode = SouthernTentLureMode.NONE;
     private SouthernTentPhase southernTentPhase = SouthernTentPhase.ASSESSING;
     private long southernTentPhaseEnteredAt;
+    private long southernCrossingStartedAt;
+    private WorldPoint pendingSouthernCurtain;
+    private String pendingSouthernCurtainAction;
+    private long pendingSouthernCurtainAt;
+    private long pubStairActionAt;
+    private boolean restoreZoomAfterTravel;
     private long nextSouthernTentActionAt;
     private long nextSouthernTentPopulationCheckAt;
     private long lureDialogueLastSeenAt;
@@ -386,7 +395,8 @@ public class BlackjackScript extends Script
         nextCameraRefacingAt = 0;
         lastCameraPitchAt = 0;
         lastCameraZoomAt = 0;
-        targetCameraZoom = -1;
+        targetCameraZoom = Rs2Camera.getZoom();
+        restoreZoomAfterTravel = true;
         lastCameraTargetLocation = null;
         targetClearReason = "None";
         restockAfterCombatReset = false;
@@ -723,9 +733,18 @@ public class BlackjackScript extends Script
         }
 
         // Check before handlers: visible objects and dialogues must not bypass the deadline.
+        if (southernCrossingStartedAt > 0
+                && System.currentTimeMillis() - southernCrossingStartedAt >= 30_000)
+        {
+            fail("Southern curtain crossing did not complete; follower may still be attached");
+            return;
+        }
         if (southernTentPhase.timedOut(elapsedInSouthernTentPhase()))
         {
-            if (southernTentPhase == SouthernTentPhase.WAITING_FOR_RELEASE)
+            if (southernTentPhase == SouthernTentPhase.WAITING_FOR_RELEASE
+                    || southernTentPhase == SouthernTentPhase.CLIMBING_PUB_STAIRS
+                    || southernTentPhase == SouthernTentPhase.WAITING_UPSTAIRS
+                    || southernTentPhase == SouthernTentPhase.DESCENDING_PUB_STAIRS)
             {
                 fail("Evicted Menaphite Thug did not stop following outside southern tent");
             }
@@ -785,6 +804,11 @@ public class BlackjackScript extends Script
                 break;
             case WAITING_FOR_RELEASE:
                 waitForEvictedTargetRelease();
+                break;
+            case CLIMBING_PUB_STAIRS:
+            case WAITING_UPSTAIRS:
+            case DESCENDING_PUB_STAIRS:
+                resetEvictedFollowerAtPub();
                 break;
             case RETURNING_TO_TENT:
                 transitSouthernTent(true);
@@ -1236,7 +1260,7 @@ public class BlackjackScript extends Script
         WorldPoint closePosition = southernTentLureMode == SouthernTentLureMode.INTO_TENT
                 ? SOUTH_THUG_WINE_DOOR_INSIDE_TILE
                 : SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE;
-        if (player.distanceTo2D(closePosition) <= 1)
+        if (player.equals(closePosition))
         {
             setSouthernTentPhase(SouthernTentPhase.CLOSING_CURTAIN,
                     "Close southern curtain after Lure");
@@ -1250,7 +1274,13 @@ public class BlackjackScript extends Script
     private void closeSouthernCurtainAfterLure()
     {
         Rs2NpcModel target = southernTentLureTarget();
-        if (target == null || !SouthernTentLureSafety.canClose(Rs2Player.getWorldLocation(),
+        // A dispatched object click can place the player on the threshold. Confirm its result first.
+        if (findSouthTentCurtain("Open") == null && southernCurtainActionPending())
+        {
+            nextAction = "Wait for southern curtain closure";
+            return;
+        }
+        if (target == null || !SouthernTentLureSafety.onDestinationSide(
                 target.getWorldLocation(), southernTentLureMode == SouthernTentLureMode.INTO_TENT))
         {
             setSouthernTentPhase(SouthernTentPhase.LEADING_THROUGH_CURTAIN,
@@ -1259,11 +1289,14 @@ public class BlackjackScript extends Script
         }
         if (findSouthTentCurtain("Open") != null)
         {
+            clearSouthernCurtainAction();
+            southernCrossingStartedAt = 0;
             if (southernTentLureMode == SouthernTentLureMode.OUT_OF_TENT)
             {
                 lureReleaseClearSince = 0;
-                setSouthernTentPhase(SouthernTentPhase.WAITING_FOR_RELEASE,
-                        "Wait for evicted thug to stop following");
+                pubStairActionAt = 0;
+                setSouthernTentPhase(SouthernTentPhase.CLIMBING_PUB_STAIRS,
+                        "Climb pub stairs to release evicted thug");
             }
             else
             {
@@ -1275,6 +1308,13 @@ public class BlackjackScript extends Script
         Rs2TileObjectModel openCurtain = findSouthTentCurtain("Close");
         if (openCurtain != null)
         {
+            if (!SouthernTentLureSafety.onDestinationSide(Rs2Player.getWorldLocation(),
+                    southernTentLureMode == SouthernTentLureMode.INTO_TENT))
+            {
+                setSouthernTentPhase(SouthernTentPhase.POSITIONING_TO_CLOSE,
+                        "Return to closing side of southern curtain");
+                return;
+            }
             interactWithSouthTentCurtain(openCurtain, "Close", "Close southern curtain after Lure");
             return;
         }
@@ -1335,6 +1375,142 @@ public class BlackjackScript extends Script
 
         lureReleaseClearSince = 0;
         nextAction = "Wait outside for evicted thug to stop following";
+    }
+
+    private void resetEvictedFollowerAtPub()
+    {
+        WorldPoint player = Rs2Player.getWorldLocation();
+        if (player == null)
+        {
+            return;
+        }
+        if (southernTentPhase == SouthernTentPhase.CLIMBING_PUB_STAIRS && player.getPlane() == 1)
+        {
+            pubStairActionAt = 0;
+            setSouthernTentPhase(SouthernTentPhase.WAITING_UPSTAIRS,
+                    "Wait upstairs for evicted thug to stop following");
+            return;
+        }
+        if (southernTentPhase == SouthernTentPhase.WAITING_UPSTAIRS)
+        {
+            if (player.getPlane() != 1)
+            {
+                fail("Unexpected floor during pub follower reset");
+                return;
+            }
+            if (elapsedInSouthernTentPhase() >= 3_000)
+            {
+                pubStairActionAt = 0;
+                setSouthernTentPhase(SouthernTentPhase.DESCENDING_PUB_STAIRS,
+                        "Climb down pub stairs after follower reset");
+            }
+            return;
+        }
+        if (southernTentPhase == SouthernTentPhase.DESCENDING_PUB_STAIRS && player.getPlane() == 0)
+        {
+            pubStairActionAt = 0;
+            lureReleaseClearSince = 0;
+            setSouthernTentPhase(SouthernTentPhase.WAITING_FOR_RELEASE,
+                    "Verify evicted thug released after pub stairs");
+            return;
+        }
+        int plane = southernTentPhase == SouthernTentPhase.CLIMBING_PUB_STAIRS ? 0 : 1;
+        if (player.getPlane() != plane)
+        {
+            fail("Unexpected floor approaching pub staircase");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (pubStairActionAt > 0 && now - pubStairActionAt < 3_000)
+        {
+            return;
+        }
+        WorldPoint stairTile = new WorldPoint(3353, 2958, plane);
+        if (player.distanceTo2D(stairTile) > 2)
+        {
+            walkSouthernRoute(stairTile, false, "Approach pub staircase before clicking");
+            return;
+        }
+        Rs2TileObjectModel stairs = Microbot.getRs2TileObjectCache().query()
+                .withId(plane == 0 ? 6242 : 6243)
+                .where(object -> stairTile.equals(object.getWorldLocation()))
+                .first();
+        String action = plane == 0 ? "Climb-up" : "Climb-down";
+        if (stairs != null && hasObjectAction(stairs, action))
+        {
+            if (clickVerifiedPubStaircase(stairs, action))
+            {
+                pubStairActionAt = now;
+                log.info("Pub follower-reset staircase dispatched: action={} player={}", action, player);
+            }
+        }
+        else if (player.distanceTo2D(stairTile) > 2)
+        {
+            walkSouthernRoute(stairTile, false, "Approach pub staircase for follower reset");
+        }
+        else
+        {
+            nextAction = "Wait for exact pub staircase action";
+        }
+    }
+
+    private boolean clickVerifiedPubStaircase(Rs2TileObjectModel stairs, String action)
+    {
+        Shape hull = Microbot.getClientThread().runOnClientThreadOptional(stairs::getClickbox).orElse(null);
+        if (hull == null || Microbot.getClient().isMenuOpen())
+        {
+            nextAction = "Wait for visible pub staircase";
+            return false;
+        }
+        Rectangle bounds = hull.getBounds();
+        int centreX = (int) bounds.getCenterX();
+        int centreY = (int) bounds.getCenterY();
+        Point point = hull.contains(centreX, centreY) && centreX > 0 && centreY > 0
+                && centreX < Microbot.getClient().getCanvasWidth()
+                && centreY < Microbot.getClient().getCanvasHeight()
+                ? new Point(centreX, centreY) : null;
+        for (int y = bounds.y; y < bounds.y + bounds.height && point == null; y++)
+        {
+            for (int x = bounds.x; x < bounds.x + bounds.width; x++)
+            {
+                if (hull.contains(x, y) && x > 0 && y > 0
+                        && x < Microbot.getClient().getCanvasWidth()
+                        && y < Microbot.getClient().getCanvasHeight())
+                {
+                    point = new Point(x, y);
+                    break;
+                }
+            }
+        }
+        if (point == null)
+        {
+            nextAction = "Pub staircase is outside viewport";
+            return false;
+        }
+        Microbot.naturalMouse.moveTo(point.getX(), point.getY());
+        boolean verified = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            MenuEntry[] entries = Microbot.getClient().getMenuEntries();
+            Point cursor = Microbot.getClient().getMouseCanvasPosition();
+            Shape liveHull = stairs.getClickbox();
+            if (entries == null || entries.length == 0 || cursor == null || liveHull == null
+                    || !liveHull.contains(cursor.getX(), cursor.getY()))
+            {
+                return false;
+            }
+            MenuEntry top = entries[entries.length - 1];
+            return action.equalsIgnoreCase(top.getOption())
+                    && top.getIdentifier() == stairs.getId()
+                    && top.getType() == net.runelite.api.MenuAction.GAME_OBJECT_FIRST_OPTION
+                    && top.getParam0() == stairs.getLocalLocation().getSceneX()
+                    && top.getParam1() == stairs.getLocalLocation().getSceneY();
+        }).orElse(false);
+        if (!verified)
+        {
+            nextAction = "Wait for verified pub staircase left-click option";
+            return false;
+        }
+        Microbot.getMouse().click();
+        return true;
     }
 
     private void transitSouthernTent(boolean entering)
@@ -1494,6 +1670,11 @@ public class BlackjackScript extends Script
             Rs2TileObjectModel curtain, String action, String description)
     {
         long now = System.currentTimeMillis();
+        if (southernCurtainActionPending())
+        {
+            nextAction = "Wait for southern curtain action to finish";
+            return false;
+        }
         if (curtain == null || now < nextSouthernTentActionAt
                 || !readyForInteraction(DOOR_INTERACTION_DELAY_MS))
         {
@@ -1505,11 +1686,44 @@ public class BlackjackScript extends Script
             return false;
         }
         lastInteractionAt = now;
+        pendingSouthernCurtain = curtain.getWorldLocation();
+        pendingSouthernCurtainAction = action;
+        pendingSouthernCurtainAt = now;
         nextSouthernTentActionAt = now + randomBetween(650, 951);
         nextAction = description;
         log.info("Southern curtain action dispatched: action={} phase={} player={}",
                 action, southernTentPhase, Rs2Player.getWorldLocation());
         return true;
+    }
+
+    private boolean southernCurtainActionPending()
+    {
+        if (pendingSouthernCurtain == null)
+        {
+            return false;
+        }
+        if (System.currentTimeMillis() - pendingSouthernCurtainAt >= 3_000)
+        {
+            clearSouthernCurtainAction();
+            return false;
+        }
+        boolean unchanged = Microbot.getRs2TileObjectCache().query()
+                .where(object -> pendingSouthernCurtain.equals(object.getWorldLocation())
+                        && hasObjectAction(object, pendingSouthernCurtainAction))
+                .nearestOnClientThread() != null;
+        if (!unchanged)
+        {
+            clearSouthernCurtainAction();
+            return false;
+        }
+        return true;
+    }
+
+    private void clearSouthernCurtainAction()
+    {
+        pendingSouthernCurtain = null;
+        pendingSouthernCurtainAction = null;
+        pendingSouthernCurtainAt = 0;
     }
 
     private Rs2NpcModel chooseRetainedSouthernTarget(List<Rs2NpcModel> occupants)
@@ -1578,6 +1792,8 @@ public class BlackjackScript extends Script
 
     private void restartSouthernTentAssessment(String reason)
     {
+        southernCrossingStartedAt = 0;
+        clearSouthernCurtainAction();
         restoreAutoRunAfterLure();
         log.warn("Southern tent preparation recovery: {}", reason);
         southernTentLureMode = SouthernTentLureMode.NONE;
@@ -1594,6 +1810,10 @@ public class BlackjackScript extends Script
 
     private void setSouthernTentPhase(SouthernTentPhase phase, String action)
     {
+        if (phase == SouthernTentPhase.MOVING_TO_CURTAIN && southernCrossingStartedAt == 0)
+        {
+            southernCrossingStartedAt = System.currentTimeMillis();
+        }
         if (southernTentPhase != phase)
         {
             log.info("Southern tent phase {} -> {} ({})", southernTentPhase, phase, action);
@@ -1611,6 +1831,9 @@ public class BlackjackScript extends Script
 
     private void resetSouthernTentPreparation()
     {
+        pubStairActionAt = 0;
+        southernCrossingStartedAt = 0;
+        clearSouthernCurtainAction();
         restoreAutoRunAfterLure();
         southernTentLureTargetIndex = -1;
         southernTentLureNpc = null;
@@ -3973,12 +4196,18 @@ public class BlackjackScript extends Script
             return;
         }
         int tolerance = Math.max(1, targetCameraZoom * CAMERA_ZOOM_TOLERANCE_PERCENT / 100);
+        if (!restoreZoomAfterTravel)
+        {
+            targetCameraZoom = currentZoom;
+            return;
+        }
         if (Math.abs(currentZoom - targetCameraZoom) > tolerance)
         {
             Rs2Camera.setZoom(targetCameraZoom);
             log.debug("Restoring blackjack camera zoom: {} -> {}", currentZoom, targetCameraZoom);
         }
         lastCameraZoomAt = now;
+        restoreZoomAfterTravel = false;
     }
 
     private void maintainTopDownCamera()
@@ -4603,6 +4832,12 @@ public class BlackjackScript extends Script
 
     private void transition(BlackjackState newState, String action)
     {
+        if (newState == BlackjackState.EXITING_FOR_WINE
+                || newState == BlackjackState.RETURNING_WITH_WINE
+                || newState == BlackjackState.PREPARING_SOUTHERN_TENT)
+        {
+            restoreZoomAfterTravel = true;
+        }
         if (newState != BlackjackState.PREPARING_SOUTHERN_TENT)
         {
             restoreAutoRunAfterLure();
