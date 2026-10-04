@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.15 captures operator zoom on enable and uses the target's standing orientation for front-facing yaw, preserving it through unconscious animation. Stationary targets no longer bypass yaw correction. Continuous hull/menu failures use the existing bounded aim recovery; eight seconds without actual outcome feedback triggers camera/anchor recovery at most once every four seconds. Dispatches alone do not reset that watchdog. Normal healing/restock/break priority remains unchanged. Gameplay validation required.
+
 - Version 1.1.14 explicitly checks the game's run toggle during target acquisition after preparation and wine exit/restocking, restoring run when off with a two-second retry guard. Lure phases retain walking and the saved global auto-run preference remains unchanged.
 
 - Version 1.1.13 compares pub staircase menu coordinates converted through its world view with the model's footprint-origin world tile, not its local model centre. Refusal diagnostics report live menu identity/origin; off-screen staircase recovery faces the object at a bounded cadence. Synthetic invocation remains prohibited for these stairs. Automated stairs use is still pending live validation.

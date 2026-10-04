@@ -12,6 +12,16 @@ import static org.junit.jupiter.api.Assertions.*;
 class SouthernTentPreparationTest
 {
     @Test
+    void continuousFeedbackRecoveryIsBoundedAndRespectsRealFeedback()
+    {
+        assertFalse(BlackjackScript.continuousFeedbackTimedOut(20_000, 0, 0));
+        assertFalse(BlackjackScript.continuousFeedbackTimedOut(20_000, 12_001, 0));
+        assertTrue(BlackjackScript.continuousFeedbackTimedOut(20_000, 12_000, 0));
+        assertFalse(BlackjackScript.continuousFeedbackTimedOut(20_000, 12_000, 16_001));
+        assertTrue(BlackjackScript.continuousFeedbackTimedOut(20_000, 12_000, 16_000));
+    }
+
+    @Test
     void runRestorationDoesNotInterruptActiveLure() throws Exception
     {
         BlackjackScript script = preparedScript(BlackjackScript.SouthernTentPhase.LEADING_THROUGH_CURTAIN);

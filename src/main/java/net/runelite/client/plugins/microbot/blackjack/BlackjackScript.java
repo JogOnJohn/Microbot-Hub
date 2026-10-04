@@ -273,6 +273,10 @@ public class BlackjackScript extends Script
     private long pubStairActionAt;
     private long pubStairDiagnosticAt;
     private long lastRunRestoreAttemptAt;
+    private long lastBlackjackFeedbackAt;
+    private long lastContinuousRecoveryAt;
+    private int cameraFacingTargetIndex = -1;
+    private int cameraStandingYaw;
     private boolean restoreZoomAfterTravel;
     private long nextSouthernTentActionAt;
     private long nextSouthernTentPopulationCheckAt;
@@ -398,6 +402,10 @@ public class BlackjackScript extends Script
         lastCameraPitchAt = 0;
         lastCameraZoomAt = 0;
         targetCameraZoom = Rs2Camera.getZoom();
+        log.info("Captured operator blackjack zoom on enable: {}", targetCameraZoom);
+        lastBlackjackFeedbackAt = 0;
+        lastContinuousRecoveryAt = 0;
+        cameraFacingTargetIndex = -1;
         restoreZoomAfterTravel = true;
         lastCameraTargetLocation = null;
         targetClearReason = "None";
@@ -1940,6 +1948,7 @@ public class BlackjackScript extends Script
 
     private void acquireTarget()
     {
+        lastBlackjackFeedbackAt = System.currentTimeMillis();
         ensureRunAfterPreparation();
         if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
         {
@@ -2078,6 +2087,26 @@ public class BlackjackScript extends Script
 
         maintainTargetCamera(target);
         long now = System.currentTimeMillis();
+        if (lastBlackjackFeedbackAt == 0)
+        {
+            lastBlackjackFeedbackAt = now;
+        }
+        if (continuousFeedbackTimedOut(now, lastBlackjackFeedbackAt, lastContinuousRecoveryAt))
+        {
+            lastContinuousRecoveryAt = now;
+            burstClickPoint = null;
+            clearStandingClickAnchor();
+            faceKnockoutTarget(target);
+            Rs2Camera.setPitch(TARGET_CAMERA_PITCH);
+            if (targetCameraZoom >= 0)
+            {
+                Rs2Camera.setZoom(targetCameraZoom);
+            }
+            nextPickpocketClickAt = now + 80;
+            log.warn("Continuous blackjack feedback stalled; recentering camera/cursor: ageMs={} targetIndex={}",
+                    now - lastBlackjackFeedbackAt, target.getIndex());
+            return;
+        }
         if (now < nextPickpocketClickAt)
         {
             return;
@@ -2086,11 +2115,13 @@ public class BlackjackScript extends Script
         String action = clickCurrentBlackjackOption(target);
         if (action == null)
         {
+            handleKnockoutAimFailure(target, "continuous hull/menu validation failed");
             nextPickpocketClickAt = now + 35;
             return;
         }
 
         now = System.currentTimeMillis();
+        resetKnockoutAimRecovery();
         lastInteractionAt = now;
         nextPickpocketClickAt = now + randomPickpocketDelay(false);
 
@@ -3382,6 +3413,12 @@ public class BlackjackScript extends Script
         Outcome outcome;
         while ((outcome = outcomes.poll()) != null)
         {
+            if (outcome == Outcome.KNOCKOUT_SUCCESS || outcome == Outcome.KNOCKOUT_FAILED
+                    || outcome == Outcome.PICKPOCKET_SUCCESS || outcome == Outcome.PICKPOCKET_FAILED
+                    || outcome == Outcome.STUNNED)
+            {
+                lastBlackjackFeedbackAt = System.currentTimeMillis();
+            }
             switch (outcome)
             {
                 case KNOCKOUT_SUCCESS:
@@ -3932,7 +3969,7 @@ public class BlackjackScript extends Script
         {
             return;
         }
-        int targetYaw = Rs2Camera.calculateCameraYaw(Rs2Camera.angleToTile(target.getNpc()));
+        int targetYaw = frontFacingTargetYaw(target);
         Rs2Camera.setYaw(targetYaw);
         nextCameraRefacingAt = 0;
         lastCameraTargetLocation = target.getWorldLocation();
@@ -4188,10 +4225,6 @@ public class BlackjackScript extends Script
         maintainTargetZoom();
 
         WorldPoint targetLocation = target.getWorldLocation();
-        if (targetLocation.equals(lastCameraTargetLocation))
-        {
-            return;
-        }
         if (COMBAT_SAFE_TILE.equals(targetLocation))
         {
             lastCameraTargetLocation = targetLocation;
@@ -4211,11 +4244,13 @@ public class BlackjackScript extends Script
             return;
         }
 
-        int targetYaw = Rs2Camera.calculateCameraYaw(Rs2Camera.angleToTile(target.getNpc()));
+        int targetYaw = frontFacingTargetYaw(target);
         int currentYaw = Rs2Camera.getYaw();
         int delta = (targetYaw - currentYaw + 3_072) % 2_048 - 1_024;
         if (Math.abs(delta) >= CAMERA_PIVOT_THRESHOLD)
         {
+            burstClickPoint = null;
+            clearStandingClickAnchor();
             Rs2Camera.setYaw(targetYaw);
             log.debug("Refacing camera toward moved target: location={}, yaw={} -> {}",
                     targetLocation, currentYaw, targetYaw);
@@ -4257,6 +4292,22 @@ public class BlackjackScript extends Script
         }
         lastCameraZoomAt = now;
         restoreZoomAfterTravel = false;
+    }
+
+    private int frontFacingTargetYaw(Rs2NpcModel target)
+    {
+        if (cameraFacingTargetIndex != target.getIndex()
+                || target.getAnimation() != AnimationID.HUMAN_UNCONSCIOUS)
+        {
+            cameraFacingTargetIndex = target.getIndex();
+            cameraStandingYaw = target.getNpc().getOrientation();
+        }
+        return cameraStandingYaw;
+    }
+
+    static boolean continuousFeedbackTimedOut(long now, long feedbackAt, long recoveryAt)
+    {
+        return feedbackAt > 0 && now - feedbackAt >= 8_000 && now - recoveryAt >= 4_000;
     }
 
     private void maintainTopDownCamera()
