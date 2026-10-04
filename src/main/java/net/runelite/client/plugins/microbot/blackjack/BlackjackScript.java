@@ -47,6 +47,7 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class BlackjackScript extends Script
 {
+    private final BlackjackCameraTurn cameraTurn = new BlackjackCameraTurn();
     private enum BreakPhase { NONE, FINISHING_CYCLE, EXITING, CLIMBING, UPSTAIRS, DESCENDING, QUIET, RELEASED }
     private BreakPreparation.Handle breakPreparation;
     private BreakPhase breakPhase = BreakPhase.NONE;
@@ -367,6 +368,7 @@ public class BlackjackScript extends Script
 
     public boolean run(BlackjackConfig config)
     {
+        cameraTurn.cancel();
         closeBreakPreparation();
         breakPreparation = BreakPreparation.register("blackjack");
         breakPhase = BreakPhase.NONE;
@@ -4208,7 +4210,7 @@ public class BlackjackScript extends Script
             return;
         }
         int targetYaw = frontFacingTargetYaw(target);
-        Rs2Camera.setYaw(targetYaw);
+        requestCameraTurn(targetYaw);
         nextCameraRefacingAt = 0;
         lastCameraTargetLocation = target.getWorldLocation();
     }
@@ -4477,7 +4479,7 @@ public class BlackjackScript extends Script
                     CAMERA_REFACING_MIN_DELAY_MS,
                     CAMERA_REFACING_MAX_DELAY_MS);
         }
-        if (now < nextCameraRefacingAt || Microbot.getClient().isMenuOpen())
+        if (now < nextCameraRefacingAt || cameraTurn.isActive() || Microbot.getClient().isMenuOpen())
         {
             return;
         }
@@ -4489,7 +4491,7 @@ public class BlackjackScript extends Script
         {
             burstClickPoint = null;
             clearStandingClickAnchor();
-            Rs2Camera.setYaw(targetYaw);
+            requestCameraTurn(targetYaw);
             log.debug("Refacing camera toward moved target: location={}, yaw={} -> {}",
                     targetLocation, currentYaw, targetYaw);
         }
@@ -4538,14 +4540,44 @@ public class BlackjackScript extends Script
                 || target.getAnimation() != AnimationID.HUMAN_UNCONSCIOUS)
         {
             cameraFacingTargetIndex = target.getIndex();
-            cameraStandingYaw = frontFacingCameraYaw(target.getNpc().getOrientation());
+            cameraStandingYaw = Microbot.getClientThread().runOnClientThreadOptional(
+                    () -> frontFacingCameraYaw(target.getNpc().getOrientation())).orElse(cameraStandingYaw);
         }
         return cameraStandingYaw;
     }
 
     static int frontFacingCameraYaw(int orientation)
     {
-        return (orientation + 1_024) & 2_047;
+        // Actor: S=0,W=512,N=1024,E=1536; camera view: N=0,W=512,S=1024,E=1536.
+        return (-orientation) & 2_047;
+    }
+
+    private void requestCameraTurn(int yaw)
+    {
+        Microbot.getClientThread().invoke(() -> {
+            if (!shutdownRequested && state != BlackjackState.ERROR && state != BlackjackState.STOPPED)
+            {
+                cameraTurn.start(Rs2Camera.getYaw(), yaw, System.nanoTime() / 1_000_000,
+                        randomBetween(900, 1_401));
+            }
+        });
+    }
+
+    public void onCameraClientTick()
+    {
+        if (shutdownRequested || state == BlackjackState.ERROR || state == BlackjackState.STOPPED
+                || state == BlackjackState.WAITING_FOR_BREAK || !Microbot.isLoggedIn()
+                || Microbot.pauseAllScripts.get() || Microbot.getClient().isMenuOpen())
+        {
+            cameraTurn.cancel();
+            return;
+        }
+        Integer yaw = cameraTurn.sample(System.nanoTime() / 1_000_000);
+        if (yaw != null)
+        {
+            // This writes only the current frame's target; it contains no sleeping interpolation.
+            Rs2Camera.setYawInstant(yaw);
+        }
     }
 
     static boolean continuousFeedbackTimedOut(long now, long feedbackAt, long recoveryAt)
@@ -4845,7 +4877,7 @@ public class BlackjackScript extends Script
             int magnitude = ThreadLocalRandom.current().nextInt(90, 151);
             int direction = ThreadLocalRandom.current().nextBoolean() ? 1 : -1;
             int yaw = (Rs2Camera.getYaw() + direction * magnitude + 2_048) % 2_048;
-            Rs2Camera.setYaw(yaw);
+            requestCameraTurn(yaw);
             curtainCameraAdjusted = true;
             log.info("Rotating camera to clear curtain obstruction: yaw={}", yaw);
         }
@@ -5210,6 +5242,7 @@ public class BlackjackScript extends Script
 
     private void fail(String reason)
     {
+        cameraTurn.cancel();
         closeBreakPreparation();
         stopReason = reason;
         log.error("Blackjack stopped: {}", reason);
@@ -5244,6 +5277,7 @@ public class BlackjackScript extends Script
     public void shutdown()
     {
         shutdownRequested = true;
+        cameraTurn.cancel();
         closeBreakPreparation();
         restoreAutoRunAfterLure();
         if (!hasBlackjackEquipped()

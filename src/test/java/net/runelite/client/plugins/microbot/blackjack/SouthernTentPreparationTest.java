@@ -12,13 +12,17 @@ import static org.junit.jupiter.api.Assertions.*;
 class SouthernTentPreparationTest
 {
     @Test
-    void frontFacingCameraUsesOppositeSideAndWrapsYaw()
+    void frontFacingCameraConvertsActorConventionAndWrapsYaw()
     {
-        assertEquals(1024, BlackjackScript.frontFacingCameraYaw(0));
+        assertEquals(0, BlackjackScript.frontFacingCameraYaw(0));
         assertEquals(1536, BlackjackScript.frontFacingCameraYaw(512));
-        assertEquals(0, BlackjackScript.frontFacingCameraYaw(1024));
+        assertEquals(1024, BlackjackScript.frontFacingCameraYaw(1024));
         assertEquals(512, BlackjackScript.frontFacingCameraYaw(1536));
-        assertEquals(1023, BlackjackScript.frontFacingCameraYaw(2047));
+        assertEquals(1, BlackjackScript.frontFacingCameraYaw(2047));
+        assertEquals(1792, BlackjackScript.frontFacingCameraYaw(256));
+        assertEquals(1280, BlackjackScript.frontFacingCameraYaw(768));
+        assertEquals(768, BlackjackScript.frontFacingCameraYaw(1280));
+        assertEquals(256, BlackjackScript.frontFacingCameraYaw(1792));
     }
 
     @Test

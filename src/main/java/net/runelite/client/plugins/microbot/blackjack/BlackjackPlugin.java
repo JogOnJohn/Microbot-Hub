@@ -8,6 +8,7 @@ import net.runelite.api.ItemContainer;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.OverheadTextChanged;
 import net.runelite.api.events.StatChanged;
 import net.runelite.client.config.ConfigManager;
@@ -40,7 +41,7 @@ import java.util.jar.JarFile;
 @Slf4j
 public class BlackjackPlugin extends Plugin
 {
-    public static final String VERSION = "1.1.17";
+    public static final String VERSION = "1.1.18";
 
     @Inject
     @Getter
@@ -89,6 +90,12 @@ public class BlackjackPlugin extends Plugin
     {
         script.shutdown();
         overlayManager.remove(overlay);
+    }
+
+    @Subscribe
+    public void onClientTick(ClientTick event)
+    {
+        script.onCameraClientTick();
     }
 
     @Subscribe
