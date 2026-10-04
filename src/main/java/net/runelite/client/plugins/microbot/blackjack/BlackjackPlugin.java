@@ -37,7 +37,7 @@ import java.util.jar.JarFile;
 @Slf4j
 public class BlackjackPlugin extends Plugin
 {
-    public static final String VERSION = "1.1.15";
+    public static final String VERSION = "1.1.16";
 
     @Inject
     @Getter

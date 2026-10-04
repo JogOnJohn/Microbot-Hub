@@ -12,6 +12,16 @@ import static org.junit.jupiter.api.Assertions.*;
 class SouthernTentPreparationTest
 {
     @Test
+    void frontFacingCameraUsesOppositeSideAndWrapsYaw()
+    {
+        assertEquals(1024, BlackjackScript.frontFacingCameraYaw(0));
+        assertEquals(1536, BlackjackScript.frontFacingCameraYaw(512));
+        assertEquals(0, BlackjackScript.frontFacingCameraYaw(1024));
+        assertEquals(512, BlackjackScript.frontFacingCameraYaw(1536));
+        assertEquals(1023, BlackjackScript.frontFacingCameraYaw(2047));
+    }
+
+    @Test
     void continuousFeedbackRecoveryIsBoundedAndRespectsRealFeedback()
     {
         assertFalse(BlackjackScript.continuousFeedbackTimedOut(20_000, 0, 0));

@@ -4300,9 +4300,14 @@ public class BlackjackScript extends Script
                 || target.getAnimation() != AnimationID.HUMAN_UNCONSCIOUS)
         {
             cameraFacingTargetIndex = target.getIndex();
-            cameraStandingYaw = target.getNpc().getOrientation();
+            cameraStandingYaw = frontFacingCameraYaw(target.getNpc().getOrientation());
         }
         return cameraStandingYaw;
+    }
+
+    static int frontFacingCameraYaw(int orientation)
+    {
+        return (orientation + 1_024) & 2_047;
     }
 
     static boolean continuousFeedbackTimedOut(long now, long feedbackAt, long recoveryAt)

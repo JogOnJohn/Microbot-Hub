@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.16 corrects the observed inverted front-facing yaw: camera yaw is the NPC's standing orientation plus 1024, wrapped to 0..2047. The lock through unconscious animation remains intact. Cardinal/wrap tests cover the conversion; visual confirmation remains necessary.
+
 - Version 1.1.15 captures operator zoom on enable and uses the target's standing orientation for front-facing yaw, preserving it through unconscious animation. Stationary targets no longer bypass yaw correction. Continuous hull/menu failures use the existing bounded aim recovery; eight seconds without actual outcome feedback triggers camera/anchor recovery at most once every four seconds. Dispatches alone do not reset that watchdog. Normal healing/restock/break priority remains unchanged. Gameplay validation required.
 
 - Version 1.1.14 explicitly checks the game's run toggle during target acquisition after preparation and wine exit/restocking, restoring run when off with a two-second retry guard. Lure phases retain walking and the saved global auto-run preference remains unchanged.
