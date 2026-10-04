@@ -17,6 +17,7 @@ import net.runelite.api.gameval.ItemID;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.MicrobotConfig;
 import net.runelite.client.plugins.microbot.Script;
+import net.runelite.client.plugins.microbot.breakhandler.BreakPreparation;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
 import net.runelite.client.plugins.microbot.api.tileitem.models.Rs2TileItemModel;
 import net.runelite.client.plugins.microbot.api.tileobject.Rs2TileObjectQueryable;
@@ -46,6 +47,14 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class BlackjackScript extends Script
 {
+    private enum BreakPhase { NONE, FINISHING_CYCLE, EXITING, CLIMBING, UPSTAIRS, DESCENDING, QUIET, RELEASED }
+    private BreakPreparation.Handle breakPreparation;
+    private BreakPhase breakPhase = BreakPhase.NONE;
+    private long breakRequestedAt;
+    private long breakPhaseAt;
+    private long breakQuietSince;
+    private BlackjackState breakResumeState;
+
     private static final WorldArea BANDIT_HOUSE = new WorldArea(3357, 2991, 4, 5, 0);
     private static final WorldPoint BANDIT_HOUSE_CENTRE = new WorldPoint(3358, 2993, 0);
     private static final WorldPoint SOUTH_THUG_TENT_CENTRE = new WorldPoint(3349, 2954, 0);
@@ -358,6 +367,10 @@ public class BlackjackScript extends Script
 
     public boolean run(BlackjackConfig config)
     {
+        closeBreakPreparation();
+        breakPreparation = BreakPreparation.register("blackjack");
+        breakPhase = BreakPhase.NONE;
+        breakRequestedAt = 0;
         this.config = config;
         outcomes.clear();
         successfulKnockouts = 0;
@@ -457,6 +470,10 @@ public class BlackjackScript extends Script
                 }
 
                 updateHealingRequirement();
+                if (handleBreakPreparation())
+                {
+                    return;
+                }
                 maintainTopDownCamera();
 
                 if (handleWineRestockPriority())
@@ -603,6 +620,227 @@ public class BlackjackScript extends Script
             default:
                 break;
         }
+    }
+
+    private boolean handleBreakPreparation()
+    {
+        boolean requested = breakPreparation != null && breakPreparation.isRequested();
+        if (!requested)
+        {
+            if (breakPhase == BreakPhase.NONE)
+            {
+                breakRequestedAt = 0;
+                return false;
+            }
+            if (breakPhase != BreakPhase.RELEASED)
+            {
+                fail("Break preparation cancelled before reaching safety");
+                return true;
+            }
+            breakPhase = BreakPhase.NONE;
+            breakRequestedAt = 0;
+            targetIndex = -1;
+            clearStandingClickAnchor();
+            transition(breakResumeState, "Resume after scheduled break");
+            return true;
+        }
+        if (breakPhase == BreakPhase.RELEASED)
+        {
+            return true;
+        }
+        long now = System.currentTimeMillis();
+        if (breakRequestedAt == 0)
+        {
+            breakRequestedAt = now;
+        }
+        if (now - breakRequestedAt >= 110_000)
+        {
+            fail("Unable to reach a safe break location; break request cancelled");
+            return true;
+        }
+        // Finish luring/critical healing instead of abandoning a follower or food run.
+        if (breakPhase == BreakPhase.NONE && (state == BlackjackState.PREPARING_SOUTHERN_TENT
+                || (healingRequired && Rs2Inventory.count(WINE_ID) == 0)))
+        {
+            return false;
+        }
+        if (healingRequired && Rs2Inventory.count(WINE_ID) > 0)
+        {
+            drinkWineIfReady("Heal before scheduled break");
+            return true;
+        }
+        if (breakPhase == BreakPhase.NONE)
+        {
+            breakResumeState = wineRestockPending || isWineRestockState()
+                    ? BlackjackState.RESTOCKING_WINE : BlackjackState.RETURNING_TO_HOUSE;
+            setBreakPhase(BreakPhase.FINISHING_CYCLE, "Finish current pickpocket window before break");
+        }
+        WorldPoint player = Rs2Player.getWorldLocation();
+        if (player == null)
+        {
+            return true;
+        }
+        switch (breakPhase)
+        {
+            case FINISHING_CYCLE:
+                Rs2NpcModel target = currentTarget();
+                if (target != null && target.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS
+                        && now - breakPhaseAt < 3_000)
+                {
+                    if (now >= nextPickpocketClickAt)
+                    {
+                        Point anchor = targetAnchor(target, burstClickPoint);
+                        if (anchor != null)
+                        {
+                            moveAndLeftClickTargetOption(target, anchor, "Pickpocket");
+                        }
+                        nextPickpocketClickAt = now + randomBetween(100, 201);
+                    }
+                    return true;
+                }
+                // A completed outward wine leg already secured the curtain.
+                if (!isInsideHouse() && (state == BlackjackState.RESTOCKING_WINE
+                        || state == BlackjackState.RETURNING_WITH_WINE))
+                {
+                    setBreakPhase(BreakPhase.QUIET, "Wait for combat to clear before break");
+                }
+                else
+                {
+                    setBreakPhase(BreakPhase.EXITING, "Leave and secure tent before break");
+                    transition(BlackjackState.EXITING_FOR_WINE, "Leave tent for scheduled break");
+                }
+                break;
+            case EXITING:
+                if (state == BlackjackState.EXITING_FOR_WINE)
+                {
+                    if (selectedTarget() != BlackjackTarget.MENAPHITE_THUG
+                            || !openSouthernInnerCurtainIfNeeded(activeWineDoorOutsideTile()))
+                    {
+                        exitHouseForWine();
+                    }
+                }
+                else if (state == BlackjackState.SECURING_WINE_EXIT)
+                {
+                    secureWineExit();
+                }
+                else if (state == BlackjackState.RESTOCKING_WINE)
+                {
+                    pubStairActionAt = 0;
+                    setBreakPhase(selectedTarget() == BlackjackTarget.MENAPHITE_THUG
+                            ? BreakPhase.CLIMBING : BreakPhase.QUIET, "Clear follower before break");
+                }
+                break;
+            case CLIMBING:
+                if (player.getPlane() == 1)
+                {
+                    setBreakPhase(BreakPhase.UPSTAIRS, "Wait upstairs to release follower");
+                }
+                else
+                {
+                    clickBreakStairs(player, 0);
+                }
+                break;
+            case UPSTAIRS:
+                if (player.getPlane() != 1)
+                {
+                    fail("Unexpected floor during break preparation");
+                }
+                else if (now - breakPhaseAt >= 3_000)
+                {
+                    pubStairActionAt = 0;
+                    setBreakPhase(BreakPhase.DESCENDING, "Return downstairs before break");
+                }
+                break;
+            case DESCENDING:
+                if (player.getPlane() == 0)
+                {
+                    setBreakPhase(BreakPhase.QUIET, "Wait for combat to clear before break");
+                }
+                else
+                {
+                    clickBreakStairs(player, 1);
+                }
+                break;
+            case QUIET:
+                if (player.getPlane() != 0 || isInsideHouse() || Rs2Player.isMoving()
+                        || Rs2Player.isInCombat() || Rs2Player.isInteracting() || isNpcTargetingPlayer())
+                {
+                    breakQuietSince = 0;
+                }
+                else if (breakQuietSince == 0)
+                {
+                    breakQuietSince = now;
+                }
+                else if (now - breakQuietSince >= 1_800)
+                {
+                    breakPreparation.ready();
+                    setBreakPhase(BreakPhase.RELEASED, "Safe for scheduled break");
+                    transition(BlackjackState.WAITING_FOR_BREAK, "Wait for Break Handler to finish");
+                }
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
+    private void setBreakPhase(BreakPhase phase, String description)
+    {
+        log.info("Blackjack break preparation {} -> {} ({})", breakPhase, phase, description);
+        breakPhase = phase;
+        breakPhaseAt = System.currentTimeMillis();
+        breakQuietSince = 0;
+        nextAction = description;
+    }
+
+    private void clickBreakStairs(WorldPoint player, int plane)
+    {
+        if (player.getPlane() != plane)
+        {
+            fail("Unexpected floor approaching break staircase");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - pubStairActionAt < 3_000)
+        {
+            return;
+        }
+        WorldPoint tile = new WorldPoint(3353, 2958, plane);
+        if (player.distanceTo2D(tile) > 2)
+        {
+            walkSouthernRoute(tile, true, "Approach pub stairs for break");
+            return;
+        }
+        Rs2TileObjectModel stairs = Microbot.getRs2TileObjectCache().query()
+                .withId(plane == 0 ? 6242 : 6243)
+                .where(object -> tile.equals(object.getWorldLocation())).first();
+        if (stairs != null && clickVerifiedPubStaircase(stairs, plane == 0 ? "Climb-up" : "Climb-down"))
+        {
+            pubStairActionAt = now;
+        }
+    }
+
+    private void closeBreakPreparation()
+    {
+        if (breakPreparation != null)
+        {
+            breakPreparation.close();
+            breakPreparation = null;
+        }
+    }
+
+    public String getBreakStatus()
+    {
+        if (state == BlackjackState.ERROR || state == BlackjackState.STOPPED)
+        {
+            return "Stopped";
+        }
+        return breakPhase == BreakPhase.NONE ? "Protected" : breakPhase.toString();
+    }
+
+    public int getWinesToHeal()
+    {
+        return config == null ? 0 : winesNeededToReach(currentHitpoints(), config.healToPercent());
     }
 
     private void validateSetup()
@@ -4972,6 +5210,7 @@ public class BlackjackScript extends Script
 
     private void fail(String reason)
     {
+        closeBreakPreparation();
         stopReason = reason;
         log.error("Blackjack stopped: {}", reason);
         transition(BlackjackState.ERROR, "Disable plugin and correct setup");
@@ -5005,6 +5244,7 @@ public class BlackjackScript extends Script
     public void shutdown()
     {
         shutdownRequested = true;
+        closeBreakPreparation();
         restoreAutoRunAfterLure();
         if (!hasBlackjackEquipped()
                 && combatResetPhase != CombatResetPhase.UNTRIED

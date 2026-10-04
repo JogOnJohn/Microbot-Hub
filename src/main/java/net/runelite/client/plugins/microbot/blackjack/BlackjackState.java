@@ -21,6 +21,7 @@ public enum BlackjackState
     SECURING_WINE_ENTRY,
     HUMANIZER_MOUSE,
     HUMANIZER_BREAK,
+    WAITING_FOR_BREAK,
     STOPPED,
     ERROR
 }

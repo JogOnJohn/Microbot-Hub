@@ -42,6 +42,9 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.17 requires the custom 2.6.26 client containing `BreakPreparation`; the public client does not supply this API. Enable only one Break Handler. A scheduled request finishes the current unconscious pickpocket window without starting another Knock-Out, heals first, exits/closes the tent, and uses the verified pub stairs for a thug follower reset. It waits for ground-floor non-combat/non-interacting quiet before releasing the handler, then resumes the saved wine run or house return. A preparation failure cancels the request rather than claiming safety. Disable/hot reload closes only Blackjack's registration. This remains gameplay-unverified.
+- The overlay uses exact-ID inventory-container snapshots: drinkable wine count and noted stack quantity are separate. `Wines to heal` means the number of 11-HP wines needed to reach configured Heal to HP; it is not the next restock amount. Existing healing/restock policy is unchanged.
+
 - Version 1.1.16 corrects the observed inverted front-facing yaw: camera yaw is the NPC's standing orientation plus 1024, wrapped to 0..2047. The lock through unconscious animation remains intact. Cardinal/wrap tests cover the conversion; visual confirmation remains necessary.
 
 - Version 1.1.15 captures operator zoom on enable and uses the target's standing orientation for front-facing yaw, preserving it through unconscious animation. Stationary targets no longer bypass yaw correction. Continuous hull/menu failures use the existing bounded aim recovery; eight seconds without actual outcome feedback triggers camera/anchor recovery at most once every four seconds. Dispatches alone do not reset that watchdog. Normal healing/restock/break priority remains unchanged. Gameplay validation required.

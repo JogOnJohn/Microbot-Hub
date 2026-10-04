@@ -1,7 +1,6 @@
 package net.runelite.client.plugins.microbot.blackjack;
 
 import net.runelite.api.Skill;
-import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.ui.overlay.OverlayPanel;
 import net.runelite.client.ui.overlay.OverlayPosition;
@@ -15,9 +14,6 @@ import java.awt.Graphics2D;
 
 public class BlackjackOverlay extends OverlayPanel
 {
-    private static final int WINE_ID = 1993;
-    private static final int NOTED_WINE_ID = 1994;
-
     private final BlackjackPlugin plugin;
 
     @Inject
@@ -60,9 +56,11 @@ public class BlackjackOverlay extends OverlayPanel
         addLine("Reset probes", Integer.toString(script.getCombatResetRetries()));
         addLine("HP", Rs2Player.getBoostedSkillLevel(Skill.HITPOINTS)
                 + "/" + Rs2Player.getRealSkillLevel(Skill.HITPOINTS));
-        addLine("Wine", Integer.toString(Rs2Inventory.count(WINE_ID)));
-        addLine("Noted wine", Integer.toString(Rs2Inventory.count(NOTED_WINE_ID)));
-        addLine("Wine needed", Integer.toString(script.getProjectedWinesNeeded()));
+        BlackjackSupplies supplies = plugin.getSupplies();
+        addLine("Wine", supplies == null ? "Unknown" : Integer.toString(supplies.wine));
+        addLine("Noted wine", supplies == null ? "Unknown" : Integer.toString(supplies.notedWine));
+        addLine("Wines to heal", Integer.toString(script.getWinesToHeal()));
+        addLine("Scheduled break", script.getBreakStatus());
         addLine("Wine run", script.isWineRestockPending() ? "Pending" : "Ready");
         addLine("Humanizer", script.getHumanizerStatus());
         addLine("Human events", Integer.toString(script.getHumanizerEvents()));
