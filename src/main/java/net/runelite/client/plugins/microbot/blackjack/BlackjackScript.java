@@ -15,6 +15,7 @@ import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.client.plugins.microbot.Microbot;
+import net.runelite.client.plugins.microbot.MicrobotConfig;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
 import net.runelite.client.plugins.microbot.api.tileitem.models.Rs2TileItemModel;
@@ -47,9 +48,6 @@ public class BlackjackScript extends Script
 {
     private static final WorldArea BANDIT_HOUSE = new WorldArea(3357, 2991, 4, 5, 0);
     private static final WorldPoint BANDIT_HOUSE_CENTRE = new WorldPoint(3358, 2993, 0);
-    private static final WorldArea SOUTH_THUG_TENT_MAIN_ROOM = new WorldArea(3348, 2953, 4, 4, 0);
-    private static final WorldArea SOUTH_THUG_TENT_REAR_ROOM = new WorldArea(3349, 2947, 3, 5, 0);
-    private static final WorldPoint SOUTH_THUG_TENT_HALLWAY = new WorldPoint(3350, 2952, 0);
     private static final WorldPoint SOUTH_THUG_TENT_CENTRE = new WorldPoint(3349, 2954, 0);
     private static final WorldArea SOUTH_THUG_LURE_SEARCH_AREA = new WorldArea(3346, 2942, 18, 25, 0);
     private static final WorldPoint SOUTH_THUG_LURE_SEARCH_TILE = new WorldPoint(3350, 2959, 0);
@@ -63,6 +61,7 @@ public class BlackjackScript extends Script
     private static final WorldPoint SOUTH_THUG_WINE_DOOR_INSIDE_TILE = new WorldPoint(3350, 2956, 0);
     private static final WorldPoint SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE = new WorldPoint(3350, 2958, 0);
     private static final WorldPoint SOUTH_THUG_WINE_CURTAIN_TILE = new WorldPoint(3350, 2957, 0);
+    private static final WorldPoint SOUTH_THUG_INNER_CURTAIN_TILE = new WorldPoint(3350, 2952, 0);
     private static final int CLOSED_CURTAIN_ID = 1533;
     private static final int OPEN_CURTAIN_ID = 1534;
     private static final WorldPoint WINE_MERCHANT_TILE = new WorldPoint(3359, 2990, 0);
@@ -132,6 +131,7 @@ public class BlackjackScript extends Script
     private static final long LURE_DIALOGUE_OPEN_TIMEOUT_MS = 4_000;
     private static final long LURE_DIALOGUE_QUIET_MS = 700;
     private static final long LURE_FOLLOW_CHECK_INTERVAL_MS = 500;
+    private static final long LURE_FOLLOW_LOST_GRACE_MS = 1_500;
     private static final long LURE_RELEASE_TIMEOUT_MS = 12_000;
     private static final int LURE_MAX_ATTEMPTS = 5;
     private static final int LURE_FOLLOW_CONFIRMATIONS_REQUIRED = 3;
@@ -171,23 +171,35 @@ public class BlackjackScript extends Script
         OUT_OF_TENT
     }
 
-    private enum SouthernTentPhase
+    enum SouthernTentPhase
     {
-        ASSESSING,
-        LEAVING_TO_SEARCH,
-        SEARCHING_TARGET,
-        APPROACHING_TARGET,
-        STARTING_LURE,
-        WAITING_FOR_DIALOGUE,
-        ADVANCING_DIALOGUE,
-        VERIFYING_FOLLOW,
-        MOVING_TO_CURTAIN,
-        OPENING_CURTAIN,
-        LEADING_THROUGH_CURTAIN,
-        POSITIONING_TO_CLOSE,
-        CLOSING_CURTAIN,
-        WAITING_FOR_RELEASE,
-        RETURNING_TO_TENT
+        ASSESSING(SOUTH_TENT_PREPARATION_TIMEOUT_MS),
+        LEAVING_TO_SEARCH(SOUTH_TENT_TRANSIT_TIMEOUT_MS),
+        SEARCHING_TARGET(SOUTH_TENT_PREPARATION_TIMEOUT_MS),
+        APPROACHING_TARGET(SOUTH_TENT_TRANSIT_TIMEOUT_MS),
+        STARTING_LURE(SOUTH_TENT_PHASE_TIMEOUT_MS),
+        WAITING_FOR_DIALOGUE(LURE_DIALOGUE_OPEN_TIMEOUT_MS),
+        ADVANCING_DIALOGUE(SOUTH_TENT_PHASE_TIMEOUT_MS),
+        VERIFYING_FOLLOW(SOUTH_TENT_PHASE_TIMEOUT_MS),
+        MOVING_TO_CURTAIN(SOUTH_TENT_TRANSIT_TIMEOUT_MS),
+        OPENING_CURTAIN(SOUTH_TENT_PHASE_TIMEOUT_MS),
+        LEADING_THROUGH_CURTAIN(SOUTH_TENT_TRANSIT_TIMEOUT_MS),
+        POSITIONING_TO_CLOSE(SOUTH_TENT_PHASE_TIMEOUT_MS),
+        CLOSING_CURTAIN(SOUTH_TENT_PHASE_TIMEOUT_MS),
+        WAITING_FOR_RELEASE(LURE_RELEASE_TIMEOUT_MS),
+        RETURNING_TO_TENT(SOUTH_TENT_TRANSIT_TIMEOUT_MS);
+
+        private final long timeoutMs;
+
+        SouthernTentPhase(long timeoutMs)
+        {
+            this.timeoutMs = timeoutMs;
+        }
+
+        boolean timedOut(long elapsedMs)
+        {
+            return elapsedMs >= timeoutMs;
+        }
     }
 
     private enum Outcome
@@ -246,6 +258,8 @@ public class BlackjackScript extends Script
     private int lastObservedThievingXp;
     private int targetIndex = -1;
     private int southernTentLureTargetIndex = -1;
+    private NPC southernTentLureNpc;
+    private Boolean autoRunBeforeLure;
     private SouthernTentLureMode southernTentLureMode = SouthernTentLureMode.NONE;
     private SouthernTentPhase southernTentPhase = SouthernTentPhase.ASSESSING;
     private long southernTentPhaseEnteredAt;
@@ -253,6 +267,7 @@ public class BlackjackScript extends Script
     private long nextSouthernTentPopulationCheckAt;
     private long lureDialogueLastSeenAt;
     private long lureFollowNextCheckAt;
+    private long lureFollowLostSince;
     private long lureReleaseClearSince;
     private int lureAttempts;
     private int lureContinueClicks;
@@ -437,6 +452,24 @@ public class BlackjackScript extends Script
 
                 if (healingRequired)
                 {
+                    if (state == BlackjackState.PREPARING_SOUTHERN_TENT)
+                    {
+                        if (Rs2Inventory.count(WINE_ID) == 0)
+                        {
+                            heal();
+                            return;
+                        }
+                        if (drinkWineIfReady("Heal during southern tent preparation"))
+                        {
+                            // Drinking can dismiss the dialogue; restart that exchange deliberately.
+                            if (southernTentPhase == SouthernTentPhase.WAITING_FOR_DIALOGUE
+                                    || southernTentPhase == SouthernTentPhase.ADVANCING_DIALOGUE)
+                            {
+                                retrySouthernLure("Healing interrupted Lure dialogue");
+                            }
+                        }
+                        return;
+                    }
                     if (isCombatSafetyState())
                     {
                         if (drinkWineIfReady("Heal while resetting combat"))
@@ -689,6 +722,26 @@ public class BlackjackScript extends Script
             return;
         }
 
+        // Check before handlers: visible objects and dialogues must not bypass the deadline.
+        if (southernTentPhase.timedOut(elapsedInSouthernTentPhase()))
+        {
+            if (southernTentPhase == SouthernTentPhase.WAITING_FOR_RELEASE)
+            {
+                fail("Evicted Menaphite Thug did not stop following outside southern tent");
+            }
+            else if (southernTentPhase == SouthernTentPhase.WAITING_FOR_DIALOGUE
+                    || southernTentPhase == SouthernTentPhase.ADVANCING_DIALOGUE
+                    || southernTentPhase == SouthernTentPhase.VERIFYING_FOLLOW)
+            {
+                retrySouthernLure("Lure phase timed out: " + southernTentPhase);
+            }
+            else
+            {
+                restartSouthernTentAssessment("Southern tent phase timed out: " + southernTentPhase);
+            }
+            return;
+        }
+
         switch (southernTentPhase)
         {
             case ASSESSING:
@@ -841,11 +894,13 @@ public class BlackjackScript extends Script
     {
         southernTentLureMode = mode;
         southernTentLureTargetIndex = target.getIndex();
+        southernTentLureNpc = target.getNpc();
         lureAttempts = 0;
         lureContinueClicks = 0;
         lureFollowConfirmations = 0;
         lureDialogueLastSeenAt = 0;
         lureFollowNextCheckAt = 0;
+        lureFollowLostSince = 0;
         lureReleaseClearSince = 0;
         setSouthernTentPhase(SouthernTentPhase.APPROACHING_TARGET, action);
     }
@@ -866,14 +921,24 @@ public class BlackjackScript extends Script
             return;
         }
 
+        if (target.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS)
+        {
+            nextAction = "Wait for extra thug to stand before Lure";
+            return;
+        }
+        if (target.getInteracting() != null && !target.isInteractingWithPlayer())
+        {
+            restartSouthernTentAssessment("Lure target is occupied by another actor");
+            return;
+        }
+        if (openSouthernInnerCurtainIfNeeded(targetLocation))
+        {
+            return;
+        }
+
         if (player.distanceTo2D(targetLocation) <= 2 && target.hasLineOfSight())
         {
             setSouthernTentPhase(SouthernTentPhase.STARTING_LURE, "Use Lure on Menaphite Thug");
-            return;
-        }
-        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_TRANSIT_TIMEOUT_MS)
-        {
-            restartSouthernTentAssessment("Could not reach Menaphite Thug for Lure");
             return;
         }
         walkSouthernRoute(targetLocation, true, "Approach Menaphite Thug for Lure");
@@ -926,10 +991,6 @@ public class BlackjackScript extends Script
                     "Complete Lure dialogue deliberately");
             return;
         }
-        if (elapsedInSouthernTentPhase() >= LURE_DIALOGUE_OPEN_TIMEOUT_MS)
-        {
-            retrySouthernLure("Lure dialogue did not open");
-        }
     }
 
     private void advanceSouthernLureDialogue()
@@ -941,10 +1002,6 @@ public class BlackjackScript extends Script
             if (Rs2Dialogue.hasSelectAnOption())
             {
                 nextAction = "Wait for known Lure dialogue continuation";
-                if (elapsedInSouthernTentPhase() >= SOUTH_TENT_PHASE_TIMEOUT_MS)
-                {
-                    retrySouthernLure("Unexpected option in Lure dialogue");
-                }
                 return;
             }
             if (Rs2Dialogue.hasContinue() && now >= nextSouthernTentActionAt)
@@ -958,7 +1015,7 @@ public class BlackjackScript extends Script
             return;
         }
 
-        if (lureContinueClicks == 0 || now - lureDialogueLastSeenAt < LURE_DIALOGUE_QUIET_MS)
+        if (now - lureDialogueLastSeenAt < LURE_DIALOGUE_QUIET_MS)
         {
             nextAction = "Wait for Lure dialogue to settle";
             return;
@@ -982,14 +1039,12 @@ public class BlackjackScript extends Script
         Rs2NpcModel target = southernTentLureTarget();
         WorldPoint player = Rs2Player.getWorldLocation();
         WorldPoint targetLocation = target == null ? null : target.getWorldLocation();
-        boolean following = target != null
-                && player != null
-                && targetLocation != null
-                && target.isInteractingWithPlayer()
-                && player.distanceTo2D(targetLocation) <= LURE_FOLLOW_MAX_DISTANCE;
+        boolean following = target != null && SouthernTentLureSafety.followingNearby(
+                player, targetLocation, target.isInteractingWithPlayer(), LURE_FOLLOW_MAX_DISTANCE);
         if (!following)
         {
-            retrySouthernLure("Lure rejected or follow signal ended");
+            lureFollowConfirmations = 0;
+            nextAction = "Wait for Lure follow signal";
             return;
         }
 
@@ -1001,6 +1056,7 @@ public class BlackjackScript extends Script
             return;
         }
 
+        suspendAutoRunForLure();
         Rs2Player.toggleRunEnergy(false);
         setSouthernTentPhase(SouthernTentPhase.MOVING_TO_CURTAIN,
                 southernTentLureMode == SouthernTentLureMode.INTO_TENT
@@ -1019,47 +1075,33 @@ public class BlackjackScript extends Script
         lureFollowConfirmations = 0;
         lureDialogueLastSeenAt = 0;
         lureFollowNextCheckAt = 0;
+        lureFollowLostSince = 0;
         nextSouthernTentActionAt = System.currentTimeMillis() + randomBetween(600, 951);
         if (lureAttempts >= LURE_MAX_ATTEMPTS || southernTentLureTarget() == null)
         {
             restartSouthernTentAssessment(reason);
             return;
         }
-        setSouthernTentPhase(SouthernTentPhase.STARTING_LURE,
+        setSouthernTentPhase(SouthernTentPhase.APPROACHING_TARGET,
                 "Retry Lure (" + (lureAttempts + 1) + "/" + LURE_MAX_ATTEMPTS + ")");
     }
 
     private void moveLuredTargetToCurtain()
     {
         Rs2NpcModel target = southernTentLureTarget();
-        if (target == null)
+        if (!canContinueSouthernLureRoute(target))
         {
-            restartSouthernTentAssessment("Lured target disappeared before curtain");
             return;
         }
-        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_TRANSIT_TIMEOUT_MS)
-        {
-            retrySouthernLure("Lured target did not reach southern curtain");
-            return;
-        }
-
         WorldPoint player = Rs2Player.getWorldLocation();
-        WorldPoint targetLocation = target.getWorldLocation();
-        if (player == null || targetLocation == null)
-        {
-            nextAction = "Wait for lure route location";
-            return;
-        }
-        if (target.isInteractingWithPlayer()
-                && player.distanceTo2D(targetLocation) > LURE_FOLLOW_MAX_DISTANCE)
-        {
-            nextAction = "Wait for lured thug to catch up";
-            return;
-        }
 
         WorldPoint approach = southernTentLureMode == SouthernTentLureMode.INTO_TENT
                 ? SOUTH_THUG_WINE_DOOR_OUTSIDE_TILE
                 : SOUTH_THUG_WINE_DOOR_INSIDE_TILE;
+        if (player == null)
+        {
+            return;
+        }
         if (player.distanceTo2D(approach) <= 1)
         {
             setSouthernTentPhase(SouthernTentPhase.OPENING_CURTAIN,
@@ -1069,8 +1111,47 @@ public class BlackjackScript extends Script
         walkSouthernRoute(approach, false, "Walk lured thug to southern curtain");
     }
 
+    private boolean canContinueSouthernLureRoute(Rs2NpcModel target)
+    {
+        if (target == null)
+        {
+            restartSouthernTentAssessment("Lure target disappeared during route");
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (!target.isInteractingWithPlayer())
+        {
+            if (lureFollowLostSince == 0)
+            {
+                lureFollowLostSince = now;
+            }
+            nextAction = "Wait for Lure follow signal to resume";
+            if (now - lureFollowLostSince >= LURE_FOLLOW_LOST_GRACE_MS)
+            {
+                retrySouthernLure("Lured thug stopped following during route");
+            }
+            return false;
+        }
+        lureFollowLostSince = 0;
+        if (openSouthernInnerCurtainIfNeeded(target.getWorldLocation()))
+        {
+            return false;
+        }
+        if (!SouthernTentLureSafety.followingNearby(Rs2Player.getWorldLocation(),
+                target.getWorldLocation(), true, LURE_FOLLOW_MAX_DISTANCE))
+        {
+            nextAction = "Wait for lured thug to catch up";
+            return false;
+        }
+        return true;
+    }
+
     private void openSouthernTentCurtainForLure()
     {
+        if (!canContinueSouthernLureRoute(southernTentLureTarget()))
+        {
+            return;
+        }
         if (findSouthTentCurtain("Close") != null)
         {
             setSouthernTentPhase(SouthernTentPhase.LEADING_THROUGH_CURTAIN,
@@ -1086,11 +1167,6 @@ public class BlackjackScript extends Script
             interactWithSouthTentCurtain(closedCurtain, "Open", "Open southern curtain for Lure");
             return;
         }
-        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_PHASE_TIMEOUT_MS)
-        {
-            restartSouthernTentAssessment("Southern curtain could not be opened for Lure");
-            return;
-        }
         nextAction = "Wait for southern curtain to resolve";
     }
 
@@ -1102,11 +1178,6 @@ public class BlackjackScript extends Script
             restartSouthernTentAssessment("Lured target disappeared while crossing curtain");
             return;
         }
-        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_TRANSIT_TIMEOUT_MS)
-        {
-            restartSouthernTentAssessment("Lured target did not cross southern curtain");
-            return;
-        }
 
         WorldPoint player = Rs2Player.getWorldLocation();
         WorldPoint targetLocation = target.getWorldLocation();
@@ -1115,26 +1186,25 @@ public class BlackjackScript extends Script
             nextAction = "Wait for curtain crossing location";
             return;
         }
-        if (target.isInteractingWithPlayer()
-                && player.distanceTo2D(targetLocation) > LURE_FOLLOW_MAX_DISTANCE)
-        {
-            nextAction = "Wait for lured thug at southern curtain";
-            return;
-        }
-
         WorldPoint destination = southernTentLureMode == SouthernTentLureMode.INTO_TENT
                 ? SOUTH_THUG_TENT_CENTRE
                 : SOUTH_THUG_LURE_OUTSIDE_LEAD_TILE;
-        boolean playerCrossed = southernTentLureMode == SouthernTentLureMode.INTO_TENT
-                ? isInsideSouthTent(player)
-                : !isInsideSouthTent(player);
-        boolean targetCrossed = southernTentLureMode == SouthernTentLureMode.INTO_TENT
-                ? isInsideSouthTent(targetLocation)
-                : !isInsideSouthTent(targetLocation);
-        if (playerCrossed && targetCrossed && player.distanceTo2D(destination) <= 1)
+        boolean crossed = SouthernTentLureSafety.canClose(player, targetLocation,
+                southernTentLureMode == SouthernTentLureMode.INTO_TENT);
+        if (crossed && player.distanceTo2D(destination) <= 1)
         {
             setSouthernTentPhase(SouthernTentPhase.POSITIONING_TO_CLOSE,
                     "Turn back to close southern curtain");
+            return;
+        }
+        if (!canContinueSouthernLureRoute(target))
+        {
+            return;
+        }
+        if (findSouthTentCurtain("Open") != null)
+        {
+            setSouthernTentPhase(SouthernTentPhase.OPENING_CURTAIN,
+                    "Reopen southern curtain during crossing");
             return;
         }
         walkSouthernRoute(destination, false,
@@ -1154,16 +1224,12 @@ public class BlackjackScript extends Script
             return;
         }
 
-        boolean targetOnRequiredSide = southernTentLureMode == SouthernTentLureMode.INTO_TENT
-                ? isInsideSouthTent(targetLocation)
-                : !isInsideSouthTent(targetLocation);
+        boolean targetOnRequiredSide = SouthernTentLureSafety.canClose(player, targetLocation,
+                southernTentLureMode == SouthernTentLureMode.INTO_TENT);
         if (!targetOnRequiredSide)
         {
-            nextAction = "Wait for lured thug to clear southern curtain";
-            if (elapsedInSouthernTentPhase() >= SOUTH_TENT_PHASE_TIMEOUT_MS)
-            {
-                restartSouthernTentAssessment("Lured target crossed back through southern curtain");
-            }
+            setSouthernTentPhase(SouthernTentPhase.LEADING_THROUGH_CURTAIN,
+                    "Finish crossing before approaching curtain");
             return;
         }
 
@@ -1183,6 +1249,14 @@ public class BlackjackScript extends Script
 
     private void closeSouthernCurtainAfterLure()
     {
+        Rs2NpcModel target = southernTentLureTarget();
+        if (target == null || !SouthernTentLureSafety.canClose(Rs2Player.getWorldLocation(),
+                target.getWorldLocation(), southernTentLureMode == SouthernTentLureMode.INTO_TENT))
+        {
+            setSouthernTentPhase(SouthernTentPhase.LEADING_THROUGH_CURTAIN,
+                    "Lured thug moved back; finish curtain crossing");
+            return;
+        }
         if (findSouthTentCurtain("Open") != null)
         {
             if (southernTentLureMode == SouthernTentLureMode.OUT_OF_TENT)
@@ -1204,16 +1278,12 @@ public class BlackjackScript extends Script
             interactWithSouthTentCurtain(openCurtain, "Close", "Close southern curtain after Lure");
             return;
         }
-        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_PHASE_TIMEOUT_MS)
-        {
-            restartSouthernTentAssessment("Southern curtain could not be closed after Lure");
-            return;
-        }
         nextAction = "Confirm southern curtain closed";
     }
 
     private void finishSouthernLureIntoTent()
     {
+        restoreAutoRunAfterLure();
         Rs2NpcModel target = southernTentLureTarget();
         if (target != null && isInsideSouthTent(target.getWorldLocation()))
         {
@@ -1222,6 +1292,7 @@ public class BlackjackScript extends Script
         log.info("Menaphite Thug secured inside southern tent: targetIndex={}", targetIndex);
         southernTentLureMode = SouthernTentLureMode.NONE;
         southernTentLureTargetIndex = -1;
+        southernTentLureNpc = null;
         setSouthernTentPhase(SouthernTentPhase.ASSESSING,
                 "Verify isolated Menaphite Thug");
     }
@@ -1230,6 +1301,18 @@ public class BlackjackScript extends Script
     {
         Rs2NpcModel target = southernTentLureTarget();
         long now = System.currentTimeMillis();
+        if (target != null && !SouthernTentLureSafety.onDestinationSide(target.getWorldLocation(), false))
+        {
+            restartSouthernTentAssessment("Evicted thug returned before release was confirmed");
+            return;
+        }
+        if (findSouthTentCurtain("Open") == null)
+        {
+            lureReleaseClearSince = 0;
+            interactWithSouthTentCurtain(findSouthTentCurtain("Close"), "Close",
+                    "Keep southern curtain closed while releasing extra thug");
+            return;
+        }
         if (target == null || !target.isInteractingWithPlayer())
         {
             if (lureReleaseClearSince == 0)
@@ -1240,8 +1323,10 @@ public class BlackjackScript extends Script
             {
                 log.info("Evicted Menaphite Thug released outside southern tent: targetIndex={}",
                         southernTentLureTargetIndex);
+                restoreAutoRunAfterLure();
                 southernTentLureMode = SouthernTentLureMode.NONE;
                 southernTentLureTargetIndex = -1;
+                southernTentLureNpc = null;
                 setSouthernTentPhase(SouthernTentPhase.RETURNING_TO_TENT,
                         "Return inside to retained Menaphite Thug");
             }
@@ -1250,10 +1335,6 @@ public class BlackjackScript extends Script
 
         lureReleaseClearSince = 0;
         nextAction = "Wait outside for evicted thug to stop following";
-        if (elapsedInSouthernTentPhase() >= LURE_RELEASE_TIMEOUT_MS)
-        {
-            fail("Evicted Menaphite Thug did not stop following outside southern tent");
-        }
     }
 
     private void transitSouthernTent(boolean entering)
@@ -1262,13 +1343,6 @@ public class BlackjackScript extends Script
         if (player == null)
         {
             nextAction = "Wait for southern curtain transit location";
-            return;
-        }
-        if (elapsedInSouthernTentPhase() >= SOUTH_TENT_TRANSIT_TIMEOUT_MS)
-        {
-            fail(entering
-                    ? "Unable to enter southern tent during preparation"
-                    : "Unable to leave southern tent to find a thug");
             return;
         }
 
@@ -1377,9 +1451,18 @@ public class BlackjackScript extends Script
         {
             return;
         }
-        boolean dispatched = Rs2Walker.walkFastCanvas(destination, run);
-        if (!dispatched)
+        if (openSouthernInnerCurtainIfNeeded(destination))
         {
+            return;
+        }
+        if (!run)
+        {
+            Rs2Player.toggleRunEnergy(false);
+        }
+        boolean dispatched = Rs2Walker.walkFastCanvas(destination, run);
+        if (!dispatched && run)
+        {
+            // The web walker may re-enable run and outrun the follower.
             dispatched = Rs2Walker.walkTo(destination, 0);
         }
         lastInteractionAt = now;
@@ -1387,6 +1470,24 @@ public class BlackjackScript extends Script
         nextAction = action;
         log.debug("Southern tent walk dispatched={} destination={} run={} phase={}",
                 dispatched, destination, run, southernTentPhase);
+    }
+
+    private boolean openSouthernInnerCurtainIfNeeded(WorldPoint destination)
+    {
+        if (!SouthernTentLureSafety.crossesInnerCurtain(Rs2Player.getWorldLocation(), destination))
+        {
+            return false;
+        }
+        Rs2TileObjectModel innerCurtain = Microbot.getRs2TileObjectCache().query()
+                .withId(CLOSED_CURTAIN_ID)
+                .where(object -> SOUTH_THUG_INNER_CURTAIN_TILE.equals(object.getWorldLocation()))
+                .first();
+        if (innerCurtain == null)
+        {
+            return false;
+        }
+        interactWithSouthTentCurtain(innerCurtain, "Open", "Open inner curtain for rear-room route");
+        return true;
     }
 
     private boolean interactWithSouthTentCurtain(
@@ -1430,6 +1531,7 @@ public class BlackjackScript extends Script
     {
         return occupants.stream()
                 .filter(npc -> npc.getIndex() != retainedIndex)
+                .filter(npc -> npc.getInteracting() == null || npc.isInteractingWithPlayer())
                 .min(Comparator
                         .comparingInt((Rs2NpcModel npc) ->
                                 npc.getAnimation() == AnimationID.HUMAN_UNCONSCIOUS ? 1 : 0)
@@ -1442,8 +1544,11 @@ public class BlackjackScript extends Script
     {
         return Microbot.getRs2NpcCache().query()
                 .where(npc -> isSelectedTargetType(npc)
+                        && npc.getWorldLocation() != null
                         && SOUTH_THUG_LURE_SEARCH_AREA.contains(npc.getWorldLocation())
                         && !isInsideSouthTent(npc.getWorldLocation())
+                        && npc.getAnimation() != AnimationID.HUMAN_UNCONSCIOUS
+                        && npc.getInteracting() == null
                         && npc.hasLineOfSight())
                 .toListOnClientThread().stream()
                 .min(Comparator.comparingInt(Rs2NpcModel::getDistanceFromPlayer))
@@ -1466,19 +1571,23 @@ public class BlackjackScript extends Script
         }
         return Microbot.getRs2NpcCache().query()
                 .where(npc -> npc.getIndex() == southernTentLureTargetIndex
+                        && npc.getNpc() == southernTentLureNpc
                         && isSelectedTargetType(npc))
                 .nearestOnClientThread();
     }
 
     private void restartSouthernTentAssessment(String reason)
     {
+        restoreAutoRunAfterLure();
         log.warn("Southern tent preparation recovery: {}", reason);
         southernTentLureMode = SouthernTentLureMode.NONE;
         southernTentLureTargetIndex = -1;
+        southernTentLureNpc = null;
         lureContinueClicks = 0;
         lureFollowConfirmations = 0;
         lureDialogueLastSeenAt = 0;
         lureFollowNextCheckAt = 0;
+        lureFollowLostSince = 0;
         lureReleaseClearSince = 0;
         setSouthernTentPhase(SouthernTentPhase.ASSESSING, "Recover: " + reason);
     }
@@ -1502,17 +1611,44 @@ public class BlackjackScript extends Script
 
     private void resetSouthernTentPreparation()
     {
+        restoreAutoRunAfterLure();
         southernTentLureTargetIndex = -1;
+        southernTentLureNpc = null;
         southernTentLureMode = SouthernTentLureMode.NONE;
         southernTentPhase = SouthernTentPhase.ASSESSING;
         southernTentPhaseEnteredAt = System.currentTimeMillis();
         nextSouthernTentActionAt = 0;
         lureDialogueLastSeenAt = 0;
         lureFollowNextCheckAt = 0;
+        lureFollowLostSince = 0;
         lureReleaseClearSince = 0;
         lureAttempts = 0;
         lureContinueClicks = 0;
         lureFollowConfirmations = 0;
+    }
+
+    private void suspendAutoRunForLure()
+    {
+        if (autoRunBeforeLure == null)
+        {
+            autoRunBeforeLure = Microbot.enableAutoRunOn;
+        }
+        Microbot.enableAutoRunOn = false;
+    }
+
+    private void restoreAutoRunAfterLure()
+    {
+        if (autoRunBeforeLure != null)
+        {
+            Microbot.enableAutoRunOn = autoRunBeforeLure;
+            autoRunBeforeLure = null;
+            // Script.run persists this flag while the lure is active, so restore both copies.
+            if (Microbot.getConfigManager() != null)
+            {
+                Microbot.getConfigManager().setConfiguration(MicrobotConfig.configGroup,
+                        MicrobotConfig.keyEnableAutoRunOn, Microbot.enableAutoRunOn);
+            }
+        }
     }
 
     private void resetActiveBlackjackCycleForTentPreparation()
@@ -1538,7 +1674,8 @@ public class BlackjackScript extends Script
         if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
         {
             List<Rs2NpcModel> occupants = southernTentTargets();
-            if (occupants.size() != 1 || isSouthTentCurtainOpen())
+            if (!isInsideSouthTent(Rs2Player.getWorldLocation())
+                    || occupants.size() != 1 || isSouthTentCurtainOpen())
             {
                 beginSouthernTentPreparation(occupants.isEmpty()
                         ? "Lure a Menaphite Thug into the southern tent"
@@ -3284,10 +3421,7 @@ public class BlackjackScript extends Script
 
     private boolean isInsideSouthTent(WorldPoint location)
     {
-        return location != null
-                && (SOUTH_THUG_TENT_MAIN_ROOM.contains(location)
-                || SOUTH_THUG_TENT_REAR_ROOM.contains(location)
-                || SOUTH_THUG_TENT_HALLWAY.equals(location));
+        return SouthernTentLureSafety.inside(location);
     }
 
     private WorldPoint activeHouseCentre()
@@ -4399,7 +4533,8 @@ public class BlackjackScript extends Script
                             && npc.getNpc().getWorldLocation() != null
                             && isInsideActiveHouse(npc.getNpc().getWorldLocation())
                             && !(state == BlackjackState.PREPARING_SOUTHERN_TENT
-                            && npc.getIndex() == southernTentLureTargetIndex)
+                            && npc.getIndex() == southernTentLureTargetIndex
+                            && npc.getNpc() == southernTentLureNpc)
                             && npc.getNpc().getInteracting() == player);
         }).orElse(false);
     }
@@ -4468,6 +4603,10 @@ public class BlackjackScript extends Script
 
     private void transition(BlackjackState newState, String action)
     {
+        if (newState != BlackjackState.PREPARING_SOUTHERN_TENT)
+        {
+            restoreAutoRunAfterLure();
+        }
         if (state != newState)
         {
             log.info("Blackjack state {} -> {} ({})", state, newState, action);
@@ -4526,6 +4665,7 @@ public class BlackjackScript extends Script
     public void shutdown()
     {
         shutdownRequested = true;
+        restoreAutoRunAfterLure();
         if (!hasBlackjackEquipped()
                 && combatResetPhase != CombatResetPhase.UNTRIED
                 && Rs2Inventory.items(item -> item.getName() != null

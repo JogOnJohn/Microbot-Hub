@@ -42,6 +42,10 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.9 review hardens preparation deadlines, follow loss, NPC identity, and both-side curtain crossing checks. Healing preserves preparation; completed healing outside must re-enter before acquiring a target. The inner curtain at `3350,2952,0` is opened only for routes between rooms, never forced closed.
+- Every preparation phase is bounded before dispatching actions, with the overall 120-second limit retained. A persistent release failure still stops safely rather than reopening the tent with a follower attached.
+- Focused geometry/deadline tests cover the entrance threshold, rear room, hallway, follow proximity, and inner-curtain routing. They do not prove the game's Lure dialogue or follow-release timing. Live-test zero/one/two thugs, an extra in the rear room, healing during dialogue, and a thug crossing back before curtain closure.
+
 - Menaphite Thug startup now prepares the southern tent automatically. With no thug inside, it leaves through the exact outer curtain at `3350,2957,0`, finds a reachable thug, completes the Lure dialogue at a bounded pace, confirms sustained following, leads it to the main room, turns back, and closes the curtain.
 - If more than one Menaphite Thug is inside, the current target is retained where possible and one extra thug is lured outside. The script closes the curtain, waits for the evicted thug to stop following, re-enters, closes the curtain again, and reassesses until one thug remains. Street urchins and villagers are deliberately ignored.
 - These paths compile and package but remain gameplay-unverified. Preserve commit `527b3242564d` as the rollback baseline until both workflows pass live testing.
