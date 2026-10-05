@@ -148,7 +148,7 @@ public class AutoMiningScript extends Script {
                             }
                         }
 
-                        GameObject rock = findNearestReachableRock(activeRock, config.distanceToStray(), initialPlayerLocation);
+                        GameObject rock = findRock(config.distanceToStray());
 
                         if (rock != null) {
                             if (Rs2GameObject.interact(rock)) {
@@ -240,21 +240,25 @@ public class AutoMiningScript extends Script {
             return null;
         }
         Predicate<GameObject> rockName = Rs2GameObject.nameMatches(activeRock.getName(), true);
-        List<GameObject> rocks = Microbot.getClientThread().runOnClientThreadOptional(() ->
-                        Rs2GameObject.getGameObjects(rockName, anchor, distance))
-                .orElse(Collections.emptyList());
-        return RockSelector.nearestReachable(rocks,
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> RockSelector.nearestReachable(
+                Rs2GameObject.getGameObjects(rockName, anchor, distance),
                 rock -> Rs2WorldPoint.quickDistance(playerLocation, rock.getWorldLocation()),
-                rock -> Microbot.getClientThread().runOnClientThreadOptional(() -> Rs2GameObject.isReachable(rock)).orElse(false));
+                Rs2GameObject::isReachable)).orElse(null);
     }
 
     private void waitForOreOrDepletion(GameObject rock) {
-        int startXp = Microbot.getClient().getSkillExperience(Skill.MINING);
-        int rockId = rock.getId();
-        WorldPoint rockLocation = rock.getWorldLocation();
-        sleepUntil(() -> Microbot.getClient().getSkillExperience(Skill.MINING) != startXp
+        int startXp = miningXp();
+        int rockId = Microbot.getClientThread().runOnClientThreadOptional(rock::getId).orElse(-1);
+        WorldPoint rockLocation = Microbot.getClientThread().runOnClientThreadOptional(rock::getWorldLocation).orElse(null);
+        if (startXp < 0 || rockId < 0 || rockLocation == null) return;
+        sleepUntil(() -> miningXp() > startXp
                 || Rs2Inventory.isFull()
                 || !isRockPresent(rockId, rockLocation), 5000);
+    }
+
+    private static int miningXp() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                Microbot.getClient().getSkillExperience(Skill.MINING)).orElse(-1);
     }
 
     private static boolean isRockPresent(int rockId, WorldPoint rockLocation) {
@@ -336,23 +340,6 @@ public class AutoMiningScript extends Script {
         }
 
         return false;
-    }
-
-    private GameObject findNearestReachableRock(Rocks rock, int distance, WorldPoint anchorPoint) {
-        if (rock == null || anchorPoint == null) {
-            return null;
-        }
-
-        Predicate<GameObject> rockNamePredicate = Rs2GameObject.nameMatches(rock.getName(), true);
-        WorldPoint playerLocation = Rs2Player.getWorldLocation();
-
-        return Rs2GameObject.getGameObjects(rockNamePredicate, anchorPoint, distance)
-                .stream()
-                .filter(Rs2GameObject::isReachable)
-                .min(Comparator.comparingInt(o -> playerLocation == null
-                        ? 0
-                        : o.getWorldLocation().distanceTo(playerLocation)))
-                .orElse(null);
     }
 
     private void updateStatus() {
