@@ -125,6 +125,16 @@ If a plugin needs additional libraries beyond the Microbot client:
    ```
 3. The build system automatically includes these in the plugin's shadow JAR
 
+## Shared Automation Library
+
+Reusable, client-independent mechanics live in the optional `:shared-automation`
+Java 11 subproject. A plugin opts in by adding an empty
+`shared-automation.txt` under its resource package; the plugin source set then
+compiles against the library and its shadow JAR bundles the library classes.
+Plugins without the marker are unchanged. Keep plugin state, target selection,
+game-state evidence, and interactions in the plugin itself. API and lifecycle
+guidance is in [`docs/SHARED-AUTOMATION-UTILITIES.md`](docs/SHARED-AUTOMATION-UTILITIES.md).
+
 ## Testing and Debugging Plugins
 
 **Before chasing a "script does nothing" bug, read [`docs/PLUGIN_DEBUGGING_NOTES.md`](docs/PLUGIN_DEBUGGING_NOTES.md).** It documents the recurring failure modes in Hub plugins (instanced-region coordinate mismatches, the new Queryable API not auto-walking, null-guard predicates masking broken lookups, static field leakage across plugin restarts, etc.) and the agent-server `curl` workflow for inspecting live state instead of theorizing from code.

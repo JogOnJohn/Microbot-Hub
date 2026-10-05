@@ -1,1 +1,3 @@
 rootProject.name = "Microbot-Hub"
+
+include ':shared-automation'

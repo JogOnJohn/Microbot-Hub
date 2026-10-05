@@ -1,0 +1,23 @@
+plugins {
+    id 'java-library'
+}
+
+group = 'net.runelite.client.plugins.microbot'
+version = '1.0.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(11)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 11
+}
+
+tasks.named('jar') {
+    archiveBaseName = 'microbot-shared-automation'
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}

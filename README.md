@@ -49,6 +49,15 @@ org.apache.commons:commons-lang3:3.14.0
 
 The build reads this file and adds the coordinates at compile time and packaging time.
 
+## Shared plugin utilities
+
+The optional `:shared-automation` Java library provides reusable humanizer
+timing, safe-boundary break scheduling, mouse-intent tracking, and bounded
+action confirmation. A plugin opts in through a `shared-automation.txt` resource
+marker; plugins without it are unchanged. See
+[`docs/SHARED-AUTOMATION-UTILITIES.md`](docs/SHARED-AUTOMATION-UTILITIES.md)
+for API and integration details.
+
 ## Plugin Descriptor
 
 The plugin descriptor is the most important portion of your plugin class. This annotation tells the Microbot client the general metadata about your plugin, such as its name, description, and version.
