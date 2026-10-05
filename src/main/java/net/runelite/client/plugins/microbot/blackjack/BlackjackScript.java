@@ -288,6 +288,7 @@ public class BlackjackScript extends Script
     private int cameraFacingTargetIndex = -1;
     private int cameraStandingYaw;
     private boolean restoreZoomAfterTravel;
+    private final BlackjackZoomRestore zoomRestore = new BlackjackZoomRestore();
     private long nextSouthernTentActionAt;
     private long nextSouthernTentPopulationCheckAt;
     private long lureDialogueLastSeenAt;
@@ -416,7 +417,8 @@ public class BlackjackScript extends Script
         nextCameraRefacingAt = 0;
         lastCameraPitchAt = 0;
         lastCameraZoomAt = 0;
-        targetCameraZoom = Rs2Camera.getZoom();
+        targetCameraZoom = config.returnCameraZoom() > 0 ? config.returnCameraZoom() : Rs2Camera.getZoom();
+        zoomRestore.reset();
         log.info("Captured operator blackjack zoom on enable: {}", targetCameraZoom);
         lastBlackjackFeedbackAt = 0;
         lastContinuousRecoveryAt = 0;
@@ -3367,6 +3369,7 @@ public class BlackjackScript extends Script
         restockTargetWineCount = 0;
         projectedWinesNeeded = winesNeededToReach(currentHitpoints(), config.healToPercent());
         lastOutcome = "Wine restock complete";
+        maintainTargetZoom();
         if (currentHitpoints() < config.healToPercent())
         {
             healingRequired = true;
@@ -4522,16 +4525,24 @@ public class BlackjackScript extends Script
         int tolerance = Math.max(1, targetCameraZoom * CAMERA_ZOOM_TOLERANCE_PERCENT / 100);
         if (!restoreZoomAfterTravel)
         {
-            targetCameraZoom = currentZoom;
+            if (config.returnCameraZoom() == 0)
+            {
+                targetCameraZoom = currentZoom;
+            }
             return;
         }
         if (Math.abs(currentZoom - targetCameraZoom) > tolerance)
         {
+            zoomRestore.reset();
             Rs2Camera.setZoom(targetCameraZoom);
-            log.debug("Restoring blackjack camera zoom: {} -> {}", currentZoom, targetCameraZoom);
+            log.info("Restoring blackjack camera zoom: {} -> {}", currentZoom, targetCameraZoom);
+        }
+        else if (zoomRestore.confirm(currentZoom, targetCameraZoom, tolerance, now))
+        {
+            restoreZoomAfterTravel = false;
+            log.info("Blackjack camera zoom restoration confirmed: {} (target {})", currentZoom, targetCameraZoom);
         }
         lastCameraZoomAt = now;
-        restoreZoomAfterTravel = false;
     }
 
     private int frontFacingTargetYaw(Rs2NpcModel target)
@@ -5228,6 +5239,7 @@ public class BlackjackScript extends Script
                 || newState == BlackjackState.PREPARING_SOUTHERN_TENT)
         {
             restoreZoomAfterTravel = true;
+            zoomRestore.reset();
         }
         if (newState != BlackjackState.PREPARING_SOUTHERN_TENT)
         {

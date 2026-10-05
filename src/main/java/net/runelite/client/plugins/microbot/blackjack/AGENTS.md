@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.20 holds travel zoom restoration pending until readback stays within five percent for three seconds, with one-second retry cadence. Secured wine entry begins restoration; target camera maintenance continues confirmation. `Return camera zoom` optionally preserves an explicit preferred zoom across reloads; zero retains startup capture and adoption of in-tent adjustments after confirmation. Restore attempts and confirmation are logged at INFO. Full wine-return camera behaviour requires live validation.
+
 - Version 1.1.19 restricts NPC targeting/combat signals to the selected supported blackjack NPC type inside the active house. Random-event NPCs, villagers and street urchins addressing the player cannot trigger/reset-block combat recovery. Existing lure exclusion and three-second sustained targeting threshold remain. A reset log records the triggering NPC name, ID, index, tile and targeting duration. Random-event reproduction remains live-unverified.
 
 - Version 1.1.18 corrects actor-to-camera yaw to `(-orientation) & 2047`: south-facing NPC -> camera looking north, north-facing NPC -> camera looking south; east/west remain unchanged. This supersedes the 1.1.16 half-turn formula. Target/recovery yaw uses one nonblocking client-tick smoothstep turn over 900-1400 ms, shortest-path wrap, without restarting an active turn. Stop/error/logout/pause/menu opening cancels it. Tests cover all eight directions, wrap, easing, cancellation, and overlapping requests; live visual smoothness and north/south confirmation remain required.

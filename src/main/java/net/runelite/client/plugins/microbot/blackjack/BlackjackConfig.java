@@ -64,6 +64,19 @@ public interface BlackjackConfig extends Config
         return BlackjackTarget.AUTO;
     }
 
+    @Range(min = 0, max = 1004)
+    @ConfigItem(
+            keyName = "returnCameraZoom",
+            name = "Return camera zoom",
+            description = "Zoom restored after travel; 0 captures the zoom on enable. Higher values zoom in further.",
+            position = 2,
+            section = setupSection
+    )
+    default int returnCameraZoom()
+    {
+        return 0;
+    }
+
     @Range(min = 1, max = 99)
     @ConfigItem(
             keyName = "healBelowPercent",
