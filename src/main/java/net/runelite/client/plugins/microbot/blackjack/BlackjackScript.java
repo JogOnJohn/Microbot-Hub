@@ -5111,7 +5111,8 @@ public class BlackjackScript extends Script
             npcInteractionSince = 0;
             return false;
         }
-        combatSignal = isNpcTargetingPlayer();
+        Rs2NpcModel attacker = findNpcTargetingPlayer();
+        combatSignal = attacker != null;
         if (!combatSignal)
         {
             npcInteractionSince = 0;
@@ -5121,26 +5122,41 @@ public class BlackjackScript extends Script
         {
             npcInteractionSince = now;
         }
-        return now - npcInteractionSince >= SUSTAINED_NPC_ATTACK_MS;
+        if (now - npcInteractionSince < SUSTAINED_NPC_ATTACK_MS)
+        {
+            return false;
+        }
+        log.info("Combat reset triggered by blackjack NPC: name={} id={} index={} location={} targetingForMs={}",
+                attacker.getName(), attacker.getId(), attacker.getIndex(), attacker.getWorldLocation(),
+                now - npcInteractionSince);
+        return true;
     }
 
     private boolean isNpcTargetingPlayer()
+    {
+        return findNpcTargetingPlayer() != null;
+    }
+
+    private Rs2NpcModel findNpcTargetingPlayer()
     {
         return Microbot.getClientThread().runOnClientThreadOptional(() -> {
             Player player = Microbot.getClient().getLocalPlayer();
             if (player == null)
             {
-                return false;
+                return null;
             }
             return Microbot.getRs2NpcCache().query().toList().stream()
-                    .anyMatch(npc -> npc != null && npc.getNpc() != null
-                            && npc.getNpc().getWorldLocation() != null
-                            && isInsideActiveHouse(npc.getNpc().getWorldLocation())
-                            && !(state == BlackjackState.PREPARING_SOUTHERN_TENT
-                            && npc.getIndex() == southernTentLureTargetIndex
-                            && npc.getNpc() == southernTentLureNpc)
-                            && npc.getNpc().getInteracting() == player);
-        }).orElse(false);
+                    .filter(npc -> isBlackjackAttacker(npc, player))
+                    .findFirst().orElse(null);
+        }).orElse(null);
+    }
+
+    boolean isBlackjackAttacker(Rs2NpcModel npc, Player player)
+    {
+        return player != null && npc != null && npc.getNpc() != null && isEligibleTarget(npc)
+                && !(state == BlackjackState.PREPARING_SOUTHERN_TENT
+                && npc.getIndex() == southernTentLureTargetIndex && npc.getNpc() == southernTentLureNpc)
+                && npc.getNpc().getInteracting() == player;
     }
 
     private void updateHealingRequirement()
