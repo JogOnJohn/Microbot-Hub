@@ -1868,7 +1868,6 @@ public class BarrowsScript extends Script {
                 .anyMatch(t -> t != null && t.distanceTo(Chest) <= 8));
         return towardChest ? new ArrayList<>(path) : Collections.emptyList();
     }
-
     /**
      * True when the NPC sits on/near the chest hallway just ahead of us.
      * No polyline → do not guess (triangle fallback chased distant/side-room rats).
