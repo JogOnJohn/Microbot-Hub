@@ -52,6 +52,8 @@ public class MicroAgilityOverlay extends OverlayPanel
 				.left("Current Obstacle")
 				.right(Integer.toString(plugin.getAgilityScript().getCurrentObstacleIndex()))
 				.build());
+			panelComponent.getChildren().add(LineComponent.builder()
+				.left("Prehover").right(plugin.getAgilityScript().getPrehoverStatus()).build());
 
 		}
 		catch (Exception ex)

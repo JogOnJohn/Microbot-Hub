@@ -17,6 +17,8 @@ public final class MouseIntentController
 	private boolean hasPreviousTick;
 	private double velocityX;
 	private double velocityY;
+	private double remainderX;
+	private double remainderY;
 
 	public MouseIntentController(MousePort mouse)
 	{
@@ -103,6 +105,8 @@ public final class MouseIntentController
 		{
 			velocityX = 0.0;
 			velocityY = 0.0;
+			remainderX = 0.0;
+			remainderY = 0.0;
 			previousTickNanos = nowNanos;
 			return true;
 		}
@@ -124,10 +128,14 @@ public final class MouseIntentController
 		velocityX = approachVelocity(velocityX, desiredVelocity(deltaX), elapsedSeconds);
 		velocityY = approachVelocity(velocityY, desiredVelocity(deltaY), elapsedSeconds);
 
-		double stepX = limitStep(velocityX * elapsedSeconds, deltaX);
-		double stepY = limitStep(velocityY * elapsedSeconds, deltaY);
+		// Keep subpixel motion between frames; rounding each isolated step otherwise stalls
+		// several pixels outside a small target, especially at high client frame rates.
+		double stepX = limitStep(velocityX * elapsedSeconds + remainderX, deltaX);
+		double stepY = limitStep(velocityY * elapsedSeconds + remainderY, deltaY);
 		int nextX = (int) Math.round(current.x + stepX);
 		int nextY = (int) Math.round(current.y + stepY);
+		remainderX = stepX - (nextX - current.x);
+		remainderY = stepY - (nextY - current.y);
 
 		if (nextX != current.x || nextY != current.y)
 		{
@@ -198,5 +206,7 @@ public final class MouseIntentController
 		hasPreviousTick = false;
 		velocityX = 0.0;
 		velocityY = 0.0;
+		remainderX = 0.0;
+		remainderY = 0.0;
 	}
 }

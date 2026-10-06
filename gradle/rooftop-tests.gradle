@@ -1,0 +1,24 @@
+// Focused tests avoid compiling unrelated Hub plugins against the locally extended client.
+sourceSets {
+    rooftopTest {
+        java.srcDirs = ['src/rooftopTest/java']
+    }
+}
+configurations.rooftopTestImplementation.extendsFrom(configurations.testImplementation)
+configurations.rooftopTestRuntimeOnly.extendsFrom(configurations.testRuntimeOnly)
+dependencies {
+    rooftopTestImplementation project(':shared-automation')
+}
+afterEvaluate {
+    sourceSets.rooftopTest.compileClasspath += configurations.microbotRuntime
+    sourceSets.rooftopTest.runtimeClasspath += configurations.microbotRuntime
+    if (sourceSets.findByName('agility')) {
+        sourceSets.rooftopTest.compileClasspath += sourceSets.agility.output
+        sourceSets.rooftopTest.runtimeClasspath += sourceSets.agility.output
+        tasks.register('rooftopPrehoverTest', Test) {
+            testClassesDirs = sourceSets.rooftopTest.output.classesDirs
+            classpath = sourceSets.rooftopTest.runtimeClasspath
+            useJUnitPlatform()
+        }
+    }
+}

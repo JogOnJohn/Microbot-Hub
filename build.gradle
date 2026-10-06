@@ -323,3 +323,5 @@ tasks.register('validateJdkVersion') {
         }
     }
 }
+
+apply from: 'gradle/rooftop-tests.gradle'

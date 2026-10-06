@@ -87,6 +87,10 @@ public class AgilityScript extends Script
 	private boolean alchDecisionShouldAlch = false;
 	private final AgilitySupplyManager supplyManager;
 	private volatile boolean shuttingDown = false;
+	private final RooftopPrehover prehover = new RooftopPrehover();
+
+	void tickPrehover() { prehover.tick(config, !shuttingDown && isRunning()); }
+	public String getPrehoverStatus() { return prehover.getStatus(); }
 
 	@Inject
 	public AgilityScript(MicroAgilityPlugin plugin, MicroAgilityConfig config)
@@ -100,6 +104,7 @@ public class AgilityScript extends Script
 	public void shutdown()
 	{
 		shuttingDown = true;
+		prehover.cancel();
 		ScriptHeartbeatRegistry.remove(this.getClass().getName());
 		if (activeHandler != null)
 		{
@@ -156,6 +161,7 @@ public class AgilityScript extends Script
 		startPoint = initialHandler.getStartPoint();
 		lastAgilityXp = Microbot.getClient().getSkillExperience(Skill.AGILITY);
 		mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
+			prehover.cancel(); // Supplies, marks, alching and navigation retain exclusive cursor ownership.
 			try
 			{
 				if (!Microbot.isLoggedIn())
@@ -350,11 +356,13 @@ public class AgilityScript extends Script
 				
 				// Normal obstacle interaction
 				if (interactWithObstacle(gameObject)) {
+					if (config.rooftopPrehover()) prehover.begin(activeCourse, gameObject, courseHandler.getObstacles());
 					// Wait for completion - this now returns quickly on XP drop
 					boolean completed = courseHandler.waitForCompletion(agilityExp,
 						Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation()).getPlane());
 					
 					if (!completed) {
+						prehover.cancel();
 						// Timeout occurred - log warning (throttled to once per 30 seconds)
 						long now = System.currentTimeMillis();
 						if (now - lastTimeoutWarning > 30000) {
@@ -370,6 +378,7 @@ public class AgilityScript extends Script
 					
 					// If we're still animating after XP, don't add delays - proceed immediately
 					if (!Rs2Player.isAnimating() && !Rs2Player.isMoving()) {
+						prehover.cancel();
 						// Only add delays if we're not animating
 						Rs2Antiban.actionCooldown();
 						Rs2Antiban.takeMicroBreakByChance();
@@ -378,6 +387,7 @@ public class AgilityScript extends Script
 			}
 			catch (Exception ex)
 			{
+				prehover.cancel();
 				if (isExpectedShutdownInterrupt(ex))
 				{
 					return;
@@ -826,12 +836,14 @@ public class AgilityScript extends Script
 			{
 				sleep(100, 200);
 				Rs2Magic.alch(alchItem, 50, 75);
-				interactWithObstacle(gameObject);
+				if (interactWithObstacle(gameObject) && config.rooftopPrehover())
+					prehover.begin(activeCourse, gameObject, getActiveHandler().getObstacles());
 				boolean completed = getActiveHandler().waitForCompletion(agilityExp,
 					Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation()).getPlane());
 
 				if (!completed) {
 					// Timeout during efficient alching - log warning
+					prehover.cancel();
 					long now = System.currentTimeMillis();
 					if (now - lastTimeoutWarning > 30000) {
 						Microbot.log("Obstacle completion timed out during efficient alching");
@@ -840,6 +852,7 @@ public class AgilityScript extends Script
 					return false;  // Return false to indicate alch sequence failed
 				}
 				
+				prehover.cancel();
 				Rs2Antiban.actionCooldown();
 				Rs2Antiban.takeMicroBreakByChance();
 				lastAgilityXp = Microbot.getClient().getSkillExperience(Skill.AGILITY);

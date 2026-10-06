@@ -4,6 +4,8 @@ import com.google.inject.Provides;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Skill;
+import net.runelite.api.events.ClientTick;
+import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
@@ -27,7 +29,7 @@ import java.util.stream.Collectors;
 	description = "Microbot agility plugin",
     authors = { "Mocrosoft" },
     version = MicroAgilityPlugin.version,
-        minClientVersion = "2.1.0",
+        minClientVersion = "2.6.29",
 	tags = {"agility", "microbot"},
     iconUrl = "https://chsami.github.io/Microbot-Hub/MicroAgilityPlugin/assets/icon.png",
     cardUrl = "https://chsami.github.io/Microbot-Hub/MicroAgilityPlugin/assets/card.png",
@@ -37,7 +39,7 @@ import java.util.stream.Collectors;
 @Slf4j
 public class MicroAgilityPlugin extends Plugin
 {
-	public static final String version = "1.3.1";
+	public static final String version = "1.4.0";
 	@Inject
 	private MicroAgilityConfig config;
 	@Inject
@@ -81,6 +83,12 @@ public class MicroAgilityPlugin extends Plugin
 	public AgilityCourseHandler getCourseHandler()
 	{
 		return config.agilityCourse().getHandler();
+	}
+
+	@Subscribe
+	public void onClientTick(ClientTick event)
+	{
+		agilityScript.tickPrehover();
 	}
 
 	public void notifyUser(String message)

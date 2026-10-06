@@ -81,6 +81,11 @@ public interface MicroAgilityConfig extends Config
 		return AgilityCourse.CANIFIS_ROOFTOP_COURSE;
 	}
 
+	@ConfigItem(keyName = "rooftopPrehover", name = "Rooftop prehover",
+		description = "Track the next rooftop obstacle while traversing the current one. Never clicks or turns the camera.",
+		position = 2, section = courseSection)
+	default boolean rooftopPrehover() { return true; }
+
 	@ConfigItem(
 		keyName = hitpointsThreshold,
 		name = "Eat at",

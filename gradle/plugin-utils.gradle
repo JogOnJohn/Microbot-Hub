@@ -80,7 +80,7 @@ ext {
 
         if (sharedAutomationMarker.exists()) {
             logger.lifecycle("   Including shared-automation library for ${plugin.name}")
-            dependencies.add(pluginConfigName, project(path: ':shared-automation'))
+            dependencies.add(pluginConfigName, dependencies.project(path: ':shared-automation'))
 
             def pluginSourceSet = sourceSets.getByName(plugin.sourceSetName)
             def sharedAutomationConfiguration = configurations.getByName(pluginConfigName)
