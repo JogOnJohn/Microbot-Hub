@@ -1,16 +1,21 @@
 package net.runelite.client.plugins.microbot.agility;
 
 import java.awt.Point;
+import java.awt.Polygon;
 import java.awt.Rectangle;
 import java.awt.Shape;
 import java.util.List;
+import java.util.Set;
+import net.runelite.api.Perspective;
 import net.runelite.api.Tile;
+import net.runelite.api.TileItem;
 import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.agility.enums.AgilityCourse;
 import net.runelite.client.plugins.microbot.agility.models.AgilityObstacleModel;
+import net.runelite.api.gameval.ItemID;
 import net.runelite.client.plugins.microbot.sharedautomation.mouse.MouseIntentController;
 import net.runelite.client.plugins.microbot.sharedautomation.mouse.MousePort;
 import net.runelite.client.plugins.microbot.util.antiban.Rs2AntibanSettings;
@@ -41,8 +46,12 @@ final class RooftopPrehover
     private long lastScan;
     private boolean resetMotion;
     private boolean reached;
+    private boolean canLootMarks;
+    private Set<WorldPoint> ignoredMarks;
+    private String activeTargetKey = "";
 
-    synchronized void begin(AgilityCourse selected, TileObject clicked, List<AgilityObstacleModel> obstacles)
+    synchronized void begin(AgilityCourse selected, TileObject clicked, List<AgilityObstacleModel> obstacles,
+        boolean canLootMarks, Set<WorldPoint> ignoredMarks)
     {
         cancel();
         int index = nextIndex(selected, obstacles, clicked.getId());
@@ -55,6 +64,8 @@ final class RooftopPrehover
         status = "Waiting " + targetId;
         requests++;
         reached = false;
+        this.canLootMarks = canLootMarks;
+        this.ignoredMarks = ignoredMarks;
     }
 
     synchronized void cancel()
@@ -62,6 +73,7 @@ final class RooftopPrehover
         // Do not touch the shared controller from the script thread. tick() releases it.
         targetId = -1;
         resetMotion = true;
+        activeTargetKey = "";
         status = "Idle";
     }
 
@@ -116,24 +128,97 @@ final class RooftopPrehover
             Microbot.getClient().getViewportHeight());
         Shape clickbox = target == null ? null : target.getClickbox();
         Point point = interiorPoint(clickbox, viewport);
+        WorldPoint selectedMark = null;
+        if (canLootMarks && target != null)
+        {
+            Tile mark = findUpcomingMark(view, player, target.getWorldLocation());
+            if (mark != null)
+            {
+                Polygon markTile = Perspective.getCanvasTilePoly(Microbot.getClient(), mark.getLocalLocation());
+                Point markPoint = interiorPoint(markTile, viewport);
+                if (markPoint != null)
+                {
+                    clickbox = markTile;
+                    point = markPoint;
+                    selectedMark = mark.getWorldLocation();
+                }
+            }
+        }
         if (point == null)
         {
             controller.cancel();
             status = "Waiting " + targetId;
             return;
         }
-        controller.request(OWNER, 10, () -> point);
+        String targetKey = selectedMark == null ? "obstacle#" + targetId : "mark@" + selectedMark;
+        if (!targetKey.equals(activeTargetKey))
+        {
+            controller.cancel();
+            activeTargetKey = targetKey;
+            reached = false;
+            status = "Waiting " + (selectedMark == null ? targetId : "mark");
+        }
+        final Point hoverPoint = point;
+        controller.request(OWNER, 10, () -> hoverPoint);
         controller.tick();
         trackedTicks++;
         if (!status.startsWith("Tracking"))
-            Microbot.log("Rooftop prehover: tracking " + targetId + " (requests=" + requests + ", ticks=" + trackedTicks + ")");
-        status = "Tracking " + targetId;
+            Microbot.log("Rooftop prehover: tracking " + (selectedMark == null ? "obstacle " + targetId : "mark " + selectedMark)
+                + " (requests=" + requests + ", ticks=" + trackedTicks + ")");
+        status = "Tracking " + (selectedMark == null ? targetId : "mark");
         net.runelite.api.Point cursor = Microbot.getClient().getMouseCanvasPosition();
         if (!reached && clickbox.contains(cursor.getX(), cursor.getY()))
         {
             reached = true;
-            Microbot.log("Rooftop prehover: cursor inside live clickbox " + targetId);
+            Microbot.log("Rooftop prehover: cursor inside live " + (selectedMark == null ? "clickbox " + targetId : "mark tile " + selectedMark));
         }
+    }
+
+    private Tile findUpcomingMark(WorldView view, WorldPoint player, WorldPoint next)
+    {
+        if (player.getPlane() != next.getPlane() || next.distanceTo2D(player) > 16) return null;
+        Tile[][][] tiles = view.getScene().getTiles();
+        int plane = next.getPlane();
+        if (plane < 0 || plane >= tiles.length) return null;
+        Tile[][] section = tiles[plane];
+        Tile best = null;
+        int bestDistance = Integer.MAX_VALUE;
+        int nextX = next.getX() - view.getBaseX();
+        int nextY = next.getY() - view.getBaseY();
+        for (int x = Math.max(0, nextX - 6); x <= Math.min(section.length - 1, nextX + 6); x++)
+            for (int y = Math.max(0, nextY - 6); y <= Math.min(section[x].length - 1, nextY + 6); y++)
+            {
+                Tile tile = section[x][y];
+                if (tile == null || tile.getGroundItems() == null) continue;
+                WorldPoint markLocation = tile.getWorldLocation();
+                if (!isBeforeNextObstacle(origin, next, player, markLocation)
+                    || ignoredMarks.contains(markLocation)) continue;
+                for (TileItem item : tile.getGroundItems())
+                {
+                    if (item == null || item.getId() != ItemID.GRACE
+                        || item.getOwnership() == TileItem.OWNERSHIP_OTHER) continue;
+                    int distance = origin.distanceTo2D(markLocation);
+                    if (distance < bestDistance) { best = tile; bestDistance = distance; }
+                    break;
+                }
+            }
+        return best;
+    }
+
+    /** A small corridor on the clicked-obstacle side of the next one. Distant and later-section marks lose priority. */
+    static boolean isBeforeNextObstacle(WorldPoint clicked, WorldPoint next, WorldPoint player, WorldPoint mark)
+    {
+        if (clicked == null || next == null || player == null || mark == null
+            || mark.getPlane() != next.getPlane() || player.getPlane() != next.getPlane()
+            || player.distanceTo2D(mark) > 12 || next.distanceTo2D(mark) > 6) return false;
+        long dx = next.getX() - clicked.getX(), dy = next.getY() - clicked.getY();
+        long lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared < 4) return false;
+        long mx = mark.getX() - clicked.getX(), my = mark.getY() - clicked.getY();
+        long progress = mx * dx + my * dy;
+        long lateral = mx * dy - my * dx;
+        return progress * 5 >= lengthSquared && progress < lengthSquared
+            && lateral * lateral <= 4 * lengthSquared;
     }
 
     private TileObject findTarget(WorldView view, WorldPoint player)

@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
 @Slf4j
 public class MicroAgilityPlugin extends Plugin
 {
-	public static final String version = "1.4.0";
+	public static final String version = "1.4.1";
 	@Inject
 	private MicroAgilityConfig config;
 	@Inject

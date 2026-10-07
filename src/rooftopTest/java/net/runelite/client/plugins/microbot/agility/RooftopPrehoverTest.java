@@ -7,6 +7,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import net.runelite.client.plugins.microbot.agility.enums.AgilityCourse;
 import net.runelite.client.plugins.microbot.agility.models.AgilityObstacleModel;
+import net.runelite.api.coords.WorldPoint;
 import org.junit.jupiter.api.Test;
 import net.runelite.client.plugins.microbot.sharedautomation.mouse.MouseIntentController;
 import net.runelite.client.plugins.microbot.sharedautomation.mouse.MousePort;
@@ -14,6 +15,22 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RooftopPrehoverTest
 {
+    @Test void markOnlyWinsInsideTheImmediateUpcomingSegment()
+    {
+        WorldPoint clicked = new WorldPoint(100, 100, 3);
+        WorldPoint next = new WorldPoint(110, 100, 3);
+        WorldPoint player = new WorldPoint(104, 100, 3);
+        assertTrue(RooftopPrehover.isBeforeNextObstacle(clicked, next, player,
+            new WorldPoint(106, 101, 3)));
+        assertFalse(RooftopPrehover.isBeforeNextObstacle(clicked, next, player,
+            new WorldPoint(111, 100, 3))); // beyond next obstacle
+        assertFalse(RooftopPrehover.isBeforeNextObstacle(clicked, next, player,
+            new WorldPoint(107, 105, 3))); // parallel roof / off route
+        assertFalse(RooftopPrehover.isBeforeNextObstacle(clicked, next, player,
+            new WorldPoint(106, 101, 2))); // different floor
+        assertFalse(RooftopPrehover.isBeforeNextObstacle(clicked, next,
+            new WorldPoint(80, 100, 3), new WorldPoint(106, 101, 3))); // across course
+    }
     @Test void sharedControllerTracksChangingProjectionAndReleasesOnInvalidTarget()
     {
         Point cursor = new Point(0, 0);

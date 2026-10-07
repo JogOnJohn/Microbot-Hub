@@ -36,6 +36,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -356,7 +358,7 @@ public class AgilityScript extends Script
 				
 				// Normal obstacle interaction
 				if (interactWithObstacle(gameObject)) {
-					if (config.rooftopPrehover()) prehover.begin(activeCourse, gameObject, courseHandler.getObstacles());
+					beginPrehover(gameObject, courseHandler);
 					// Wait for completion - this now returns quickly on XP drop
 					boolean completed = courseHandler.waitForCompletion(agilityExp,
 						Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation()).getPlane());
@@ -836,8 +838,8 @@ public class AgilityScript extends Script
 			{
 				sleep(100, 200);
 				Rs2Magic.alch(alchItem, 50, 75);
-				if (interactWithObstacle(gameObject) && config.rooftopPrehover())
-					prehover.begin(activeCourse, gameObject, getActiveHandler().getObstacles());
+				if (interactWithObstacle(gameObject))
+					beginPrehover(gameObject, getActiveHandler());
 				boolean completed = getActiveHandler().waitForCompletion(agilityExp,
 					Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation()).getPlane());
 
@@ -882,5 +884,17 @@ public class AgilityScript extends Script
 	private boolean interactWithObstacle(TileObject gameObject)
 	{
 		return Rs2GameObject.interact(gameObject);
+	}
+
+	private void beginPrehover(TileObject clicked, AgilityCourseHandler courseHandler)
+	{
+		if (!config.rooftopPrehover()) return;
+		boolean canLootMarks = !Rs2Inventory.isFull() || Rs2Inventory.contains(ItemID.GRACE);
+		long now = System.currentTimeMillis();
+		Set<WorldPoint> ignoredMarks = new HashSet<>();
+		markFailureCooldownUntil.forEach((location, until) -> {
+			if (until > now) ignoredMarks.add(location);
+		});
+		prehover.begin(activeCourse, clicked, courseHandler.getObstacles(), canLootMarks, ignoredMarks);
 	}
 }
