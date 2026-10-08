@@ -22,11 +22,11 @@ import net.runelite.client.ui.overlay.OverlayManager;
 	enabledByDefault = false,
 	isExternal = true,
 	minClientVersion = "2.6.29",
-	version = MahoganyHomesPlugin.VERSION
+	version = MahoganyHomesPlugin.version
 )
 public final class MahoganyHomesPlugin extends Plugin
 {
-	public static final String VERSION = "1.0.4";
+	public static final String version = "1.0.4";
 
 	@Inject
 	Provider<MahoganyHomesScript> scriptProvider;
