@@ -18,6 +18,9 @@ The aggro reset area is highlighted with yellow lines.
 ## ✨ Features
 
 - Supports **Chinning** and **Bursting/Barraging**, with optional **Custom Attack Delay**
+- Ranged chinning defaults to stacking monkeys and letting auto-retaliate attack;
+  **Click ranged attack targets** restores explicit target clicks. Magic still
+  uses explicit attack/cast actions.
 - Automatically resets aggro
 - Attack delay handling:
     - **Custom delay** (user-defined)
@@ -38,6 +41,7 @@ The aggro reset area is highlighted with yellow lines.
 | **Auto Cast**         | If enabled, the plugin will cast the configured spell on the target.        |
 | **Magic Spell**       | Spell to be used when auto casting.                                         |
 | **Dungeon route**     | Numbered hole to use. Hole 2 is mapped; Holes 1, 3, 4 and 5 stop safely.  |
+| **Click ranged attack targets** | Off by default for auto-retaliate chinning; on restores the earlier explicit ranged attack clicks. Magic is unaffected. |
 
 ---
 
