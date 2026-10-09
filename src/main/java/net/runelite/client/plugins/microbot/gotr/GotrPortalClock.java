@@ -35,6 +35,12 @@ public final class GotrPortalClock {
         return firstPortal;
     }
 
+    public synchronized boolean hasCurrentTiming(Instant now) {
+        if (lastPortalEvent == null) return false;
+        long elapsed = Duration.between(lastPortalEvent, now).getSeconds();
+        return elapsed >= 0 && elapsed <= STALE_AFTER_SECONDS;
+    }
+
     public synchronized int secondsSincePortal(Instant now) {
         if (lastPortalEvent == null) {
             return -1;

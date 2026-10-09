@@ -509,7 +509,7 @@ public class GotrScript extends Script {
             Rs2Player.waitForWalking();
             state = GotrState.ENTER_GAME;
             GotrScript.shouldMineGuardianRemains = true;
-            portalClock.reset();
+            if (!portalClock.hasCurrentTiming(Instant.now())) portalClock.reset();
             log("Entering game...");
             return true;
         }
@@ -568,7 +568,8 @@ public class GotrScript extends Script {
             leaveHugeMine();
             return;
         }
-        if (Rs2Player.getSkillRequirement(Skill.AGILITY, 56) && getTimeSincePortal() < 85 && !Rs2Inventory.hasItem(GUARDIAN_ESSENCE)) {
+        if (Rs2Player.getSkillRequirement(Skill.AGILITY, 56) && portalClock.hasCurrentTiming(Instant.now())
+                && getTimeSincePortal() < 85 && !Rs2Inventory.hasItem(GUARDIAN_ESSENCE)) {
             if (!isInLargeMine() && !isInHugeMine() && (!Rs2Inventory.hasItem(GUARDIAN_FRAGMENTS) || getStartTimer() == -1)) {
                 if (Rs2Walker.walkTo(new WorldPoint(3632, 9503, 0), 20)) {
                     log("Traveling to large mine...");
