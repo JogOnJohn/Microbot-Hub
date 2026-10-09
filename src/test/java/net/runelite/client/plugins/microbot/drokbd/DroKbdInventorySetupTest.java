@@ -11,7 +11,12 @@ class DroKbdInventorySetupTest {
     @Test void preservesAttackOptionAndSetupPreferences() {
         InventorySetup source = setup("Always right-click");
         InventorySetup copy = DroKbdScript.sanitizeTripSetup(source);
-        assertEquals(source.getAttackOption(), copy.getAttackOption());
+        assertEquals(DroKbdScript.attackOptionIfSupported(source),
+                DroKbdScript.attackOptionIfSupported(copy));
+        boolean supportsAttackOption = java.util.Arrays.stream(InventorySetup.class.getMethods())
+                .anyMatch(method -> method.getName().equals("getAttackOption"));
+        assertEquals(supportsAttackOption ? "Always right-click" : null,
+                DroKbdScript.attackOptionIfSupported(copy));
         assertEquals(source.getName(), copy.getName());
         assertEquals(source.getNotes(), copy.getNotes());
         assertEquals(source.getSpellBook(), copy.getSpellBook());
@@ -23,15 +28,16 @@ class DroKbdInventorySetupTest {
 
     @Test void retainsAnUnsetAttackOptionAndAbsentPouches() {
         InventorySetup copy = DroKbdScript.sanitizeTripSetup(setup(null));
-        assertNull(copy.getAttackOption());
+        assertNull(DroKbdScript.attackOptionIfSupported(copy));
         assertNull(copy.getRune_pouch());
         assertNull(copy.getBoltPouch());
         assertNull(copy.getQuiver());
     }
 
     private static InventorySetup setup(String attackOption) {
-        return new InventorySetup(new ArrayList<>(), new ArrayList<>(), null, null, null,
+        return DroKbdScript.createCompatibleSetup(new Object[] {
+                new ArrayList<>(), new ArrayList<>(), null, null, null,
                 Collections.emptyMap(), "KBD", "Keep saved loadout", Color.RED, true,
-                Color.BLUE, true, false, 2, true, 11235, attackOption);
+                Color.BLUE, true, false, 2, true, 11235 }, attackOption);
     }
 }
