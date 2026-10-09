@@ -1,623 +1,1848 @@
 package net.runelite.client.plugins.microbot.mahoganyhomez;
 
-import com.google.inject.Inject;
-import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.*;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Set;
+import java.util.function.BooleanSupplier;
+import java.awt.Shape;
+import java.awt.Rectangle;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import javax.inject.Inject;
+import net.runelite.api.ObjectComposition;
+import net.runelite.api.Skill;
 import net.runelite.api.coords.WorldPoint;
-import net.runelite.api.gameval.InterfaceID;
-import net.runelite.api.widgets.Widget;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.client.config.ConfigManager;
 import net.runelite.client.plugins.microbot.Microbot;
-import net.runelite.client.plugins.microbot.Script;
-import net.runelite.client.plugins.microbot.shortestpath.ShortestPathPlugin;
-import net.runelite.client.plugins.microbot.util.Global;
+import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
+import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
+import net.runelite.client.plugins.microbot.questhelper.collections.ItemCollections;
+import net.runelite.client.plugins.microbot.statemachine.StateMachineScript;
+import net.runelite.client.plugins.microbot.statemachine.Transition;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.bank.enums.BankLocation;
-import net.runelite.client.plugins.microbot.util.coords.Rs2WorldPoint;
 import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
+import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
-import net.runelite.client.plugins.microbot.util.inventory.Rs2ItemModel;
-import net.runelite.client.plugins.microbot.util.magic.Rs2Magic;
-import net.runelite.client.plugins.microbot.util.magic.Rs2Spellbook;
-import net.runelite.client.plugins.microbot.util.math.Rs2Random;
-import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 import net.runelite.client.plugins.microbot.util.misc.Rs2UiHelper;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
-import net.runelite.client.plugins.microbot.util.tabs.Rs2Tab;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.walker.WalkerState;
-import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
-import net.runelite.client.plugins.skillcalculator.skills.MagicAction;
-
-import java.awt.Rectangle;
-import java.util.*;
-import java.util.Arrays;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
-
-@Slf4j
-public class MahoganyHomesScript extends Script {
-
-    @Inject
-    MahoganyHomesPlugin plugin;
-
-    private static final int CHOOSE_CHARACTER_WIDGET_ID = 4915200;
-    private static final long NPC_CONTACT_RETRY_MS = 5000;
-    private static final String[] CONTACT_SPELL_NAMES = {"Astral Contact", "NPC Contact", "Npc Contact"};
-    private long lastNpcContactAttempt;
-
-    public boolean run(MahoganyHomesConfig config) {
-        mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
-            try {
-                if (!Microbot.isLoggedIn()) return;
-                if (!super.run()) return;
-                checkPlankSack();
-                fix();
-                finish();
-                getNewContract();
-                bank();
-                walkToHome();
-
-
-            } catch (Exception ex) {
-                log.error("Mahogany Homes script loop failed", ex);
-            }
-        }, 0, 600, TimeUnit.MILLISECONDS);
-        return true;
-    }
-
-    private List<GameObject> getFixableObjects() {
-        List<GameObject> objects = plugin.getObjectsToMark();
-        List<Hotspot> fixableHotspots = Hotspot.getBrokenHotspots();
-        HotspotObjects hotspotObjects = plugin.getCurrentHome().getHotspotObjects();
-
-        // Precompute the set of IDs
-        Set<Integer> ids = fixableHotspots.stream()
-                .map(hotspot -> hotspotObjects.objects[hotspot.ordinal()].getObjectId())
-                .collect(Collectors.toSet());
-
-        // Filter using the precomputed set
-        return objects.stream()
-                .filter(Objects::nonNull)
-                .filter(o -> ids.contains(o.getId()))
-                .collect(Collectors.toList());
-    }
-
-    // Custom logging methods
-    private void log(String message) {
-        if (plugin.getConfig().logMessages()) {
-            Microbot.log(message);
-        }
-    }
-
-    private void log(String format, Object... args) {
-        if (plugin.getConfig().logMessages()) {
-            Microbot.log(String.format(format, args));
-        }
-    }
-
-    private void logInfo(String message) {
-        if (plugin.getConfig().logMessages()) {
-            log.info(message);
-        }
-    }
-
-    private void logInfo(String format, Object... args) {
-        if (plugin.getConfig().logMessages()) {
-            log.info(format, args);
-        }
-    }
-
-    // Tasks section
-
-    private void checkPlankSack() {
-        if(plugin.getConfig().usePlankSack() && plugin.getPlankCount() == -1) {
-            if (Rs2Inventory.contains(ItemID.PLANK_SACK)) {
-                Rs2ItemModel plankSack = Rs2Inventory.get(ItemID.PLANK_SACK);
-                if (plankSack != null) {
-                    Rs2Inventory.interact(plankSack, "Check");
-                    sleep(Rs2Random.randomGaussian(800, 200));
-                }
-            }
-        }
-    }
-
-    private int planksInPlankSack() {
-        if (plugin.getPlankCount() == -1) {
-            return 0;
-        }
-        return plugin.getPlankCount();
-    }
-
-    private void fix() {
-        if (plugin.getCurrentHome() == null
-                || !plugin.getCurrentHome().isInside(Rs2Player.getWorldLocation())
-                || Hotspot.isEverythingFixed()) {
-            return;
-        }
-
-        if (Rs2Widget.isWidgetVisible(InterfaceID.PohFurnitureCreation.FRAME)){
-            Microbot.log("Out of plank and furniture creation widget pop up");
-            Rs2Bank.walkToBank();
-            bank();
-            return;
-        }
-
-        Rs2WorldPoint playerLocation = Rs2Player.getRs2WorldPoint();
-        MahoganyHomesOverlay.setFixableObjects(getFixableObjects());
-
-        // Sort fixable objects by plane and distance
-        List<GameObject> sortedObjects = getFixableObjects().stream()
-                .sorted(Comparator.comparingInt(TileObject::getPlane).thenComparingInt(o -> o.getWorldLocation().distanceTo2D(playerLocation.getWorldPoint())))
-                .collect(Collectors.toList());
-
-
-        GameObject object = sortedObjects.stream()
-                .findFirst()
-                .orElse(null);
-
-        if (object == null) {
-            log("No fixable objects found.");
-            return;
-        }
-
-        if (Rs2Player.getWorldLocation().getPlane() != object.getWorldLocation().getPlane()) {
-            log("Object is on a different floor, trying to use ladder/stairs.");
-            tryToUseLadder();
-            return;
-        }
-
-        // Find the closest walkable tile around the object
-        Rs2WorldPoint objectLocation = Rs2Tile.getNearestWalkableTile(object);
-
-
-        int pathDistance = objectLocation != null ? objectLocation.distanceToPath(playerLocation.getWorldPoint()) : Integer.MAX_VALUE;
-        log("Local Path Distance: " + pathDistance);
-
-        if (pathDistance > 20) {
-            if (openDoorToObject(object, objectLocation)) {
-                return;
-            }
-            if (plugin.getCurrentHome().equals(Home.ROSS)) {
-                log("Ross home, trying to use ladder.");
-                tryToUseLadder();
-                return;
-            }
-            log("Local Path Distance is too far or unreachable, switching to WebWalker.");
-
-            WalkerState state = Rs2Walker.walkWithState(object.getWorldLocation(), 3);
-            if (state == WalkerState.UNREACHABLE) {
-                if (Rs2Player.getWorldLocation().getPlane() != object.getWorldLocation().getPlane()) {
-                    tryToUseLadder();
-                } else {
-                    log("All pathing failed, trying to interact anyways.");
-                    interactWithObject(object);
-                }
-            } else if (state == WalkerState.ARRIVED) {
-                log("Arrived at object, trying to interact.");
-                interactWithObject(object);
-            }
-
-        } else
-            interactWithObject(object);
-
-    }
-
-    private void interactWithObject(GameObject object) {
-        Hotspot hotspot = Hotspot.getByObjectId(object.getId());
-        String action = Objects.requireNonNull(hotspot).getRequiredAction();
-        if (Microbot.getRs2TileObjectCache().query().withId(object.getId()).interact(action)) {
-            sleepUntil(() -> {
-                String newAction = Objects.requireNonNull(Hotspot.getByObjectId(object.getId())).getRequiredAction();
-                return !newAction.equals(action);
-            }, 5000);
-            sleep(200, 600);
-        }
-
-    }
-
-    private boolean openDoorToObject(GameObject object, Rs2WorldPoint objectLocation) {
-        if (Rs2Player.getWorldLocation().getPlane() != object.getWorldLocation().getPlane()) {
-            return false;
-        }
-        log("Local Path seems to be blocked, checking for doors to open.");
-        List<WorldPoint> walkerPath = Rs2Walker.getWalkPath(objectLocation.getWorldPoint());
-        List<TileObject> doors = new ArrayList<>();
-        for (WorldPoint wp : walkerPath) {
-            TileObject door = null;
-            var tile = Rs2Walker.getTile(wp);
-
-            if (tile != null)
-                door = tile.getWallObject();
-
-            if (door == null) continue;
-
-            var doorModel = Microbot.getRs2TileObjectCache().query().withId(door.getId()).nearest();
-            if (doorModel == null) continue;
-            var objectComp = doorModel.getObjectComposition();
-            if (objectComp == null) continue;
-
-            String name = objectComp.getName();
-
-            if (Arrays.asList(objectComp.getActions()).contains("Open") && !name.equalsIgnoreCase("Chest")) {
-                doors.add(door);
-            }
-
-        }
-
-        List<String> doorNames = doors.stream()
-                .map(d -> {
-                    var m = Microbot.getRs2TileObjectCache().query().withId(d.getId()).nearest();
-                    return m != null ? m.getObjectComposition().getName() : "unknown";
-                })
-                .collect(Collectors.toList());
-
-        System.out.println("Doors found: " + doorNames + " Size: " + doors.size());
-
-//        logInfo("Found {} doors", doors.size());
-//        log("Doors found: %s", doors.size());
-
-        for (TileObject door : doors) {
-            var doorObj = Microbot.getRs2TileObjectCache().query().withId(door.getId()).nearest();
-            ObjectComposition doorComp = doorObj != null ? doorObj.getObjectComposition() : null;
-            List<String> actions = null;
-            if (doorComp != null) {
-                actions = Arrays.asList(doorComp.getActions());
-            }
-            if (actions != null && actions.contains("Open")) {
-
-                log("Opening door at: %s", door.getWorldLocation());
-                logInfo("Opening door at: {}", door.getWorldLocation());
-                if (Microbot.getRs2TileObjectCache().query().withId(door.getId()).interact("Open")) {
-                    Rs2Player.waitForWalking();
-                    sleep(200, 500);
-                    // if it's the last door in the list return true
-                    if (door.equals(doors.get(doors.size() - 1)))
-                        return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private void tryToUseLadder() {
-        log("Walker missing transport, trying to find ladder manually.");
-        int plane = Rs2Player.getWorldLocation().getPlane();
-        var closestLadder = Microbot.getRs2TileObjectCache().query().withIds(Arrays.stream(plugin.getCurrentHome().getLadders()).mapToInt(Integer::intValue).toArray()).nearest();
-        if (closestLadder != null && closestLadder.click()) {
-            sleepUntil(() -> Rs2Player.getWorldLocation().getPlane() != plane, 5000);
-            sleep(200, 600);
-        }
-    }
-
-
-    // Finish by talking to the NPC
-    private void finish() {
-        if (plugin.getCurrentHome() != null
-                && plugin.getCurrentHome().isInside(Rs2Player.getWorldLocation())
-                && Hotspot.isEverythingFixed()) {
-            if(plugin.getConfig().usePlankSack() && planksInPlankSack() > 0 && !Rs2Inventory.isFull()){
-                if (Rs2Inventory.contains(ItemID.PLANK_SACK) && Rs2Inventory.contains(ItemID.STEEL_BAR)) {
-                    Rs2ItemModel plankSack = Rs2Inventory.get(ItemID.PLANK_SACK);
-                    if (plankSack != null) {
-                        Rs2Inventory.interact(plankSack, "Empty");
-                        sleep(Rs2Random.randomGaussian(800, 200));
-                    }
-                }
-            }
-            var npc = Microbot.getRs2NpcCache().query().withId(plugin.getCurrentHome().getNpcId()).nearest();
-            if (npc == null && Rs2Player.getWorldLocation().getPlane() > 0) {
-                log("We are on the wrong floor, Trying to find ladder to go down");
-                int playerPlane = Rs2Player.getWorldLocation().getPlane();
-
-                var ladders = Microbot.getRs2TileObjectCache().query()
-                        .withIds(Arrays.stream(plugin.getCurrentHome().getLadders()).mapToInt(Integer::intValue).toArray())
-                        .where(obj -> obj.getWorldLocation().getPlane() == playerPlane)
-                        .toList();
-                var closestLadder2 = ladders.stream()
-                        .min(Comparator.comparingInt(obj ->
-                                obj.getWorldLocation().distanceTo(Rs2Player.getWorldLocation())))
-                        .orElse(null);
-                    if (closestLadder2 != null && closestLadder2.click()) {
-                            sleepUntil(
-                                    () -> Rs2Player.getWorldLocation().getPlane() == 0
-                                    , 5000);
-                            return;
-                    }
-            }
-            if (npc != null) {
-                Rs2WorldPoint npcLocation = new Rs2WorldPoint(npc.getWorldLocation());
-                log("Local NPC path distance: " + npcLocation.distanceToPath(Rs2Player.getWorldLocation()));
-                if (npcLocation.distanceToPath(Rs2Player.getWorldLocation()) < 20) {
-                    if (npc.click("Talk-to")) {
-                        log("Getting reward from NPC");
-                        sleepUntil(Rs2Dialogue::hasContinue, 10000);
-                        if (Rs2Dialogue.hasDialogueText("Please excuse me, I'm rather busy.")) {
-                            plugin.setCurrentHome(null);
-                        }
-                        sleepUntil(() -> !Rs2Dialogue.isInDialogue(), Rs2Dialogue::clickContinue, 6000, 300);
-                        sleep(600, 1200);
-
-                    }
-                } else {
-                    log("Local NPC path distance is too far, switching to WebWalker.");
-                    Rs2Walker.walkTo(npc.getWorldLocation());
-                    sleep(1200, 2200);
-                }
-            }
-        }
-    }
-
-    // Get new contract
-    private void getNewContract() {
-        if (plugin.getCurrentHome() == null) {
-            if(plugin.getConfig().useNpcContact()){
-                if (contactAmy()) {
-                    handleContractDialogue();
-                }
-                return;
-            }
-            WorldPoint contractLocation = getClosestContractLocation();
-            if (contractLocation.distanceTo2D(Rs2Player.getWorldLocation()) > 10) {
-                log("Walking to contract NPC");
-                Rs2Walker.walkWithState(contractLocation, 5);
-
-            } else {
-                log("Getting new contract");
-
-
-                // Search for Mahogany Homes contract NPCs directly by name
-                var npc = Microbot.getRs2NpcCache().query().withNames("Amy", "Marlo", "Ellie", "Angelo").nearestOnClientThread();
-                
-                if (npc == null) {
-                    log("No contract NPC found, waiting before retry");
-                    sleep(2000, 3000);  // Wait 2-3 seconds to prevent spam
-                    return;
-                }
-                log("NPC found: " + npc.getName());
-                if (npc.click("Contract")) {
-                    handleContractDialogue();
-                }
-
-            }
-
-        }
-
-    }
-
-    private boolean contactAmy() {
-        long now = System.currentTimeMillis();
-        if (now - lastNpcContactAttempt < NPC_CONTACT_RETRY_MS) {
-            return false;
-        }
-        lastNpcContactAttempt = now;
-
-        if (!Rs2Magic.isSpellbook(Rs2Spellbook.LUNAR)) {
-            log("Unable to use Astral Contact; Lunar spellbook is not active.");
-            return false;
-        }
-
-        if (!castContactSpell()) {
-            log("Unable to cast Astral Contact / NPC Contact.");
-            return false;
-        }
-
-        if (!sleepUntil(() -> !Rs2Widget.isHidden(CHOOSE_CHARACTER_WIDGET_ID), 7000)) {
-            log("Astral Contact cast, but contact selection did not open.");
-            return false;
-        }
-
-        if (!selectContactTarget("amy")) {
-            log("Astral Contact opened, but Amy could not be selected.");
-            return false;
-        }
-
-        Rs2Player.waitForAnimation();
-        return true;
-    }
-
-    private boolean castContactSpell() {
-        Rs2Tab.switchToMagicTab();
-        sleep(150, 300);
-        Rs2Magic.canCast(MagicAction.NPC_CONTACT);
-
-        for (String spellName : CONTACT_SPELL_NAMES) {
-            if (clickSpellbookWidget(spellName)) {
-                log("Casting %s.", spellName);
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private boolean clickSpellbookWidget(String spellName) {
-        return Rs2Widget.clickWidget(spellName, Optional.of(218), 3, true)
-                || Rs2Widget.clickWidget(spellName, Optional.of(218), 0, true)
-                || Rs2Widget.clickWidget(spellName, true);
-    }
-
-    private boolean selectContactTarget(String npcName) {
-        Rectangle[] bounds = contactTargetBounds(npcName);
-        if (bounds == null) {
-            return false;
-        }
-        if (!Rs2UiHelper.isRectangleWithinRectangle(bounds[0], bounds[1])) {
-            Global.sleepUntil(() -> {
-                Rectangle[] current = contactTargetBounds(npcName);
-                return current == null || Rs2UiHelper.isRectangleWithinRectangle(current[0], current[1]);
-            }, () -> {
-                Rectangle[] current = contactTargetBounds(npcName);
-                if (current == null) {
-                    return;
-                }
-                if (current[1].y > current[0].y) {
-                    Microbot.getMouse().scrollDown(Rs2UiHelper.getClickingPoint(current[0], true));
-                } else {
-                    Microbot.getMouse().scrollUp(Rs2UiHelper.getClickingPoint(current[0], true));
-                }
-            }, 5000, 300);
-        }
-
-        bounds = contactTargetBounds(npcName);
-        if (Thread.currentThread().isInterrupted() || bounds == null
-                || !Rs2UiHelper.isRectangleWithinRectangle(bounds[0], bounds[1])) {
-            return false;
-        }
-        return Rs2Widget.clickWidget(npcName, Optional.of(75), 0, false)
-                || Rs2Widget.clickWidget(npcName, false);
-    }
-
-    private Rectangle[] contactTargetBounds(String npcName) {
+
+public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesScript.State>
+{
+	private static final int[] HOTSPOT_VARBITS =
+		{10554, 10555, 10556, 10557, 10558, 10559, 10560, 10561};
+	private static final int NO_PROGRESS_TICKS = 6;
+	private static final int MAX_ATTEMPTS = 3;
+	private static final Pattern COMPLETION_MESSAGE = Pattern.compile(
+		"You have completed [\\d,]+ contracts with a total of [\\d,]+ points?\\.");
+	private static final Pattern CONTRACT_HOME = Pattern.compile(
+		"(?i)\\bgo\\s+see\\s+([a-z][a-z'-]*)\\b.*\\byou can get another job once you have furnished\\s+"
+			+ "(?:his|her)\\s+home\\.?");
+	private static final Pattern CONTRACT_TIER = Pattern.compile(
+		"(?i)currently on an? (Beginner|Novice|Adept|Expert) Contract");
+	private static final String ASSIGNED_HOME_KEY = "assignedHomeowner";
+	private static final String ASSIGNED_TIER_KEY = "assignedTier";
+	@Inject
+	private ConfigManager configManager;
+
+	private volatile int readyTick = -1;
+	private volatile int completedAtTick = -1;
+	private volatile boolean complete;
+	private boolean nextContractReady;
+	private volatile String error;
+	private volatile int completedEffects;
+	private volatile int[] hotspotValues = new int[HOTSPOT_VARBITS.length];
+	private int processedTick = -1;
+    private int interactionProbeTick = -1;
+    private boolean skipEarlyHandoff;
+    private long travelStartedAt;
+	private MahoganyHomesConfig config;
+	private MahoganyHomesData setupTier;
+	private int setupPlanks;
+	private int setupSteelBars;
+	private boolean currentContract;
+	private boolean currentContractAtHomeowner;
+	private boolean setupReady;
+	private boolean teleportResourcesPrepared;
+	private boolean contractAcquired;
+	private boolean contractDialogueClosed;
+	private String assignedHomeowner;
+	private MahoganyHomesData assignedTier;
+	private MahoganyHomesContractorData contractor;
+	private int contractRequestTick;
+	private int contractAttempts;
+	private String lastContractDialogue = "";
+	private boolean contractArrived;
+	private boolean contractValidated;
+	private int contractArrivalWaitTick = -1;
+	private int pendingBankItemId = -1;
+	private int pendingBankItemQuantity;
+	private int pendingBankActionTick;
+	private int lastBankActionItemId = -1;
+	private int bankActionAttempts;
+	private int pendingSackQuantity = -1;
+	private int pendingSackActionTick;
+	private int lastSackQuantity = -1;
+	private int sackActionAttempts;
+	private int pendingSawItemId = -1;
+	private int pendingSawItemQuantity;
+	private int pendingSawActionTick;
+	private int lastSawItemId = -1;
+	private int sawActionAttempts;
+	private boolean needsTravel;
+	private boolean travelArrived;
+	private boolean travelRequested;
+	private State travelReturnState;
+	private WorldPoint travelTarget;
+	private boolean travelToNearestBank;
+	private WorldPoint lastTravelPosition;
+	private int lastTravelProgressTick;
+	private Work pending;
+	private Work activeWork;
+	private int pendingValue;
+	private int lastWorkProgressTick;
+	private int workAttempts;
+	private int missingObjectSince = -1;
+	private boolean turnInRequested;
+	private int turnInAttemptTick;
+	private int turnInAttempts;
+	private WalkerBridge walker;
+
+	enum State
+	{
+		GET_SETUP,
+		GET_CONTRACT,
+		READY,
+		GO_TO_CONTRACT,
+		VALIDATE_CONTRACT,
+		DO_CONTRACT,
+		TRAVEL,
+		TURN_IN_CONTRACT,
+		DONE,
+		ERROR
+	}
+
+	@Override
+	protected State initialState()
+	{
+		return State.GET_CONTRACT;
+	}
+
+	@Override
+	protected List<Transition<State>> defineTransitions()
+	{
+		return List.of(
+			transition(State.GET_SETUP, State.ERROR, () -> error != null, "Setup failed"),
+			transition(State.GET_SETUP, State.TRAVEL, () -> needsTravel, "Travelling to the setup bank"),
+			transition(State.GET_SETUP, State.VALIDATE_CONTRACT,
+				() -> setupReady && currentContractAtHomeowner, "Current contract setup is ready"),
+			transition(State.GET_SETUP, State.READY,
+				() -> setupReady && currentContract && !currentContractAtHomeowner,
+				"Saved contract setup is ready"),
+			transition(State.GET_SETUP, State.GET_CONTRACT,
+				() -> setupReady && !currentContract, "Next contract setup is ready"),
+			transition(State.GET_CONTRACT, State.ERROR, () -> error != null, "Contract acquisition failed"),
+			transition(State.GET_CONTRACT, State.TRAVEL, () -> needsTravel, "Travelling to a contractor"),
+			transition(State.GET_CONTRACT, State.GET_SETUP,
+				() -> contractAcquired && contractDialogueClosed && !setupReady,
+				"Preparing for the assigned contract"),
+			transition(State.GET_CONTRACT, State.READY,
+				() -> contractAcquired && contractDialogueClosed && setupReady,
+				"Contract assignment confirmed"),
+			transition(State.READY, State.GET_CONTRACT,
+				() -> assignedHomeowner == null, "No contract assignment is known"),
+			transition(State.READY, State.GO_TO_CONTRACT,
+				() -> assignedHomeowner != null, "Contract assignment is ready for travel"),
+			transition(State.GO_TO_CONTRACT, State.ERROR, () -> error != null, "Contract travel failed"),
+			transition(State.GO_TO_CONTRACT, State.TRAVEL, () -> needsTravel,
+				"Travelling to the assigned homeowner"),
+			transition(State.GO_TO_CONTRACT, State.VALIDATE_CONTRACT,
+				() -> contractArrived, "Assigned contract reached"),
+			transition(State.VALIDATE_CONTRACT, State.ERROR, () -> error != null, "Validation failed"),
+			transition(State.VALIDATE_CONTRACT, State.DO_CONTRACT,
+				() -> contractValidated, "Contract verified"),
+			transition(State.DO_CONTRACT, State.ERROR, () -> error != null, "Work failed"),
+			transition(State.DO_CONTRACT, State.TRAVEL, () -> needsTravel,
+				"Another floor has active work"),
+			transition(State.DO_CONTRACT, State.TURN_IN_CONTRACT, this::allFixed,
+				"Every active hotspot has an authoritative effect"),
+			transition(State.TRAVEL, State.ERROR, () -> error != null, "Microbot walker failed"),
+			transition(State.TRAVEL, State.GET_SETUP,
+				() -> travelArrived && travelReturnState == State.GET_SETUP, "Setup bank reached"),
+			transition(State.TRAVEL, State.GET_CONTRACT,
+				() -> travelArrived && travelReturnState == State.GET_CONTRACT, "Contractor reached"),
+			transition(State.TRAVEL, State.GO_TO_CONTRACT,
+				() -> travelArrived && travelReturnState == State.GO_TO_CONTRACT,
+				"Assigned home reached"),
+			transition(State.TRAVEL, State.DO_CONTRACT,
+				() -> travelArrived && travelReturnState == State.DO_CONTRACT, "Work floor reached"),
+			transition(State.TRAVEL, State.TURN_IN_CONTRACT,
+				() -> travelArrived && travelReturnState == State.TURN_IN_CONTRACT,
+				"Homeowner reached"),
+			transition(State.TURN_IN_CONTRACT, State.ERROR, () -> error != null, "Turn-in failed"),
+			transition(State.TURN_IN_CONTRACT, State.TRAVEL, () -> needsTravel,
+				"Returning to the homeowner"),
+			transition(State.TURN_IN_CONTRACT, State.DONE,
+				() -> complete && !Rs2Dialogue.isInDialogue(),
+				"Contract completion message observed and dialogue closed"),
+			transition(State.DONE, State.GET_CONTRACT, () -> nextContractReady, "Getting the next contract"),
+			transition(State.ERROR, State.VALIDATE_CONTRACT, () -> error == null, "The error was cleared")
+		);
+	}
+
+	private Transition<State> transition(
+		State from, State to, java.util.function.BooleanSupplier condition, String reason)
+	{
+		return Transition.<State>from(from)
+			.when(condition, reason)
+			.because(reason)
+			.goTo(to);
+	}
+
+	@Override
+	protected void onState(State state)
+	{
+		if (walker == null && state != State.ERROR)
+		{
+			walker = WalkerBridge.bind();
+		}
+		if (walker != null && !walker.isAvailable())
+		{
+			fail("Microbot's walker became unavailable. Restart Mahogany Homes.");
+			return;
+		}
+		switch (state)
+		{
+			case GET_SETUP:
+				getSetup();
+				break;
+			case GET_CONTRACT:
+				getContract();
+				break;
+			case READY:
+				ready();
+				break;
+			case GO_TO_CONTRACT:
+				goToContract();
+				break;
+			case VALIDATE_CONTRACT:
+				validateContract();
+				break;
+			case DO_CONTRACT:
+				doContract();
+				break;
+			case TRAVEL:
+				travel();
+				break;
+			case TURN_IN_CONTRACT:
+				turnIn();
+				break;
+			case DONE:
+				Microbot.status = "Mahogany Homes: contract complete";
+				if (readyForNextContract(readyTick, completedAtTick))
+				{
+					nextContractReady = true;
+				}
+				break;
+			case ERROR:
+				Microbot.status = "Mahogany Homes: " + error;
+				break;
+			default:
+				fail("The plugin entered an unexpected state. Restart Mahogany Homes.");
+		}
+	}
+
+	@Override
+	protected State onError(State state, Exception exception)
+	{
+		fail("An unexpected error stopped the plugin. Check your current contract before restarting.");
+		return State.ERROR;
+	}
+
+	public boolean run(MahoganyHomesConfig config)
+	{
+		this.config = config;
+		loadAssignment();
+		mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() ->
+		{
+			int tick = readyTick;
+			if (tick == processedTick)
+			{
+				return;
+			}
+			processedTick = tick;
+			step();
+		}, 0, 50, TimeUnit.MILLISECONDS);
+		return true;
+	}
+
+	@Override
+	public void shutdown()
+	{
+		if (walker != null)
+		{
+			walker.cancel();
+		}
+		super.shutdown();
+	}
+
+	void onGameTick(int tick)
+	{
+		readyTick = tick;
+	}
+
+	void onGameMessage(String message)
+	{
+		String text = Rs2UiHelper.stripTagsToSpace(message).trim();
+		if (isCompletionMessage(text))
+		{
+			complete = true;
+			completedAtTick = readyTick;
+			clearAssignment();
+		}
+	}
+
+	static boolean readyForNextContract(int currentTick, int completionTick)
+	{
+		return completionTick >= 0 && currentTick - completionTick >= 2;
+	}
+
+	private void resetCompletedContract()
+	{
+		complete = false;
+		nextContractReady = false;
+		completedAtTick = -1;
+		completedEffects = 0;
+		error = null;
+		setupTier = null;
+		setupPlanks = 0;
+		setupSteelBars = 0;
+		currentContract = false;
+		currentContractAtHomeowner = false;
+		setupReady = false;
+		teleportResourcesPrepared = false;
+		contractor = null;
+		contractRequestTick = -1;
+		contractAttempts = 0;
+		lastContractDialogue = "";
+		needsTravel = false;
+		travelArrived = false;
+		travelRequested = false;
+		travelReturnState = null;
+		travelTarget = null;
+		travelToNearestBank = false;
+		lastTravelPosition = null;
+		pending = null;
+		activeWork = null;
+		workAttempts = 0;
+		missingObjectSince = -1;
+		turnInRequested = false;
+		turnInAttemptTick = 0;
+		turnInAttempts = 0;
+		clearBankAction();
+		clearSackAction();
+		clearSawAction();
+		if (walker != null)
+		{
+			walker.cancel();
+		}
+	}
+
+	private void getSetup()
+	{
+		if (completedAtTick >= 0)
+		{
+			resetCompletedContract();
+		}
+		refreshHotspots();
+		WorldPoint position = Rs2Player.getWorldLocation();
+		MahoganyHomesData preferredTier = assignedTier == null ? config.contractTier() : assignedTier;
+		MahoganyHomesContractData assignedContract =
+			MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+		if (assignedContract == null && assignedHomeowner == null
+			&& isActiveContractLayout(hotspotValues))
+		{
+			assignedContract = MahoganyHomesContractData.forLocation(position);
+			if (assignedContract != null)
+			{
+				rememberAssignment(assignedContract.homeowner, preferredTier);
+			}
+		}
+		boolean assignedAtHome = assignedContract != null && assignedContract.contains(position)
+			&& isLoadedContractLayout(hotspotValues);
+		Setup setup = assignedAtHome
+			? new Setup(preferredTier, assignedContract.requiredPlanks(hotspotValues),
+				assignedContract.requiredSteelBars(hotspotValues), true)
+			: selectSetup(preferredTier, false, hotspotValues);
+		setupTier = setup.tier;
+		setupPlanks = setup.planks;
+		setupSteelBars = setup.steelBars;
+		currentContract = assignedHomeowner != null || setup.currentContract;
+		Rs2NpcModel setupHomeowner = assignedContract == null ? null
+			: Microbot.getRs2NpcCache().query().withId(assignedContract.npcId).nearest();
+		currentContractAtHomeowner = isCurrentContractAtHomeowner(assignedContract, false,
+			setupHomeowner == null ? null : setupHomeowner.getWorldLocation(), position,
+			Rs2Tile.getReachableTilesFromTile(position).keySet());
+
+		if (Rs2Player.getRealSkillLevel(Skill.CONSTRUCTION) < setupTier.getConstructionLevel())
+		{
+			fail(setupTier.getName() + " contracts require "
+				+ setupTier.getConstructionLevel() + " Construction. Select a lower contract tier.");
+			return;
+		}
+		if (Rs2Bank.isOpen() && shouldPrepareSackAtBank(setup))
+		{
+			prepareAtBank(setup);
+			return;
+		}
+		if (hasSetup(setup))
+		{
+			if (shouldPrepareTeleportResources(Rs2Bank.isOpen(), teleportResourcesPrepared))
+			{
+				setupReady = false;
+				if (!walker.prepareTeleportResourcesAtBank())
+				{
+					return;
+				}
+				teleportResourcesPrepared = true;
+			}
+			if (Rs2Bank.isOpen())
+			{
+				Rs2Bank.closeBank();
+				return;
+			}
+			if (!prepareAmysSaw())
+			{
+				return;
+			}
+			setupReady = true;
+			Microbot.status = "Mahogany Homes: " + setupTier.getName() + " setup ready";
+			return;
+		}
+		setupReady = false;
+		if (!Rs2Bank.isOpen())
+		{
+			if (!travelArrived || !travelToNearestBank)
+			{
+				requestNearestBank(State.GET_SETUP);
+				return;
+			}
+			if (!Rs2Bank.openBank())
+			{
+				fail("Could not open the bank. Move within reach of a banker or bank booth, then restart.");
+			}
+			return;
+		}
+		prepareAtBank(setup);
+	}
+
+	static boolean shouldPrepareTeleportResources(boolean bankOpen, boolean resourcesPrepared)
+	{
+		return bankOpen && !resourcesPrepared;
+	}
+
+	static boolean isCurrentContractAtHomeowner(MahoganyHomesContractData contract,
+		boolean leelaContract, WorldPoint homeowner, WorldPoint position, Set<WorldPoint> reachable)
+	{
+		return leelaContract || contract != null
+			&& isHomeownerReachable(position,
+				homeowner == null ? contract.destination : homeowner, reachable);
+	}
+
+	private void prepareAtBank(Setup setup)
+	{
+		if (awaitBankAction() || awaitSackAction())
+		{
+			return;
+		}
+		if (Rs2Inventory.contains(setup.tier.getNotedPlankId()))
+		{
+			trackBankAction(setup.tier.getNotedPlankId());
+			if (!Rs2Bank.depositAll(setup.tier.getNotedPlankId()))
+			{
+				clearBankAction();
+				fail("Could not deposit noted " + setup.tier.getPlankName() + ". Deposit them manually, then restart.");
+			}
+			return;
+		}
+		if (Rs2Inventory.contains(ItemID.Cert.STEEL_BAR))
+		{
+			trackBankAction(ItemID.Cert.STEEL_BAR);
+			if (!Rs2Bank.depositAll(ItemID.Cert.STEEL_BAR))
+			{
+				clearBankAction();
+				fail("Could not deposit noted steel bars. Deposit them manually, then restart.");
+			}
+			return;
+		}
+		if (!PlankSack.isCarried() && Rs2Bank.hasBankItem(ItemID.PLANK_SACK, 1))
+		{
+			if (Rs2Inventory.emptySlotCount() == 0 && depositFirstSurplus(setup.tier))
+			{
+				return;
+			}
+			withdraw(ItemID.PLANK_SACK, 1, "plank sack");
+			return;
+		}
+		int wrongPlank = PlankSack.firstWrongInventoryPlank(setup.tier);
+		if (wrongPlank >= 0)
+		{
+			trackBankAction(wrongPlank);
+			if (!Rs2Bank.depositAll(wrongPlank))
+			{
+				clearBankAction();
+				fail("Could not deposit planks that do not match your contract tier. Deposit them manually, then restart.");
+			}
+			return;
+		}
+		if (PlankSack.isCarried() && PlankSack.hasWrongContents(setup.tier))
+		{
+			if (Rs2Inventory.emptySlotCount() == 0)
+			{
+				if (!depositFirstNonSack())
+				{
+					fail("Could not make room to empty the plank sack. Free inventory space at the bank, then restart.");
+				}
+				return;
+			}
+			trackSackAction();
+			if (!PlankSack.empty())
+			{
+				clearSackAction();
+				fail("Could not empty the plank sack. Check its contents and your free inventory space, then restart.");
+			}
+			return;
+		}
+		if (PlankSack.isCarried() && PlankSack.freeCapacity() > 0)
+		{
+			int loosePlanks = Rs2Inventory.count(setup.tier.getPlankId());
+			if (loosePlanks > 0)
+			{
+				trackSackAction();
+				if (!PlankSack.fill())
+				{
+					clearSackAction();
+					fail("Could not fill the plank sack. Check the planks in your inventory and the sack's contents, then restart.");
+				}
+				return;
+			}
+			int fillWithdrawal = PlankSack.fillWithdrawal(PlankSack.count(setup.tier), 0,
+				Rs2Bank.count(setup.tier.getPlankId()));
+			if (fillWithdrawal > 0)
+			{
+				if (Rs2Inventory.emptySlotCount() < fillWithdrawal
+					&& depositFirstSurplus(setup.tier))
+				{
+					return;
+				}
+				withdraw(setup.tier.getPlankId(), fillWithdrawal, setup.tier.getPlankName());
+				return;
+			}
+		}
+		int loosePlanks = Rs2Inventory.count(setup.tier.getPlankId());
+		int availableLoosePlanks = Math.min(Math.max(0, setup.planks - loosePlanks),
+			Rs2Bank.count(setup.tier.getPlankId()));
+		int missingSlots = availableLoosePlanks
+			+ Math.max(0, setup.steelBars - Rs2Inventory.count(ItemID.STEEL_BAR))
+			+ (hasTool(ItemCollections.HAMMER) ? 0 : 1)
+			+ (hasTool(ItemCollections.SAW) ? 0 : 1);
+		if (Rs2Inventory.emptySlotCount() < missingSlots)
+		{
+			if (!depositFirstSurplus(setup.tier))
+			{
+				fail("Could not clear your inventory for supplies. Open the bank and deposit unneeded items, then restart.");
+			}
+			return;
+		}
+		if (!hasTool(ItemCollections.HAMMER))
+		{
+			withdrawTool(ItemCollections.HAMMER, "hammer");
+			return;
+		}
+		if (!hasTool(ItemCollections.SAW))
+		{
+			withdrawTool(AmysSaw.preferredSawIds(), "saw");
+			return;
+		}
+		int missingLoosePlanks = setup.planks - Rs2Inventory.count(setup.tier.getPlankId());
+		int withdrawablePlanks = Math.min(Math.max(0, missingLoosePlanks),
+			Rs2Bank.count(setup.tier.getPlankId()));
+		if (withdrawablePlanks > 0)
+		{
+			withdraw(setup.tier.getPlankId(), withdrawablePlanks, setup.tier.getPlankName());
+			return;
+		}
+		if (PlankSack.available(setup.tier) < setup.planks)
+		{
+			fail("Missing " + (setup.planks - PlankSack.available(setup.tier)) + " " + setup.tier.getPlankName()
+				+ ". Add them to your bank, then restart.");
+			return;
+		}
+		int missingBars = setup.steelBars - Rs2Inventory.count(ItemID.STEEL_BAR);
+		if (missingBars > 0)
+		{
+			withdraw(ItemID.STEEL_BAR, missingBars, "steel bars");
+		}
+	}
+
+	private void withdrawTool(ItemCollections collection, String name)
+	{
+		withdrawTool(collection.getItems().stream().mapToInt(Integer::intValue).toArray(), name);
+	}
+
+	private void withdrawTool(int[] ids, String name)
+	{
+		for (int id : ids)
+		{
+			if (Rs2Bank.hasBankItem(id, 1))
+			{
+				trackBankAction(id);
+				if (!Rs2Bank.withdrawOne(id))
+				{
+					clearBankAction();
+					fail("Could not withdraw " + name + ". Open the bank and check that the item is available, then restart.");
+				}
+				return;
+			}
+		}
+		fail("No " + name + " found in your bank. Add it, then restart.");
+	}
+
+	private boolean shouldPrepareSackAtBank(Setup setup)
+	{
+		if (!PlankSack.isCarried())
+		{
+			return Rs2Bank.hasBankItem(ItemID.PLANK_SACK, 1);
+		}
+		if (PlankSack.hasWrongContents(setup.tier)
+			|| PlankSack.firstWrongInventoryPlank(setup.tier) >= 0)
+		{
+			return true;
+		}
+		int bankedPlanks = Rs2Bank.count(setup.tier.getPlankId());
+		return PlankSack.freeCapacity() > 0
+			&& (Rs2Inventory.count(setup.tier.getPlankId()) > 0 || bankedPlanks > 0)
+			|| Rs2Inventory.count(setup.tier.getPlankId()) < setup.planks && bankedPlanks > 0;
+	}
+
+	private boolean depositFirstNonSack()
+	{
+		int id = Rs2Inventory.items(item -> item.getId() != ItemID.PLANK_SACK)
+			.mapToInt(item -> item.getId()).findFirst().orElse(-1);
+		return deposit(id, "inventory item");
+	}
+
+	private boolean depositFirstSurplus(MahoganyHomesData tier)
+	{
+		int id = Rs2Inventory.items(item -> !isSetupItem(item.getId(), tier))
+			.mapToInt(item -> item.getId()).findFirst().orElse(-1);
+		return deposit(id, "surplus inventory item");
+	}
+
+	private boolean deposit(int id, String name)
+	{
+		if (id < 0)
+		{
+			return false;
+		}
+		trackBankAction(id);
+		if (Rs2Bank.depositAll(id))
+		{
+			return true;
+		}
+		clearBankAction();
+		fail("Could not deposit " + name + ". Deposit it manually, then restart.");
+		return false;
+	}
+
+	private static boolean isSetupItem(int id, MahoganyHomesData tier)
+	{
+		return id == ItemID.PLANK_SACK || id == tier.getPlankId() || id == ItemID.STEEL_BAR
+			|| ItemCollections.HAMMER.getItems().contains(id)
+			|| ItemCollections.SAW.getItems().contains(id);
+	}
+
+	private boolean prepareAmysSaw()
+	{
+		if (awaitSawAction())
+		{
+			return false;
+		}
+		if (AmysSaw.isEquipped())
+		{
+			return true;
+		}
+		int id = AmysSaw.inventoryItemId();
+		if (id < 0)
+		{
+			return true;
+		}
+		trackSawAction(id);
+		if (!AmysSaw.prepare(id))
+		{
+			clearSawAction();
+			fail("Could not prepare Amy's saw. Put it in your inventory or equip it, then restart.");
+		}
+		return false;
+	}
+
+	private boolean awaitSackAction()
+	{
+		if (pendingSackQuantity < 0)
+		{
+			return false;
+		}
+		if (bankActionChanged(pendingSackQuantity, PlankSack.total()))
+		{
+			clearSackAction();
+			return false;
+		}
+		if (readyTick - pendingSackActionTick >= NO_PROGRESS_TICKS)
+		{
+			if (bankActionFailed(readyTick - pendingSackActionTick, sackActionAttempts))
+			{
+				fail("Could not confirm that the plank sack's contents changed. Check its contents before restarting.");
+			}
+			else
+			{
+				pendingSackQuantity = -1;
+			}
+		}
+		return pendingSackQuantity >= 0;
+	}
+
+	private void trackSackAction()
+	{
+		int quantity = PlankSack.total();
+		sackActionAttempts = lastSackQuantity == quantity ? sackActionAttempts + 1 : 1;
+		lastSackQuantity = quantity;
+		pendingSackQuantity = quantity;
+		pendingSackActionTick = readyTick;
+	}
+
+	private void clearSackAction()
+	{
+		pendingSackQuantity = -1;
+		lastSackQuantity = -1;
+		sackActionAttempts = 0;
+	}
+
+	private boolean awaitSawAction()
+	{
+		if (pendingSawItemId < 0)
+		{
+			return false;
+		}
+		if (bankActionChanged(pendingSawItemQuantity, Rs2Inventory.count(pendingSawItemId)))
+		{
+			clearSawAction();
+			return false;
+		}
+		if (readyTick - pendingSawActionTick >= NO_PROGRESS_TICKS)
+		{
+			if (bankActionFailed(readyTick - pendingSawActionTick, sawActionAttempts))
+			{
+				fail("Could not confirm that Amy's saw was equipped or unequipped. Check your tools before restarting.");
+			}
+			else
+			{
+				pendingSawItemId = -1;
+			}
+		}
+		return pendingSawItemId >= 0;
+	}
+
+	private void trackSawAction(int itemId)
+	{
+		sawActionAttempts = lastSawItemId == itemId ? sawActionAttempts + 1 : 1;
+		lastSawItemId = itemId;
+		pendingSawItemId = itemId;
+		pendingSawItemQuantity = Rs2Inventory.count(itemId);
+		pendingSawActionTick = readyTick;
+	}
+
+	private void clearSawAction()
+	{
+		pendingSawItemId = -1;
+		lastSawItemId = -1;
+		sawActionAttempts = 0;
+	}
+
+	private void withdraw(int id, int amount, String name)
+	{
+		if (!Rs2Bank.hasBankItem(id, amount))
+		{
+			int missing = amount - Rs2Bank.count(id);
+			fail(missing > 0 ? "Missing " + missing + " " + name + ". Add them to your bank, then restart."
+				: "Could not read your bank contents. Close and reopen the bank, then restart.");
+			return;
+		}
+		trackBankAction(id);
+		boolean withdrawn = amount == 1 ? Rs2Bank.withdrawOne(id) : Rs2Bank.withdrawX(id, amount);
+		if (!withdrawn)
+		{
+			clearBankAction();
+			fail("Could not withdraw " + amount + " " + name + ". Check the available amount and free inventory space, then restart.");
+		}
+	}
+
+	private boolean awaitBankAction()
+	{
+		if (pendingBankItemId < 0)
+		{
+			return false;
+		}
+		if (bankActionChanged(pendingBankItemQuantity, Rs2Inventory.count(pendingBankItemId)))
+		{
+			clearBankAction();
+			return false;
+		}
+		if (readyTick - pendingBankActionTick >= NO_PROGRESS_TICKS)
+		{
+			if (bankActionFailed(readyTick - pendingBankActionTick, bankActionAttempts))
+			{
+				fail("Could not confirm the bank transfer. Check your inventory and bank before restarting.");
+			}
+			else
+			{
+				releaseBankAction();
+			}
+		}
+		return true;
+	}
+
+	private void trackBankAction(int itemId)
+	{
+		bankActionAttempts = lastBankActionItemId == itemId ? bankActionAttempts + 1 : 1;
+		lastBankActionItemId = itemId;
+		pendingBankItemId = itemId;
+		pendingBankItemQuantity = Rs2Inventory.count(itemId);
+		pendingBankActionTick = readyTick;
+	}
+
+	static boolean bankActionChanged(int previousSlots, int currentSlots)
+	{
+		return previousSlots != currentSlots;
+	}
+
+	static boolean bankActionFailed(int elapsedTicks, int attempts)
+	{
+		return elapsedTicks >= NO_PROGRESS_TICKS && attempts >= MAX_ATTEMPTS;
+	}
+
+	private void clearBankAction()
+	{
+		releaseBankAction();
+		lastBankActionItemId = -1;
+		bankActionAttempts = 0;
+	}
+
+	private void releaseBankAction()
+	{
+		pendingBankItemId = -1;
+	}
+
+	private static boolean hasSetup(Setup setup)
+	{
+		return hasTool(ItemCollections.HAMMER) && hasTool(ItemCollections.SAW)
+			&& PlankSack.available(setup.tier) >= setup.planks
+			&& Rs2Inventory.count(ItemID.STEEL_BAR) >= setup.steelBars;
+	}
+
+	private void getContract()
+	{
+		if (completedAtTick >= 0)
+		{
+			resetCompletedContract();
+		}
+		setupTier = tierForContractRequest(setupTier, config.contractTier());
+		contractDialogueClosed = contractAcquired && !Rs2Dialogue.isInDialogue();
+		if (contractDialogueClosed)
+		{
+			return;
+		}
+
+		WorldPoint position = Rs2Player.getWorldLocation();
+		if (contractor == null)
+		{
+			contractor = MahoganyHomesContractorData.nearest(position);
+		}
+		if (position.getPlane() != contractor.location.getPlane()
+			|| position.distanceTo(contractor.location) > 8)
+		{
+			requestTravel(contractor.location, State.GET_CONTRACT);
+			return;
+		}
+
+		String dialogue = Rs2Dialogue.getDialogueText();
+		if (!dialogue.equals(lastContractDialogue))
+		{
+			lastContractDialogue = dialogue;
+			contractRequestTick = readyTick;
+		}
+		Assignment assignment = parseAssignment(dialogue, setupTier);
+		if (assignment != null)
+		{
+			rememberAssignment(assignment.homeowner, assignment.tier);
+			contractAcquired = true;
+			if (Rs2Dialogue.hasContinue())
+			{
+				Rs2Dialogue.clickContinue();
+			}
+			return;
+		}
+		// A selected option can become a Continue dialogue between widget reads.
+		if (Rs2Dialogue.hasContinue())
+		{
+			Rs2Dialogue.clickContinue();
+			return;
+		}
+		if (Rs2Dialogue.hasSelectAnOption())
+		{
+			if (!Rs2Dialogue.hasDialogueOption(setupTier.getContractOption()))
+			{
+				if (contractOptionFailed(readyTick, contractRequestTick,
+					Rs2Dialogue.hasSelectAnOption(), Rs2Dialogue.hasContinue()))
+				{
+					fail("Could not select " + setupTier.getContractOption() + ". Close the dialogue and restart.");
+				}
+				return;
+			}
+			if (Rs2Dialogue.clickOption(setupTier.getContractOption()))
+			{
+				contractRequestTick = readyTick;
+			}
+			return;
+		}
+		if (Rs2Dialogue.hasContinue())
+		{
+			Rs2Dialogue.clickContinue();
+			return;
+		}
+		if (contractAttempts > 0 && readyTick - contractRequestTick < NO_PROGRESS_TICKS)
+		{
+			return;
+		}
+		if (contractAttempts >= MAX_ATTEMPTS)
+		{
+			fail("Could not confirm a new contract from " + contractor.name + ". Speak to them to check your assignment, then restart.");
+			return;
+		}
+
+		Rs2NpcModel npc = Microbot.getRs2NpcCache().query().withName(contractor.name).nearest();
+		if (npc == null || !npc.click("Contract"))
+		{
+            contractAttempts++;
+            skipEarlyHandoff = true;
+            requestTravel(contractor.location, State.GET_CONTRACT);
+			return;
+		}
+		contractRequestTick = readyTick;
+		contractAttempts++;
+		Microbot.status = "Mahogany Homes: requesting a " + setupTier.getName() + " contract";
+	}
+
+	static boolean contractOptionTimedOut(int tick, int requestedAt)
+	{
+		return requestedAt >= 0 && tick - requestedAt >= NO_PROGRESS_TICKS;
+	}
+
+	static boolean contractOptionFailed(int tick, int requestedAt,
+		boolean optionsStillVisible, boolean continueVisible)
+	{
+		return optionsStillVisible && !continueVisible && contractOptionTimedOut(tick, requestedAt);
+	}
+
+	static MahoganyHomesData tierForContractRequest(
+		MahoganyHomesData currentTier, MahoganyHomesData configuredTier)
+	{
+		return currentTier == null ? configuredTier : currentTier;
+	}
+
+	private void ready()
+	{
+		Microbot.status = "Mahogany Homes: " + assignedTier.getName()
+			+ " contract assigned to " + assignedHomeowner;
+	}
+
+	private void goToContract()
+	{
+		MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+		if (contract == null)
+		{
+			fail("Travel to " + assignedHomeowner + "'s home is not supported. Report this assignment.");
+			return;
+		}
+		if (contractArrived)
+		{
+			Microbot.status = "Mahogany Homes: arrived at " + assignedHomeowner + "'s contract";
+			return;
+		}
+
+		WorldPoint position = Rs2Player.getWorldLocation();
+		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
+		Rs2NpcModel homeowner = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
+		if (homeowner != null)
+		{
+			WorldPoint homeownerLocation = homeowner.getWorldLocation();
+			if (isHomeownerReachable(position, homeownerLocation, reachable))
+			{
+				walker.cancel();
+				needsTravel = false;
+				contractArrived = true;
+				Microbot.status = "Mahogany Homes: arrived at " + assignedHomeowner + "'s contract";
+				return;
+			}
+			contractArrivalWaitTick = -1;
+			requestTravel(homeownerApproach(position, homeownerLocation,
+				Rs2Tile.getReachableTilesFromTile(homeownerLocation, 1).keySet()), State.GO_TO_CONTRACT);
+			return;
+		}
+		if (position.getPlane() == contract.destination.getPlane()
+			&& position.distanceTo(contract.destination) <= 3)
+		{
+			if (contractArrivalWaitTick < 0)
+			{
+				contractArrivalWaitTick = readyTick;
+			}
+			else if (readyTick - contractArrivalWaitTick >= NO_PROGRESS_TICKS)
+			{
+				fail("Could not find " + assignedHomeowner + " at the assigned home. Check the building and floor, then restart.");
+			}
+			return;
+		}
+
+		contractArrivalWaitTick = -1;
+		requestTravel(contract.destination, State.GO_TO_CONTRACT);
+	}
+
+	static boolean isHomeownerInRange(WorldPoint player, WorldPoint homeowner)
+	{
+		return player != null && homeowner != null && player.getPlane() == homeowner.getPlane()
+			&& player.distanceTo(homeowner) <= 8;
+	}
+
+	static boolean isHomeownerReachable(WorldPoint player, WorldPoint homeowner,
+		Set<WorldPoint> reachable)
+	{
+		return isHomeownerInRange(player, homeowner) && reachable.contains(homeowner);
+	}
+
+	static WorldPoint homeownerApproach(WorldPoint player, WorldPoint homeowner,
+		Set<WorldPoint> homeownerArea)
+	{
+		return homeownerArea.stream()
+			.filter(tile -> !tile.equals(homeowner))
+			.min(Comparator.comparingInt((WorldPoint tile) -> tile.distanceTo2D(player))
+				.thenComparingInt(WorldPoint::getX)
+				.thenComparingInt(WorldPoint::getY))
+			.orElse(homeowner);
+	}
+
+	static Assignment parseAssignment(String dialogue, MahoganyHomesData fallbackTier)
+	{
+		if (dialogue == null)
+		{
+			return null;
+		}
+		String text = Rs2UiHelper.stripTagsToSpace(dialogue).trim();
+		Matcher homeMatcher = CONTRACT_HOME.matcher(text);
+		if (!homeMatcher.find())
+		{
+			return null;
+		}
+		Matcher tierMatcher = CONTRACT_TIER.matcher(text);
+		MahoganyHomesData tier = tierMatcher.find()
+			? MahoganyHomesData.fromName(tierMatcher.group(1)) : fallbackTier;
+		if (tier == null)
+		{
+			return null;
+		}
+		String homeowner = homeMatcher.group(1);
+		return new Assignment(Character.toUpperCase(homeowner.charAt(0)) + homeowner.substring(1), tier);
+	}
+
+	private void loadAssignment()
+	{
+		String homeowner = configManager.getRSProfileConfiguration(
+			MahoganyHomesConfig.GROUP, ASSIGNED_HOME_KEY);
+		String tierName = configManager.getRSProfileConfiguration(
+			MahoganyHomesConfig.GROUP, ASSIGNED_TIER_KEY);
+		MahoganyHomesData tier = tierName == null ? null : MahoganyHomesData.fromName(tierName);
+		if (homeowner == null || homeowner.isBlank() || tier == null)
+		{
+			clearAssignment();
+			return;
+		}
+		assignedHomeowner = homeowner;
+		assignedTier = tier;
+	}
+
+	private void rememberAssignment(String homeowner, MahoganyHomesData tier)
+	{
+		if (!setupMatchesAssignment(setupTier, tier))
+		{
+			setupReady = false;
+		}
+		if (homeowner.equals(assignedHomeowner) && tier == assignedTier)
+		{
+			return;
+		}
+		assignedHomeowner = homeowner;
+		assignedTier = tier;
+		contractArrived = false;
+		contractValidated = false;
+		contractArrivalWaitTick = -1;
+		configManager.setRSProfileConfiguration(MahoganyHomesConfig.GROUP, ASSIGNED_HOME_KEY, homeowner);
+		configManager.setRSProfileConfiguration(MahoganyHomesConfig.GROUP, ASSIGNED_TIER_KEY, tier.getName());
+	}
+
+	static boolean setupMatchesAssignment(MahoganyHomesData setup, MahoganyHomesData assignment)
+	{
+		return setup != null && setup == assignment;
+	}
+
+	private void clearAssignment()
+	{
+		assignedHomeowner = null;
+		assignedTier = null;
+		contractAcquired = false;
+		contractDialogueClosed = false;
+		contractArrived = false;
+		contractValidated = false;
+		contractArrivalWaitTick = -1;
+		configManager.unsetRSProfileConfiguration(MahoganyHomesConfig.GROUP, ASSIGNED_HOME_KEY);
+		configManager.unsetRSProfileConfiguration(MahoganyHomesConfig.GROUP, ASSIGNED_TIER_KEY);
+	}
+
+	private void validateContract()
+	{
+		refreshHotspots();
+		MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+		if (contract == null)
+		{
+			fail("The contract for " + assignedHomeowner + " is not supported. Report this assignment.");
+			return;
+		}
+		validateAssignedContract(contract);
+	}
+
+	private void validateAssignedContract(MahoganyHomesContractData contract)
+	{
+		WorldPoint position = Rs2Player.getWorldLocation();
+		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
+		Rs2NpcModel homeowner = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
+		if (homeowner == null || !isHomeownerReachable(position,
+			homeowner.getWorldLocation(), reachable))
+		{
+			fail("Could not speak to " + contract.homeowner + " to check the contract. Move near them, then restart.");
+			return;
+		}
+		if (!isLoadedContractLayout(hotspotValues))
+		{
+				fail("Could not recognise the repair layout for " + contract.homeowner + ". Report this assignment for review.");
+			return;
+		}
+		if (!hasTool(ItemCollections.HAMMER) || !hasTool(ItemCollections.SAW))
+		{
+			fail("Missing a usable " + (!hasTool(ItemCollections.HAMMER) ? (!hasTool(ItemCollections.SAW) ? "hammer and saw" : "hammer") : "saw")
+				+ ". Put the missing tool in your inventory or equip a supported alternative, then restart.");
+			return;
+		}
+		int planks = contract.requiredPlanks(hotspotValues);
+		if (PlankSack.available(assignedTier) < planks)
+		{
+			fail("Missing " + (planks - PlankSack.available(assignedTier)) + " " + assignedTier.getPlankName()
+				+ " for this contract. Withdraw them, then restart.");
+			return;
+		}
+		int bars = contract.requiredSteelBars(hotspotValues);
+		if (Rs2Inventory.count(ItemID.STEEL_BAR) < bars)
+		{
+			fail("Missing " + (bars - Rs2Inventory.count(ItemID.STEEL_BAR))
+				+ " steel bars for this contract. Withdraw them, then restart.");
+			return;
+		}
+		contractValidated = true;
+		Microbot.status = "Mahogany Homes: " + contract.homeowner + " contract verified";
+	}
+
+	private void doContract()
+	{
+		refreshHotspots();
+		MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+		if (contract == null)
+		{
+			fail("The contract for " + assignedHomeowner + " is not supported. Report this assignment.");
+			return;
+		}
+		List<Work> work = contract.work;
+		if (!isActiveOrFixedLayout(hotspotValues))
+		{
+			fail("The repair state at " + contract.homeowner + "'s home was not recognised. Check the contract and report the issue if it repeats.");
+			return;
+		}
+		if (allFixed())
+		{
+			Microbot.status = "Mahogany Homes: " + contract.homeowner
+				+ " contract furniture complete";
+			return;
+		}
+		if (pending != null)
+		{
+			observePendingWork();
+			return;
+		}
+
+		WorldPoint position = Rs2Player.getWorldLocation();
+		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
+		Work next = workAttempts > 0 && activeWork != null
+			? activeWork : nextWork(work, hotspotValues, position, reachable);
+		if (next == null)
+		{
+			Work otherFloor = nextWork(work, hotspotValues, 1 - position.getPlane());
+			if (otherFloor != null)
+			{
+				WorldPoint landing = contract.landing(otherFloor.location.getPlane());
+				requestTravel(landing, State.DO_CONTRACT);
+			}
+			return;
+		}
+		boolean accessReachable = next.access == null || reachable.contains(next.access);
+		if (needsWorkAccess(position, next, workAttempts, accessReachable))
+		{
+			requestTravel(next.access, State.DO_CONTRACT);
+			return;
+		}
+
+		String action = actionFor(hotspotValues[next.hotspot]);
+		Rs2TileObjectModel object = exactObject(next);
+		if (object == null || !hasAction(object.getObjectComposition(), action))
+		{
+			if (missingObjectSince < 0)
+			{
+				missingObjectSince = readyTick;
+			}
+			else if (readyTick - missingObjectSince >= NO_PROGRESS_TICKS)
+			{
+				fail("Could not find or select the next furniture repair. Check the assigned building and floor, then restart.");
+			}
+			return;
+		}
+
+		missingObjectSince = -1;
+		pending = next;
+		activeWork = next;
+		pendingValue = hotspotValues[next.hotspot];
+		lastWorkProgressTick = readyTick;
+		workAttempts++;
+		object.click(action);
+		Microbot.status = "Mahogany Homes: " + action + " " + object.getName();
+	}
+
+	private void observePendingWork()
+	{
+		int value = hotspotValues[pending.hotspot];
+		if (value != pendingValue)
+		{
+			completedEffects++;
+			pending = null;
+			activeWork = null;
+			workAttempts = 0;
+			lastWorkProgressTick = readyTick;
+			return;
+		}
+		if (Rs2Player.isMoving() || Rs2Player.isAnimating())
+		{
+			lastWorkProgressTick = readyTick;
+			return;
+		}
+		if (readyTick - lastWorkProgressTick < NO_PROGRESS_TICKS)
+		{
+			return;
+		}
+		if (workAttempts >= MAX_ATTEMPTS)
+		{
+			fail("Could not confirm the furniture repair. Check your supplies and the unfinished furniture before restarting.");
+			return;
+		}
+		pending = null;
+	}
+
+	private void requestTravel(WorldPoint target, State returnState)
+	{
+		travelTarget = target;
+		travelToNearestBank = false;
+		prepareTravel(returnState);
+	}
+
+	private void requestNearestBank(State returnState)
+	{
+		travelTarget = null;
+		travelToNearestBank = true;
+		prepareTravel(returnState);
+	}
+
+	private void prepareTravel(State returnState)
+	{
+        interactionProbeTick = -1;
+        travelStartedAt = System.currentTimeMillis();
+        walker.completionCondition = this::isTravelInteractionReady;
+		travelReturnState = returnState;
+		travelRequested = false;
+		travelArrived = false;
+		needsTravel = true;
+		lastTravelPosition = Rs2Player.getWorldLocation();
+		lastTravelProgressTick = readyTick;
+	}
+
+	private void travel()
+	{
+		WorldPoint position = Rs2Player.getWorldLocation();
+        String routeStatus = walker.status();
+		if (hasTravelArrived(travelRequested, routeStatus))
+		{
+			walker.cancel();
+            skipEarlyHandoff = false;
+            net.runelite.client.plugins.microbot.util.walker.WebWalkLog.spInfo(
+                "mahogany_travel_return | state={} elapsedMs={} at={}",
+                travelReturnState, System.currentTimeMillis() - travelStartedAt, position);
+			needsTravel = false;
+			travelArrived = true;
+			return;
+		}
+		if (!position.equals(lastTravelPosition))
+		{
+			lastTravelPosition = position;
+			lastTravelProgressTick = readyTick;
+		}
+		if (!travelRequested)
+		{
+			boolean accepted = travelToNearestBank
+				? walker.walkToNearestBank() : walker.walkTo(travelTarget);
+			if (!accepted)
+			{
+				fail("Could not start travel to " + travelDescription() + " with Microbot's walker, then restart.");
+				return;
+			}
+			travelRequested = true;
+			return;
+		}
+		if ("BLOCKED".equals(routeStatus))
+		{
+			fail("Travel to " + travelDescription() + " stopped by Microbot's walker. Check the route and restart.");
+		}
+		else if (readyTick - lastTravelProgressTick >= 30)
+		{
+			fail("Could not make progress towards " + travelDescription() + ". Check for an obstacle or open dialogue, then restart.");
+		}
+	}
+
+    private boolean isTravelInteractionReady()
+    {
+        if (skipEarlyHandoff || travelToNearestBank || interactionProbeTick == readyTick) return false;
+        interactionProbeTick = readyTick;
+        if (travelReturnState != State.GET_CONTRACT && travelReturnState != State.GO_TO_CONTRACT
+            && travelReturnState != State.TURN_IN_CONTRACT) return false;
         return Microbot.getClientThread().runOnClientThreadOptional(() -> {
-            Widget chooser = Rs2Widget.getWidget(CHOOSE_CHARACTER_WIDGET_ID);
-            Widget npc = Rs2Widget.findWidget(npcName);
-            if (chooser == null || npc == null || chooser.isHidden()) {
-                return null;
+            Rs2NpcModel npc;
+            String action;
+            if (travelReturnState == State.GET_CONTRACT) {
+                if (contractor == null) return false;
+                npc = Microbot.getRs2NpcCache().query().withName(contractor.name).nearest();
+                action = "Contract";
+            } else {
+                MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+                if (contract == null) return false;
+                npc = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
+                action = "Talk-to";
             }
-            Rectangle chooserBounds = chooser.getBounds();
-            Rectangle npcBounds = npc.getBounds();
-            if (chooserBounds == null || npcBounds == null) {
-                return null;
-            }
-            return new Rectangle[] {new Rectangle(chooserBounds), new Rectangle(npcBounds)};
-        }).orElse(null);
+            if (npc == null) return false;
+            WorldPoint player = Rs2Player.getWorldLocation();
+            WorldPoint target = npc.getWorldLocation();
+            if (!isHomeownerInRange(player, target)) return false;
+            net.runelite.api.NPCComposition composition = npc.getNpc().getTransformedComposition();
+            boolean hasAction = composition != null && composition.getActions() != null
+                && Arrays.asList(composition.getActions()).contains(action);
+            Shape hull = npc.getConvexHull();
+            Rectangle viewport = new Rectangle(Microbot.getClient().getViewportXOffset(),
+                Microbot.getClient().getViewportYOffset(), Microbot.getClient().getViewportWidth(),
+                Microbot.getClient().getViewportHeight());
+            boolean clickable = hull != null && hull.intersects(viewport);
+            return interactionHandoffReady(player, target, hasAction, clickable,
+                Rs2Tile.getReachableTilesFromTile(player, 8).keySet());
+        }).orElse(false);
     }
 
-    public void handleContractDialogue() {
-        // Reduced timeout and early return if dialogue not available
-        if (!sleepUntil(Rs2Dialogue::hasSelectAnOption, Rs2Dialogue::clickContinue, 5000, 300)) {
-            log("No dialogue options available, returning early");
-            return;
-        }
-        Rs2Dialogue.keyPressForDialogueOption(plugin.getConfig().currentTier().getPlankSelection().getChatOption());
-        sleepUntil(Rs2Dialogue::hasContinue, 5000);
-        sleep(400, 800);
-        sleepUntil(() -> !Rs2Dialogue.isInDialogue(), Rs2Dialogue::clickContinue, 6000, 300);
-        sleep(1200, 2200);
+    static boolean interactionHandoffReady(WorldPoint player, WorldPoint target, boolean hasAction,
+                                           boolean clickable, Set<WorldPoint> reachable)
+    {
+        return isHomeownerInRange(player, target) && hasAction && clickable
+            && reachable != null && reachable.contains(target);
     }
 
-    // Bank if we need to
-    private void bank() {
-        Home currentHome = plugin.getCurrentHome();
-        if (currentHome != null
-                && plugin.distanceBetween(currentHome.getArea(), Rs2Player.getWorldLocation()) > 0
-                && isMissingItems()) {
-            ShortestPathPlugin.getPathfinderConfig().setIgnoreTeleportAndItems(true);
-            BankLocation bankLocation = Rs2Bank.getNearestBank(currentHome.getLocation());
-            ShortestPathPlugin.getPathfinderConfig().setIgnoreTeleportAndItems(false);
-            if (Rs2Bank.walkToBank(bankLocation)) {
-                if(Rs2Bank.openBank()) {
-                    sleepUntil(Rs2Bank::isOpen);
-                    if (Rs2Bank.count(plugin.getConfig().currentTier().getPlankSelection().getPlankId()) <= 28 || Rs2Bank.count(ItemID.STEEL_BAR) <= 4 ){
-                        System.out.println("Out of Plank or Steel Bar");
-                        Microbot.stopPlugin(plugin);
-                        return;
-                    }
-                    if (plugin.getConfig().usePlankSack()) {
-                        if (Rs2Inventory.isFull() && !Rs2Inventory.contains(ItemID.STEEL_BAR)) {
-                            Rs2Bank.depositAll(plugin.getConfig().currentTier().getPlankSelection().getPlankId());
-                            Rs2Inventory.waitForInventoryChanges(5000);
-                        }
-                        if (steelBarsInInventory() < 4) {
-                            Rs2Bank.withdrawX(ItemID.STEEL_BAR, 4 - steelBarsInInventory());
-                            Rs2Inventory.waitForInventoryChanges(5000);
-                        }
+	private String travelDescription()
+	{
+		return travelToNearestBank ? "a bank" : travelReturnState != State.GET_CONTRACT && assignedHomeowner != null
+			? assignedHomeowner + "'s home" : "the contractor";
+	}
 
-                        Global.sleepUntil(() -> planksInPlankSack() == 28, () -> {
-                            Rs2Bank.withdrawAll(plugin.getConfig().currentTier().getPlankSelection().getPlankId());
-                            Rs2Inventory.waitForInventoryChanges(1000);
-                            sleep(Rs2Random.randomGaussian(800, 200));
-                            Rs2ItemModel plankSack = Rs2Inventory.get(ItemID.PLANK_SACK);
-                            if (plankSack != null) {
-                                Rs2Inventory.interact(plankSack, "Fill");
-                                Rs2Inventory.waitForInventoryChanges(1000);
-                            }
-                        }, 20000, 1000);
-                        if (Rs2Inventory.emptySlotCount() > 0) {
-                            Rs2Bank.openBank();
-                            Rs2Bank.withdrawAll(plugin.getConfig().currentTier().getPlankSelection().getPlankId());
-                            Rs2Bank.closeBank();
-                        }
-                    } else {
-                        // Withdraw steel bars first if needed
-                        if (steelBarsNeeded() > steelBarsInInventory()) {
-                            Rs2Bank.withdrawX(ItemID.STEEL_BAR, steelBarsNeeded() - steelBarsInInventory());
-                            Rs2Inventory.waitForInventoryChanges(5000);
-                        }
-                        
-                        // Calculate if we'll have enough space for planks after steel bars
-                        int freeSlots = Rs2Inventory.emptySlotCount();
-                        int currentPlanks = planksInInventory() + planksInPlankSack();
-                        int additionalPlanksNeeded = planksNeeded() - currentPlanks;
-                        
-                        if (additionalPlanksNeeded <= 0) {
-                            // We already have enough planks
-                            log("Already have sufficient planks: %d/%d", currentPlanks, planksNeeded());
-                        } else if (freeSlots >= additionalPlanksNeeded) {
-                            // Withdraw all planks to fill inventory
-                            Rs2Bank.withdrawAll(plugin.getConfig().currentTier().getPlankSelection().getPlankId());
-                            Rs2Inventory.waitForInventoryChanges(5000);
-                        } else {
-                            // This should never happen - inventory can't fit required materials
-                            log("CRITICAL ERROR: Need %d more planks but only %d slots available!", additionalPlanksNeeded, freeSlots);
-                            Microbot.showMessage("Please free up inventory space! Need " + additionalPlanksNeeded + " more planks but only " + freeSlots + " slots available. Stopping script.");
-                            shutdown();
-                            return;
-                        }
-                    }
-                    Rs2Bank.closeBank();
-                }
+	static boolean hasTravelArrived(boolean requested, String walkerStatus)
+	{
+		return requested && "ARRIVED".equals(walkerStatus);
+	}
 
-            }
-        }
-    }
+	private void turnIn()
+	{
+		refreshHotspots();
+		if (!allFixed())
+		{
+			fail("The contract still has unfinished furniture. Check the remaining repairs, then restart.");
+			return;
+		}
+		if (Rs2Dialogue.hasContinue())
+		{
+			Rs2Dialogue.clickContinue();
+			return;
+		}
+		if (Rs2Dialogue.hasSelectAnOption())
+		{
+			if (!Rs2Dialogue.hasDialogueOption("Yes, I'd love a cuppa."))
+			{
+				fail("An unexpected dialogue appeared while finishing the contract. Close it and speak to " + assignedHomeowner + " to check the contract.");
+				return;
+			}
+			Rs2Dialogue.clickOption("Yes, I'd love a cuppa.");
+			return;
+		}
+		if (complete || Rs2Dialogue.isInDialogue())
+		{
+			return;
+		}
 
-    // Walk to current home
-    private void walkToHome() {
-        Home currentHome = plugin.getCurrentHome();
-        if (currentHome != null
-                && plugin.distanceBetween(currentHome.getArea(), Rs2Player.getWorldLocation()) > 0
-                && !isMissingItems()) {
-            Rs2Walker.walkWithState(plugin.getCurrentHome().getLocation(), 3);
-        }
-    }
-    private boolean isMissingItems() {
-        return (planksInInventory() + planksInPlankSack()) < planksNeeded()
-                || steelBarsInInventory() < steelBarsNeeded();
-    }
+		MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+		if (contract == null)
+		{
+			fail("The contract for " + assignedHomeowner + " is not supported. Report this assignment.");
+			return;
+		}
+		String homeownerName = contract.homeowner;
+		int homeownerId = contract.npcId;
+		WorldPoint target = contract.destination;
+		WorldPoint position = Rs2Player.getWorldLocation();
+		if (position.getPlane() != target.getPlane() || position.distanceTo(target) > 8)
+		{
+			requestTravel(target, State.TURN_IN_CONTRACT);
+			return;
+		}
+		Rs2NpcModel homeowner = Microbot.getRs2NpcCache().query().withId(homeownerId).nearest();
+		if (homeowner == null)
+		{
+			fail("Could not find " + homeownerName + " to finish the contract. Move near them, then restart.");
+			return;
+		}
+		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
+		WorldPoint homeownerLocation = homeowner.getWorldLocation();
+		if (!isHomeownerReachable(position, homeownerLocation, reachable))
+		{
+			requestTravel(homeownerApproach(position, homeownerLocation,
+				Rs2Tile.getReachableTilesFromTile(homeownerLocation, 1).keySet()),
+				State.TURN_IN_CONTRACT);
+			return;
+		}
+		if (turnInRequested && readyTick - turnInAttemptTick < NO_PROGRESS_TICKS)
+		{
+			return;
+		}
+		if (turnInAttempts >= MAX_ATTEMPTS)
+		{
+			fail("Could not confirm completion of " + homeownerName + "'s contract. Speak to them to check its status before restarting.");
+			return;
+		}
+		if (!homeowner.click("Talk-to"))
+		{
+            turnInAttempts++;
+            skipEarlyHandoff = true;
+            requestTravel(target, State.TURN_IN_CONTRACT);
+			return;
+		}
+		turnInRequested = true;
+		turnInAttemptTick = readyTick;
+		turnInAttempts++;
+		Microbot.status = "Mahogany Homes: turning in " + homeownerName + "'s contract";
+	}
 
-    private int planksNeeded() {
-        return plugin.getCurrentHome().getRequiredPlanks(plugin.getContractTier());
-    }
+	static boolean isCompletionMessage(String message)
+	{
+		return message != null && COMPLETION_MESSAGE.matcher(message).matches();
+	}
 
-    private int steelBarsNeeded() {
-        return plugin.getCurrentHome().getRequiredSteelBars(plugin.getContractTier());
-    }
+	private void refreshHotspots()
+	{
+		hotspotValues = Arrays.stream(HOTSPOT_VARBITS).map(Microbot::getVarbitValue).toArray();
+	}
 
-    private int planksInInventory() {
-        return Rs2Inventory.count(plugin.getConfig().currentTier().getPlankSelection().getPlankId());
-    }
+	private Rs2TileObjectModel exactObject(Work work)
+	{
+		return Microbot.getRs2TileObjectCache().query().withId(work.objectId).toList().stream()
+			.filter(object -> work.location.equals(object.getWorldLocation()))
+			.findFirst()
+			.orElse(null);
+	}
 
-    private int steelBarsInInventory() {
-        return Rs2Inventory.count(ItemID.STEEL_BAR);
-    }
+	private static boolean hasAction(ObjectComposition composition, String action)
+	{
+		return composition != null && action != null && composition.getActions() != null
+			&& Arrays.stream(composition.getActions()).anyMatch(action::equalsIgnoreCase);
+	}
 
-    // Get closest contract location
-    private WorldPoint getClosestContractLocation() {
-        List<WorldPoint> contractLocations = new ArrayList<>();
-        contractLocations.add(ContractLocation.MAHOGANY_HOMES_ARDOUGNE.getLocation());
-        contractLocations.add(ContractLocation.MAHOGANY_HOMES_FALADOR.getLocation());
-        contractLocations.add(ContractLocation.MAHOGANY_HOMES_HOSIDIUS.getLocation());
-        contractLocations.add(ContractLocation.MAHOGANY_HOMES_VARROCK.getLocation());
+	private static boolean hasTool(ItemCollections collection)
+	{
+		int[] ids = collection.getItems().stream().mapToInt(Integer::intValue).toArray();
+		return Rs2Inventory.contains(ids) || Rs2Equipment.isWearing(ids);
+	}
 
-        return contractLocations.stream()
-                .min(Comparator.comparingInt(wp -> wp.distanceTo2D(Rs2Player.getWorldLocation())))
-                .orElse(null);
-    }
+	static boolean isSupportedCurrentContract(int[] values)
+	{
+		return isSupportedLayout(values)
+			&& Arrays.stream(values).anyMatch(MahoganyHomesScript::isActionable);
+	}
 
-    @Override
-    public void shutdown() {
-        super.shutdown();
-    }
+	static boolean isActiveContractLayout(int[] values)
+	{
+		return values != null && values.length == HOTSPOT_VARBITS.length
+			&& Arrays.stream(values).allMatch(MahoganyHomesScript::isKnownHotspotValue)
+			&& Arrays.stream(values).anyMatch(MahoganyHomesScript::isActionable);
+	}
+
+	static boolean isActiveOrFixedLayout(int[] values)
+	{
+		return values != null && values.length == HOTSPOT_VARBITS.length
+			&& Arrays.stream(values).allMatch(MahoganyHomesScript::isKnownHotspotValue);
+	}
+
+	static boolean isLoadedContractLayout(int[] values)
+	{
+		return isActiveOrFixedLayout(values) && Arrays.stream(values).anyMatch(value -> value != 0);
+	}
+
+	static boolean isSupportedLayout(int[] values)
+	{
+		if (values == null || values.length != HOTSPOT_VARBITS.length || values[7] != 0)
+		{
+			return false;
+		}
+		return Arrays.stream(values).allMatch(MahoganyHomesScript::isKnownHotspotValue);
+	}
+
+	static int requiredPlanks(int[] values)
+	{
+		return MahoganyHomesContractData.LEELA.requiredPlanks(values);
+	}
+
+	static int requiredSteelBars(int[] values)
+	{
+		return MahoganyHomesContractData.LEELA.requiredSteelBars(values);
+	}
+
+	static Setup selectSetup(MahoganyHomesData configuredTier, boolean atCurrentHome, int[] values)
+	{
+		if (atCurrentHome && isSupportedCurrentContract(values))
+		{
+			return new Setup(configuredTier, requiredPlanks(values), requiredSteelBars(values), true);
+		}
+		return new Setup(configuredTier, configuredTier.getSetupPlanks(),
+			configuredTier.getSetupSteelBars(), false);
+	}
+
+	static boolean allFixed(int[] values)
+	{
+		return values != null && Arrays.stream(values).noneMatch(MahoganyHomesScript::isActionable);
+	}
+
+	private boolean allFixed()
+	{
+		return allFixed(hotspotValues);
+	}
+
+	static Work nextWork(int[] values, int plane)
+	{
+		return nextWork(MahoganyHomesContractData.LEELA.work, values, plane);
+	}
+
+	static Work nextWork(List<Work> workItems, int[] values, int plane)
+	{
+		return workItems.stream()
+			.filter(work -> work.location.getPlane() == plane && isActionable(values[work.hotspot]))
+			.findFirst()
+			.orElse(null);
+	}
+
+	static Work nextWork(List<Work> workItems, int[] values, WorldPoint position)
+	{
+		return workItems.stream()
+			.filter(work -> work.location.getPlane() == position.getPlane()
+				&& isActionable(values[work.hotspot]))
+			.min(Comparator.comparingInt(work -> position.distanceTo2D(work.location)))
+			.orElse(null);
+	}
+
+	static Work nextWork(List<Work> workItems, int[] values, WorldPoint position,
+		Set<WorldPoint> reachable)
+	{
+		Work nearestReachable = workItems.stream()
+			.filter(work -> work.location.getPlane() == position.getPlane()
+				&& isActionable(values[work.hotspot])
+				&& (work.access == null || reachable.contains(work.access)))
+			.min(Comparator.comparingInt(work -> position.distanceTo2D(work.location)))
+			.orElse(null);
+		return nearestReachable == null ? nextWork(workItems, values, position) : nearestReachable;
+	}
+
+	static boolean needsWorkAccess(WorldPoint position, Work work, int attempts,
+		boolean accessReachable)
+	{
+		return work.access != null && !position.equals(work.access)
+			&& (attempts > 0 || !accessReachable);
+	}
+
+	static String actionFor(int value)
+	{
+		switch (value)
+		{
+			case 1:
+				return "Repair";
+			case 3:
+				return "Remove";
+			case 4:
+				return "Build";
+			default:
+				return null;
+		}
+	}
+
+	private static boolean isActionable(int value)
+	{
+		return value == 1 || value == 3 || value == 4;
+	}
+
+	private static boolean isKnownHotspotValue(int value)
+	{
+		return value >= 0 && value <= 8;
+	}
+
+	private synchronized void fail(String message)
+	{
+		if (error != null) return;
+		error = message == null || message.isBlank() ? "The plugin stopped without a detailed reason." : message;
+		String notice = "Error: Mahogany Homes: " + net.runelite.client.util.Text.removeTags(error);
+		Microbot.status = notice;
+		Microbot.getClientThread().invoke(() -> {
+			Microbot.getClient().addChatMessage(net.runelite.api.ChatMessageType.GAMEMESSAGE, "",
+				net.runelite.client.util.ColorUtil.wrapWithColorTag(notice, java.awt.Color.RED), null);
+		});
+		if (walker != null)
+		{
+			walker.cancel();
+		}
+	}
+
+	String getStateName()
+	{
+		return getSnapshot() == null ? "STARTING" : getSnapshot().currentState().name();
+	}
+
+	String getError()
+	{
+		return error;
+	}
+
+	int getCompletedEffects()
+	{
+		return completedEffects;
+	}
+
+	int[] getHotspotValues()
+	{
+		return hotspotValues.clone();
+	}
+
+	int getCurrentRequiredPlanks()
+	{
+		MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+		return contract == null ? requiredPlanks(hotspotValues) : contract.requiredPlanks(hotspotValues);
+	}
+
+	int getCurrentRequiredSteelBars()
+	{
+		MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+		return contract == null ? requiredSteelBars(hotspotValues) : contract.requiredSteelBars(hotspotValues);
+	}
+
+	boolean isComplete()
+	{
+		return complete;
+	}
+
+	String getAssignedHomeowner()
+	{
+		return assignedHomeowner;
+	}
+
+	MahoganyHomesData getAssignedTier()
+	{
+		return assignedTier;
+	}
+
+	boolean isContractArrived()
+	{
+		return contractArrived;
+	}
+
+	boolean isContractValidated()
+	{
+		return contractValidated;
+	}
+
+	WorldPoint getContractDestination()
+	{
+		MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+		return contract == null ? null : contract.destination;
+	}
+
+	static final class Assignment
+	{
+		final String homeowner;
+		final MahoganyHomesData tier;
+
+		private Assignment(String homeowner, MahoganyHomesData tier)
+		{
+			this.homeowner = homeowner;
+			this.tier = tier;
+		}
+	}
+
+	static final class Work
+	{
+		final int hotspot;
+		final int objectId;
+		final WorldPoint location;
+		final WorldPoint access;
+
+		Work(int hotspot, int objectId, WorldPoint location)
+		{
+			this(hotspot, objectId, location, null);
+		}
+
+		Work(int hotspot, int objectId, WorldPoint location, WorldPoint access)
+		{
+			this.hotspot = hotspot;
+			this.objectId = objectId;
+			this.location = location;
+			this.access = access;
+		}
+	}
+
+	static final class Setup
+	{
+		final MahoganyHomesData tier;
+		final int planks;
+		final int steelBars;
+		final boolean currentContract;
+
+		private Setup(MahoganyHomesData tier, int planks, int steelBars, boolean currentContract)
+		{
+			this.tier = tier;
+			this.planks = planks;
+			this.steelBars = steelBars;
+			this.currentContract = currentContract;
+		}
+	}
+
+	private static final class WalkerBridge
+	{
+		private volatile WorldPoint requestedTarget;
+        private final java.util.concurrent.atomic.AtomicReference<WorldPoint> ownedActiveTarget =
+            new java.util.concurrent.atomic.AtomicReference<>();
+		private volatile String currentStatus = "IDLE";
+        private BooleanSupplier completionCondition = () -> false;
+
+		static WalkerBridge bind()
+		{
+			return new WalkerBridge();
+		}
+
+		boolean isAvailable()
+		{
+			return true;
+		}
+
+		boolean walkTo(WorldPoint point)
+		{
+			return startRoute(point);
+		}
+
+		boolean walkToNearestBank()
+		{
+			BankLocation bank = Rs2Bank.getNearestBank();
+			return bank != null && startRoute(bank.getWorldPoint());
+		}
+
+		boolean prepareTeleportResourcesAtBank()
+		{
+			// Rs2Walker's banked-transport route planner selects and obtains required
+			// transport items as part of the route instead of preloading a separate catalog.
+			return isAvailable();
+		}
+
+		private boolean startRoute(WorldPoint target)
+		{
+			if (!isAvailable() || target == null)
+			{
+				return false;
+			}
+			WorldPoint activeTarget = Rs2Walker.getCurrentTarget();
+			if (activeTarget != null && !activeTarget.equals(requestedTarget))
+			{
+				return false;
+			}
+			requestedTarget = target;
+            ownedActiveTarget.set(activeTarget);
+			currentStatus = "MOVING";
+			return advanceRoute();
+		}
+
+		private boolean advanceRoute()
+		{
+			WorldPoint target = requestedTarget;
+			if (!isAvailable() || target == null) return false;
+            WalkerState state = Rs2Walker.walkWithBankedTransportsUntil(target, 4, ownedActiveTarget, completionCondition);
+			currentStatus = state == WalkerState.ARRIVED ? "ARRIVED"
+				: state == WalkerState.MOVING ? "MOVING" : "BLOCKED";
+			return state != WalkerState.EXIT && state != WalkerState.UNREACHABLE;
+		}
+
+		void cancel()
+		{
+			WorldPoint activeTarget = Rs2Walker.getCurrentTarget();
+			if (ownedActiveTarget.get() != null && ownedActiveTarget.get().equals(activeTarget))
+				Rs2Walker.clearWalkingRoute("mahogany-homes:cancel-owned-route");
+			requestedTarget = null;
+            ownedActiveTarget.set(null);
+			currentStatus = "CANCELLED";
+		}
+
+		String status()
+		{
+			if (currentStatus.equals("MOVING")) advanceRoute();
+			return currentStatus;
+		}
+
+	}
 }
