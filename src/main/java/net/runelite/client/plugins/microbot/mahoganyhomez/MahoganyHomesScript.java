@@ -4,6 +4,9 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
+import java.awt.Shape;
+import java.awt.Rectangle;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -56,6 +59,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private volatile int completedEffects;
 	private volatile int[] hotspotValues = new int[HOTSPOT_VARBITS.length];
 	private int processedTick = -1;
+    private int interactionProbeTick = -1;
+    private boolean skipEarlyHandoff;
+    private long travelStartedAt;
 	private MahoganyHomesConfig config;
 	private MahoganyHomesData setupTier;
 	private int setupPlanks;
@@ -932,7 +938,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		Rs2NpcModel npc = Microbot.getRs2NpcCache().query().withName(contractor.name).nearest();
 		if (npc == null || !npc.click("Contract"))
 		{
-			fail("Could not find " + contractor.name + " to request a contract. Move near them, then restart.");
+            contractAttempts++;
+            skipEarlyHandoff = true;
+            requestTravel(contractor.location, State.GET_CONTRACT);
 			return;
 		}
 		contractRequestTick = readyTick;
@@ -1283,6 +1291,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void prepareTravel(State returnState)
 	{
+        interactionProbeTick = -1;
+        travelStartedAt = System.currentTimeMillis();
+        walker.completionCondition = this::isTravelInteractionReady;
 		travelReturnState = returnState;
 		travelRequested = false;
 		travelArrived = false;
@@ -1294,9 +1305,14 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private void travel()
 	{
 		WorldPoint position = Rs2Player.getWorldLocation();
-		if (hasTravelArrived(travelRequested, walker.status()))
+        String routeStatus = walker.status();
+		if (hasTravelArrived(travelRequested, routeStatus))
 		{
 			walker.cancel();
+            skipEarlyHandoff = false;
+            net.runelite.client.plugins.microbot.util.walker.WebWalkLog.spInfo(
+                "mahogany_travel_return | state={} elapsedMs={} at={}",
+                travelReturnState, System.currentTimeMillis() - travelStartedAt, position);
 			needsTravel = false;
 			travelArrived = true;
 			return;
@@ -1318,7 +1334,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			travelRequested = true;
 			return;
 		}
-		if ("BLOCKED".equals(walker.status()))
+		if ("BLOCKED".equals(routeStatus))
 		{
 			fail("Travel to " + travelDescription() + " stopped by Microbot's walker. Check the route and restart.");
 		}
@@ -1327,6 +1343,49 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			fail("Could not make progress towards " + travelDescription() + ". Check for an obstacle or open dialogue, then restart.");
 		}
 	}
+
+    private boolean isTravelInteractionReady()
+    {
+        if (skipEarlyHandoff || travelToNearestBank || interactionProbeTick == readyTick) return false;
+        interactionProbeTick = readyTick;
+        if (travelReturnState != State.GET_CONTRACT && travelReturnState != State.GO_TO_CONTRACT
+            && travelReturnState != State.TURN_IN_CONTRACT) return false;
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Rs2NpcModel npc;
+            String action;
+            if (travelReturnState == State.GET_CONTRACT) {
+                if (contractor == null) return false;
+                npc = Microbot.getRs2NpcCache().query().withName(contractor.name).nearest();
+                action = "Contract";
+            } else {
+                MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+                if (contract == null) return false;
+                npc = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
+                action = "Talk-to";
+            }
+            if (npc == null) return false;
+            WorldPoint player = Rs2Player.getWorldLocation();
+            WorldPoint target = npc.getWorldLocation();
+            if (!isHomeownerInRange(player, target)) return false;
+            net.runelite.api.NPCComposition composition = npc.getNpc().getTransformedComposition();
+            boolean hasAction = composition != null && composition.getActions() != null
+                && Arrays.asList(composition.getActions()).contains(action);
+            Shape hull = npc.getConvexHull();
+            Rectangle viewport = new Rectangle(Microbot.getClient().getViewportXOffset(),
+                Microbot.getClient().getViewportYOffset(), Microbot.getClient().getViewportWidth(),
+                Microbot.getClient().getViewportHeight());
+            boolean clickable = hull != null && hull.intersects(viewport);
+            return interactionHandoffReady(player, target, hasAction, clickable,
+                Rs2Tile.getReachableTilesFromTile(player, 8).keySet());
+        }).orElse(false);
+    }
+
+    static boolean interactionHandoffReady(WorldPoint player, WorldPoint target, boolean hasAction,
+                                           boolean clickable, Set<WorldPoint> reachable)
+    {
+        return isHomeownerInRange(player, target) && hasAction && clickable
+            && reachable != null && reachable.contains(target);
+    }
 
 	private String travelDescription()
 	{
@@ -1408,7 +1467,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		}
 		if (!homeowner.click("Talk-to"))
 		{
-			fail("Could not find " + homeownerName + " to finish the contract. Move near them, then restart.");
+            turnInAttempts++;
+            skipEarlyHandoff = true;
+            requestTravel(target, State.TURN_IN_CONTRACT);
 			return;
 		}
 		turnInRequested = true;
@@ -1707,7 +1768,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private static final class WalkerBridge
 	{
 		private volatile WorldPoint requestedTarget;
+        private final java.util.concurrent.atomic.AtomicReference<WorldPoint> ownedActiveTarget =
+            new java.util.concurrent.atomic.AtomicReference<>();
 		private volatile String currentStatus = "IDLE";
+        private BooleanSupplier completionCondition = () -> false;
 
 		static WalkerBridge bind()
 		{
@@ -1749,6 +1813,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 				return false;
 			}
 			requestedTarget = target;
+            ownedActiveTarget.set(activeTarget);
 			currentStatus = "MOVING";
 			return advanceRoute();
 		}
@@ -1757,7 +1822,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		{
 			WorldPoint target = requestedTarget;
 			if (!isAvailable() || target == null) return false;
-			WalkerState state = Rs2Walker.walkWithBankedTransportsAndState(target, 4, false);
+            WalkerState state = Rs2Walker.walkWithBankedTransportsUntil(target, 4, ownedActiveTarget, completionCondition);
 			currentStatus = state == WalkerState.ARRIVED ? "ARRIVED"
 				: state == WalkerState.MOVING ? "MOVING" : "BLOCKED";
 			return state != WalkerState.EXIT && state != WalkerState.UNREACHABLE;
@@ -1766,9 +1831,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		void cancel()
 		{
 			WorldPoint activeTarget = Rs2Walker.getCurrentTarget();
-			if (requestedTarget != null && requestedTarget.equals(activeTarget))
+			if (ownedActiveTarget.get() != null && ownedActiveTarget.get().equals(activeTarget))
 				Rs2Walker.clearWalkingRoute("mahogany-homes:cancel-owned-route");
 			requestedTarget = null;
+            ownedActiveTarget.set(null);
 			currentStatus = "CANCELLED";
 		}
 
