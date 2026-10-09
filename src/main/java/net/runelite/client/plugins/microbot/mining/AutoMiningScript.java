@@ -3,6 +3,9 @@ package net.runelite.client.plugins.microbot.mining;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.GameObject;
 import net.runelite.api.Skill;
+import net.runelite.api.Tile;
+import net.runelite.api.WorldView;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.NpcID;
@@ -15,6 +18,7 @@ import net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban;
 import net.runelite.client.plugins.microbot.util.antiban.Rs2AntibanSettings;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
+import net.runelite.client.plugins.microbot.util.coords.Rs2WorldPoint;
 import net.runelite.client.plugins.microbot.util.depositbox.Rs2DepositBox;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
@@ -28,11 +32,11 @@ import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import java.util.ArrayList;
 import java.awt.event.KeyEvent;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
 
 enum State {
     MINING,
@@ -50,6 +54,8 @@ public class AutoMiningScript extends Script {
 
     public boolean run(AutoMiningConfig config) {
         initialPlayerLocation = null;
+        activeRock = null;
+        activeLocation = null;
         Rs2Antiban.resetAntibanSettings();
         Rs2Antiban.antibanSetupTemplates.applyMiningSetup();
         Rs2AntibanSettings.actionCooldownChance = 0.1;
@@ -142,22 +148,18 @@ public class AutoMiningScript extends Script {
                             }
                         }
 
-                        GameObject rock = findNearestReachableRock(activeRock, config.distanceToStray(), initialPlayerLocation);
+                        GameObject rock = findRock(config.distanceToStray());
 
                         if (rock != null) {
                             if (Rs2GameObject.interact(rock)) {
-                                Rs2Player.waitForXpDrop(Skill.MINING, true);
+                                waitForOreOrDepletion(rock);
                                 Rs2Antiban.actionCooldown();
                                 Rs2Antiban.takeMicroBreakByChance();
                             }
                         }
                         break;
                     case RESETTING:
-                        List<String> itemNames = Arrays.stream(config.itemsToBank().split(","))
-                                .map(String::trim)
-                                .map(String::toLowerCase)
-                                .filter(s -> !s.isEmpty())
-                                .collect(Collectors.toList());
+                        List<String> itemNames = MiningBankRule.parseItemNames(config.itemsToBank());
 
                         if (config.useBank()) {
                             if (config.clayBracelet() && config.ORE() == Rocks.CLAY) {
@@ -201,9 +203,8 @@ public class AutoMiningScript extends Script {
                                 if (itemNames.isEmpty()) {
                                     Rs2Bank.depositAll();
                                 } else {
-                                    Rs2Bank.depositAll(i ->
-                                            i.getName() != null &&
-                                                    itemNames.stream().anyMatch(item -> i.getName().toLowerCase().contains(item)));
+                                    List<Rocks> bankRocks = config.progressiveMode() ? PROGRESSIVE_ROCKS : Arrays.asList(activeRock);
+                                    Rs2Bank.depositAll(i -> MiningBankRule.shouldBank(i.getName(), bankRocks, itemNames));
                                 }
 
                                 if (!Rs2Bank.closeBank())
@@ -232,6 +233,54 @@ public class AutoMiningScript extends Script {
         Rs2Antiban.resetAntibanSettings();
     }
 
+    private GameObject findRock(int distance) {
+        WorldPoint playerLocation = Rs2Player.getWorldLocation();
+        WorldPoint anchor = initialPlayerLocation;
+        if (playerLocation == null || anchor == null || activeRock == null) {
+            return null;
+        }
+        Predicate<GameObject> rockName = Rs2GameObject.nameMatches(activeRock.getName(), true);
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> RockSelector.nearestReachable(
+                Rs2GameObject.getGameObjects(rockName, anchor, distance),
+                rock -> Rs2WorldPoint.quickDistance(playerLocation, rock.getWorldLocation()),
+                Rs2GameObject::isReachable)).orElse(null);
+    }
+
+    private void waitForOreOrDepletion(GameObject rock) {
+        int startXp = miningXp();
+        int rockId = Microbot.getClientThread().runOnClientThreadOptional(rock::getId).orElse(-1);
+        WorldPoint rockLocation = Microbot.getClientThread().runOnClientThreadOptional(rock::getWorldLocation).orElse(null);
+        if (startXp < 0 || rockId < 0 || rockLocation == null) return;
+        sleepUntil(() -> miningXp() > startXp
+                || Rs2Inventory.isFull()
+                || !isRockPresent(rockId, rockLocation), 5000);
+    }
+
+    private static int miningXp() {
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                Microbot.getClient().getSkillExperience(Skill.MINING)).orElse(-1);
+    }
+
+    private static boolean isRockPresent(int rockId, WorldPoint rockLocation) {
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            WorldView worldView = Microbot.getClient().getTopLevelWorldView();
+            LocalPoint localPoint = worldView == null ? null : LocalPoint.fromWorld(worldView, rockLocation);
+            if (localPoint == null) {
+                return false;
+            }
+            Tile tile = worldView.getScene().getTiles()[rockLocation.getPlane()][localPoint.getSceneX()][localPoint.getSceneY()];
+            if (tile == null || tile.getGameObjects() == null) {
+                return false;
+            }
+            for (GameObject gameObject : tile.getGameObjects()) {
+                if (gameObject != null && gameObject.getId() == rockId) {
+                    return true;
+                }
+            }
+            return false;
+        }).orElse(false);
+    }
+
     private static List<Rocks> buildProgressiveRocks() {
         List<Rocks> rocks = new ArrayList<>(Arrays.asList(
                 Rocks.TIN,
@@ -246,23 +295,17 @@ public class AutoMiningScript extends Script {
     }
 
     private void updateActiveRock(AutoMiningConfig config) {
-        Rocks previousRock = activeRock;
-        LocationOption previousLocation = activeLocation;
+        Rocks rock = config.progressiveMode()
+                ? PROGRESSIVE_ROCKS.stream()
+                        .filter(Rocks::hasRequiredLevel)
+                        .max(Comparator.comparingInt(Rocks::getMiningLevel))
+                        .orElse(PROGRESSIVE_ROCKS.get(0))
+                : config.ORE();
 
-        if (!config.progressiveMode()) {
-            activeRock = config.ORE();
-            activeLocation = MiningRockLocations.getBestAccessibleLocation(activeRock);
-            updateStatus();
-            return;
+        if (rock != activeRock || activeLocation == null) {
+            activeRock = rock;
+            activeLocation = MiningRockLocations.getBestAccessibleLocation(rock);
         }
-
-        Rocks unlockedRock = PROGRESSIVE_ROCKS.stream()
-                .filter(Rocks::hasRequiredLevel)
-                .max(Comparator.comparingInt(Rocks::getMiningLevel))
-                .orElse(PROGRESSIVE_ROCKS.get(0));
-
-        activeRock = unlockedRock;
-        activeLocation = MiningRockLocations.getBestAccessibleLocation(activeRock);
 
         updateStatus();
     }
@@ -297,23 +340,6 @@ public class AutoMiningScript extends Script {
         }
 
         return false;
-    }
-
-    private GameObject findNearestReachableRock(Rocks rock, int distance, WorldPoint anchorPoint) {
-        if (rock == null || anchorPoint == null) {
-            return null;
-        }
-
-        Predicate<GameObject> rockNamePredicate = Rs2GameObject.nameMatches(rock.getName(), true);
-        WorldPoint playerLocation = Rs2Player.getWorldLocation();
-
-        return Rs2GameObject.getGameObjects(rockNamePredicate, anchorPoint, distance)
-                .stream()
-                .filter(Rs2GameObject::isReachable)
-                .min(Comparator.comparingInt(o -> playerLocation == null
-                        ? 0
-                        : o.getWorldLocation().distanceTo(playerLocation)))
-                .orElse(null);
     }
 
     private void updateStatus() {

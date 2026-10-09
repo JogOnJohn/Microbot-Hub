@@ -145,14 +145,12 @@ public class NmzScript extends Script {
             try {
                 if (!Microbot.isLoggedIn()) return;
                 if (!initialized) {
+                    WorldPoint playerLocation = Rs2Player.getWorldLocation();
+                    if (playerLocation == null) return;
                     updateOverlayState("Initializing", "Detect NMZ location and setup");
                     initialized = true;
                     // Skip inventory setup and lobby walk if already inside the NMZ instance
-                    boolean isInNmzInstance = Microbot.getClientThread().runOnClientThreadOptional(() ->
-                            Microbot.getClient().getLocalPlayer() != null
-                                    && (Microbot.getClient().getLocalPlayer().getWorldLocation().getPlane() == 3
-                                    || Microbot.getClient().getLocalPlayer().getWorldLocation().getY() > 4500)
-                    ).orElse(false);
+                    boolean isInNmzInstance = playerLocation.getPlane() == 3 || playerLocation.getY() > 4500;
                     if (!isInNmzInstance) {
                         if (config.inventorySetupon()) {
                             if (config.inventorySetup() != null) {
