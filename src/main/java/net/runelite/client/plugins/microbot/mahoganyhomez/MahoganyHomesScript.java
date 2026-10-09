@@ -891,17 +891,27 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			}
 			return;
 		}
+		// A selected option can become a Continue dialogue between widget reads.
+		if (Rs2Dialogue.hasContinue())
+		{
+			Rs2Dialogue.clickContinue();
+			return;
+		}
 		if (Rs2Dialogue.hasSelectAnOption())
 		{
 			if (!Rs2Dialogue.hasDialogueOption(setupTier.getContractOption()))
 			{
-				if (contractOptionTimedOut(readyTick, contractRequestTick))
+				if (contractOptionFailed(readyTick, contractRequestTick,
+					Rs2Dialogue.hasSelectAnOption(), Rs2Dialogue.hasContinue()))
 				{
 					fail("Could not select " + setupTier.getContractOption() + ". Close the dialogue and restart.");
 				}
 				return;
 			}
-			Rs2Dialogue.clickOption(setupTier.getContractOption());
+			if (Rs2Dialogue.clickOption(setupTier.getContractOption()))
+			{
+				contractRequestTick = readyTick;
+			}
 			return;
 		}
 		if (Rs2Dialogue.hasContinue())
@@ -933,6 +943,12 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	static boolean contractOptionTimedOut(int tick, int requestedAt)
 	{
 		return requestedAt >= 0 && tick - requestedAt >= NO_PROGRESS_TICKS;
+	}
+
+	static boolean contractOptionFailed(int tick, int requestedAt,
+		boolean optionsStillVisible, boolean continueVisible)
+	{
+		return optionsStillVisible && !continueVisible && contractOptionTimedOut(tick, requestedAt);
 	}
 
 	static MahoganyHomesData tierForContractRequest(
