@@ -12,7 +12,8 @@ plugin.
 Public APIs are grouped under
 `net.runelite.client.plugins.microbot.sharedautomation.humanizer`,
 `net.runelite.client.plugins.microbot.sharedautomation.mouse`, and
-`net.runelite.client.plugins.microbot.sharedautomation.action`.
+`net.runelite.client.plugins.microbot.sharedautomation.action`, and
+`net.runelite.client.plugins.microbot.sharedautomation.camera`.
 
 ## Included APIs
 
@@ -94,6 +95,35 @@ tile/clickbox, selects priority, and cancels the intent at state changes. For
 Blackjack, where cursor placement is part of a right-click menu sequence, retain
 the menu/action timing policy in the plugin and delegate only a well-defined
 cursor move.
+
+### Smooth camera rotation
+
+`SmoothCameraRotation` contains the non-blocking rotation math used by Blackjack:
+it wraps angles, chooses the shortest path, applies smoothstep easing, and will
+not replace an active turn. The default domain is RuneLite's 2048 yaw units;
+construct it with another even angle range if a consumer uses a different
+camera domain. The helper does not import Microbot APIs or write camera state.
+
+```java
+SmoothCameraRotation turn = new SmoothCameraRotation();
+turn.start(cameraPort.getYaw(), targetYaw, System.nanoTime(), durationNanos);
+
+// From the plugin's client-tick callback:
+Integer yaw = turn.sample(System.nanoTime());
+if (yaw != null) {
+    cameraPort.setYawInstant(yaw);
+}
+
+// Cancel on stop, error, logout, pause, or an open menu:
+turn.cancel();
+```
+
+Use a small adapter around the chosen camera API (`getYaw` and a non-blocking
+set-for-this-frame operation). Pass monotonic nanoseconds for both request and
+sample times, and keep target orientation conversion, duration selection, tick
+subscription, and cancellation policy in the consuming plugin. Camera turning
+should run on the appropriate client thread; do not call blocking interpolation
+or sleeps from a tick handler.
 
 ### Bounded action confirmation
 
