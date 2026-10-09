@@ -1943,7 +1943,7 @@ public class DroKbdScript extends Script
      */
     static InventorySetup sanitizeTripSetup(InventorySetup source)
     {
-        return new InventorySetup(
+        Object[] fields = {
                 copySetupItems(source.getInventory()),
                 copySetupItems(source.getEquipment()),
                 copySetupItems(source.getRune_pouch()),
@@ -1959,8 +1959,54 @@ public class DroKbdScript extends Script
                 source.isUnorderedHighlight(),
                 source.getSpellBook(),
                 source.isFavorite(),
-                source.getIconID(),
-                source.getAttackOption());
+                source.getIconID()
+        };
+        return createCompatibleSetup(fields, attackOptionIfSupported(source));
+    }
+
+    /** The published client has 16 setup fields; our extended client adds attackOption. */
+    static InventorySetup createCompatibleSetup(Object[] fields, String attackOption)
+    {
+        try
+        {
+            for (java.lang.reflect.Constructor<?> constructor : InventorySetup.class.getConstructors())
+            {
+                if (constructor.getParameterCount() == fields.length + 1)
+                {
+                    Object[] extendedFields = Arrays.copyOf(fields, fields.length + 1);
+                    extendedFields[fields.length] = attackOption;
+                    return (InventorySetup) constructor.newInstance(extendedFields);
+                }
+            }
+            for (java.lang.reflect.Constructor<?> constructor : InventorySetup.class.getConstructors())
+            {
+                if (constructor.getParameterCount() == fields.length)
+                {
+                    return (InventorySetup) constructor.newInstance(fields);
+                }
+            }
+            throw new IllegalStateException("Unsupported InventorySetup constructor");
+        }
+        catch (ReflectiveOperationException ex)
+        {
+            throw new IllegalStateException("Could not copy InventorySetup", ex);
+        }
+    }
+
+    static String attackOptionIfSupported(InventorySetup setup)
+    {
+        try
+        {
+            return (String) InventorySetup.class.getMethod("getAttackOption").invoke(setup);
+        }
+        catch (NoSuchMethodException ex)
+        {
+            return null; // This field is absent from the published client's setup model.
+        }
+        catch (ReflectiveOperationException ex)
+        {
+            throw new IllegalStateException("Could not read InventorySetup attack option", ex);
+        }
     }
 
     private static List<InventorySetupsItem> copySetupItems(List<InventorySetupsItem> source)
