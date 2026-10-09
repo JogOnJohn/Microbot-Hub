@@ -107,6 +107,8 @@ repositories {
 }
 
 dependencies {
+    compileOnly project(':shared-automation')
+    testImplementation project(':shared-automation')
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.2'
     if (microbotClientPath) {
