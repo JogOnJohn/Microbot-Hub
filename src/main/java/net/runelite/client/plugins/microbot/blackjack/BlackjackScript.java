@@ -2803,6 +2803,12 @@ public class BlackjackScript extends Script
         if (combatResetKnockoutAt == 0)
         {
             Rs2NpcModel target = currentTarget();
+            if (target != null && combatVisibilityRecoveryAllowed(now, combatResetPhaseAt)
+                    && recoverHiddenSouthernTarget(target, false))
+            {
+                nextAction = "Recover view for disarmed Knock-Out";
+                return true;
+            }
             Point anchor = target == null ? null : targetAnchor(target, null);
             if (target == null || anchor == null)
             {
@@ -4569,6 +4575,11 @@ public class BlackjackScript extends Script
 
     private boolean recoverHiddenSouthernTarget(Rs2NpcModel target)
     {
+        return recoverHiddenSouthernTarget(target, true);
+    }
+
+    private boolean recoverHiddenSouthernTarget(Rs2NpcModel target, boolean allowApproach)
+    {
         WorldPoint playerTile = Rs2Player.getWorldLocation();
         WorldPoint targetTile = target.getWorldLocation();
         if (selectedTarget() != BlackjackTarget.MENAPHITE_THUG
@@ -4607,7 +4618,7 @@ public class BlackjackScript extends Script
             lastCameraZoomAt = now;
             log.info("Off-screen southern target: zoom {} -> {} target={}", zoom, visibilityCameraZoom, targetTile);
         }
-        else if (playerTile.distanceTo2D(targetTile) > 1)
+        else if (allowApproach && playerTile.distanceTo2D(targetTile) > 1)
         {
             walkSouthernRoute(targetTile, true, "Approach off-screen southern tent target");
         }
@@ -4617,6 +4628,11 @@ public class BlackjackScript extends Script
     static int zoomForHiddenTarget(int zoom)
     {
         return Math.max(200, zoom - Math.max(20, zoom / 10));
+    }
+
+    static boolean combatVisibilityRecoveryAllowed(long now, long phaseStartedAt)
+    {
+        return now - phaseStartedAt < 5_000;
     }
 
     private int frontFacingTargetYaw(Rs2NpcModel target)
