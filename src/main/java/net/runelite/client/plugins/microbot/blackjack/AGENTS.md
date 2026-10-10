@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.21 recovers a confirmed southern-tent thug lacking a viewport-safe anchor: up to two bounded zoom-out steps, then an in-tent approach using the existing inner-curtain routing. Recovery zoom overrides the preferred zoom only until the next preparation/travel cycle so camera maintenance cannot immediately undo it. Visible targets retain normal clicking. Gameplay validation remains required.
+
 - Version 1.1.20 holds travel zoom restoration pending until readback stays within five percent for three seconds, with one-second retry cadence. Secured wine entry begins restoration; target camera maintenance continues confirmation. `Return camera zoom` optionally preserves an explicit preferred zoom across reloads; zero retains startup capture and adoption of in-tent adjustments after confirmation. Restore attempts and confirmation are logged at INFO. Full wine-return camera behaviour requires live validation.
 
 - Version 1.1.19 restricts NPC targeting/combat signals to the selected supported blackjack NPC type inside the active house. Random-event NPCs, villagers and street urchins addressing the player cannot trigger/reset-block combat recovery. Existing lure exclusion and three-second sustained targeting threshold remain. A reset log records the triggering NPC name, ID, index, tile and targeting duration. Random-event reproduction remains live-unverified.

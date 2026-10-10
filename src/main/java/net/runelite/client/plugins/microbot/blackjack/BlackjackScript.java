@@ -330,6 +330,10 @@ public class BlackjackScript extends Script
     private long lastCameraPitchAt;
     private long lastCameraZoomAt;
     private int targetCameraZoom;
+    private int visibilityCameraZoom = -1;
+    private int hiddenTargetZoomAttempts;
+    private int hiddenTargetIndex = -1;
+    private long nextHiddenTargetRecoveryAt;
     private WorldPoint lastCameraTargetLocation;
     private String targetClearReason = "None";
     private boolean restockAfterCombatReset;
@@ -419,6 +423,10 @@ public class BlackjackScript extends Script
         lastCameraZoomAt = 0;
         targetCameraZoom = config.returnCameraZoom() > 0 ? config.returnCameraZoom() : Rs2Camera.getZoom();
         zoomRestore.reset();
+        visibilityCameraZoom = -1;
+        hiddenTargetZoomAttempts = 0;
+        hiddenTargetIndex = -1;
+        nextHiddenTargetRecoveryAt = 0;
         log.info("Captured operator blackjack zoom on enable: {}", targetCameraZoom);
         lastBlackjackFeedbackAt = 0;
         lastContinuousRecoveryAt = 0;
@@ -2222,6 +2230,10 @@ public class BlackjackScript extends Script
 
         targetIndex = target.getIndex();
         targetDescription = target.getName() + " (level " + target.getCombatLevel() + ")";
+        if (recoverHiddenSouthernTarget(target))
+        {
+            return;
+        }
         maintainTargetCamera(target);
         transition(BlackjackState.KNOCKING_OUT, "Knock-Out target");
     }
@@ -2327,6 +2339,10 @@ public class BlackjackScript extends Script
             return;
         }
 
+        if (recoverHiddenSouthernTarget(target))
+        {
+            return;
+        }
         maintainTargetCamera(target);
         long now = System.currentTimeMillis();
         if (lastBlackjackFeedbackAt == 0)
@@ -2342,7 +2358,7 @@ public class BlackjackScript extends Script
             Rs2Camera.setPitch(TARGET_CAMERA_PITCH);
             if (targetCameraZoom >= 0)
             {
-                Rs2Camera.setZoom(targetCameraZoom);
+                Rs2Camera.setZoom(effectiveTargetZoom());
             }
             nextPickpocketClickAt = now + 80;
             log.warn("Continuous blackjack feedback stalled; recentering camera/cursor: ageMs={} targetIndex={}",
@@ -4192,7 +4208,7 @@ public class BlackjackScript extends Script
             Rs2Camera.setPitch(TARGET_CAMERA_PITCH);
             if (targetCameraZoom >= 0)
             {
-                Rs2Camera.setZoom(targetCameraZoom);
+                Rs2Camera.setZoom(effectiveTargetZoom());
             }
             logKnockoutAimRecovery("camera-reset", target, reason, age);
             nextAction = "Restore camera for Knock-Out target";
@@ -4522,27 +4538,85 @@ public class BlackjackScript extends Script
         {
             return;
         }
-        int tolerance = Math.max(1, targetCameraZoom * CAMERA_ZOOM_TOLERANCE_PERCENT / 100);
+        int desiredZoom = effectiveTargetZoom();
+        int tolerance = Math.max(1, desiredZoom * CAMERA_ZOOM_TOLERANCE_PERCENT / 100);
         if (!restoreZoomAfterTravel)
         {
-            if (config.returnCameraZoom() == 0)
+            if (config.returnCameraZoom() == 0 && visibilityCameraZoom < 0)
             {
                 targetCameraZoom = currentZoom;
             }
             return;
         }
-        if (Math.abs(currentZoom - targetCameraZoom) > tolerance)
+        if (Math.abs(currentZoom - desiredZoom) > tolerance)
         {
             zoomRestore.reset();
-            Rs2Camera.setZoom(targetCameraZoom);
-            log.info("Restoring blackjack camera zoom: {} -> {}", currentZoom, targetCameraZoom);
+            Rs2Camera.setZoom(desiredZoom);
+            log.info("Restoring blackjack camera zoom: {} -> {}", currentZoom, desiredZoom);
         }
-        else if (zoomRestore.confirm(currentZoom, targetCameraZoom, tolerance, now))
+        else if (zoomRestore.confirm(currentZoom, desiredZoom, tolerance, now))
         {
             restoreZoomAfterTravel = false;
-            log.info("Blackjack camera zoom restoration confirmed: {} (target {})", currentZoom, targetCameraZoom);
+            log.info("Blackjack camera zoom restoration confirmed: {} (target {})", currentZoom, desiredZoom);
         }
         lastCameraZoomAt = now;
+    }
+
+    private int effectiveTargetZoom()
+    {
+        return visibilityCameraZoom >= 0 ? visibilityCameraZoom : targetCameraZoom;
+    }
+
+    private boolean recoverHiddenSouthernTarget(Rs2NpcModel target)
+    {
+        WorldPoint playerTile = Rs2Player.getWorldLocation();
+        WorldPoint targetTile = target.getWorldLocation();
+        if (selectedTarget() != BlackjackTarget.MENAPHITE_THUG
+                || !isInsideSouthTent(playerTile) || !isInsideSouthTent(targetTile))
+        {
+            return false;
+        }
+        if (targetAnchor(target, null) != null)
+        {
+            hiddenTargetZoomAttempts = 0;
+            return false;
+        }
+        nextAction = "Recover off-screen southern tent target";
+        long now = System.currentTimeMillis();
+        if (Rs2Player.isMoving() || Microbot.getClient().isMenuOpen()
+                || now < nextHiddenTargetRecoveryAt)
+        {
+            return true;
+        }
+        if (hiddenTargetIndex != target.getIndex())
+        {
+            hiddenTargetIndex = target.getIndex();
+            hiddenTargetZoomAttempts = 0;
+        }
+        nextHiddenTargetRecoveryAt = now + 1_500;
+        faceKnockoutTarget(target);
+        Rs2Camera.setPitch(TARGET_CAMERA_PITCH);
+        if (hiddenTargetZoomAttempts < 2)
+        {
+            int zoom = Rs2Camera.getZoom();
+            visibilityCameraZoom = zoomForHiddenTarget(zoom);
+            hiddenTargetZoomAttempts++;
+            restoreZoomAfterTravel = true;
+            zoomRestore.reset();
+            Rs2Camera.setZoom(visibilityCameraZoom);
+            lastCameraZoomAt = now;
+            log.info("Off-screen southern target: zoom {} -> {} target={}", zoom, visibilityCameraZoom, targetTile);
+        }
+        else if (playerTile.distanceTo2D(targetTile) > 1)
+        {
+            walkSouthernRoute(targetTile, true, "Approach off-screen southern tent target");
+        }
+        return true;
+    }
+
+    static int zoomForHiddenTarget(int zoom)
+    {
+        return Math.max(200, zoom - Math.max(20, zoom / 10));
     }
 
     private int frontFacingTargetYaw(Rs2NpcModel target)
@@ -5240,6 +5314,8 @@ public class BlackjackScript extends Script
         {
             restoreZoomAfterTravel = true;
             zoomRestore.reset();
+            visibilityCameraZoom = -1;
+            hiddenTargetZoomAttempts = 0;
         }
         if (newState != BlackjackState.PREPARING_SOUTHERN_TENT)
         {
