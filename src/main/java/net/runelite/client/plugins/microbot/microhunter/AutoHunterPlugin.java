@@ -22,7 +22,7 @@ import java.awt.*;
         description = "Microbot AutoHunter plugin",
         tags = {"hunter", "microbot"},
         version = AutoHunterPlugin.version,
-        minClientVersion = "2.0.13",
+        minClientVersion = "2.6.30",
         cardUrl = "",
         iconUrl = "",
         enabledByDefault = PluginConstants.DEFAULT_ENABLED,
@@ -31,7 +31,7 @@ import java.awt.*;
 @Slf4j
 @PluginDependency(HunterPlugin.class)
 public class AutoHunterPlugin extends Plugin {
-    public static final String version = "1.4.1";
+    public static final String version = "1.5.0";
     @Inject
     private AutoHunterConfig config;
 
