@@ -5,9 +5,11 @@ import javax.inject.Inject;
 import javax.inject.Provider;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Skill;
+import net.runelite.api.GameState;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameTick;
+import net.runelite.api.events.StatChanged;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -26,7 +28,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 )
 public final class MahoganyHomesPlugin extends Plugin
 {
-	public static final String version = "1.0.8";
+	public static final String version = "1.0.9";
 
 	@Inject
 	Provider<MahoganyHomesScript> scriptProvider;
@@ -43,8 +45,7 @@ public final class MahoganyHomesPlugin extends Plugin
 	private OverlayManager overlayManager;
 
 	private volatile int sessionContracts;
-	private volatile int startingConstructionXp;
-	private volatile long sessionStartedAt;
+	private final MahoganyHomesSessionStats sessionStats = new MahoganyHomesSessionStats();
 
 	@Provides
 	MahoganyHomesConfig provideConfig(ConfigManager configManager)
@@ -57,8 +58,7 @@ public final class MahoganyHomesPlugin extends Plugin
 	{
 		script = newScript();
 		sessionContracts = 0;
-		startingConstructionXp = Microbot.getClient().getSkillExperience(Skill.CONSTRUCTION);
-		sessionStartedAt = System.currentTimeMillis();
+		sessionStats.reset();
 		overlayManager.add(overlay);
 		script.run(config);
 	}
@@ -78,7 +78,28 @@ public final class MahoganyHomesPlugin extends Plugin
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
+		updateConstructionXp();
 		script.onGameTick(Microbot.getClient().getTickCount());
+	}
+
+	@Subscribe
+	public void onStatChanged(StatChanged event)
+	{
+		if (event.getSkill() == Skill.CONSTRUCTION
+			&& Microbot.getClient().getGameState() == GameState.LOGGED_IN
+			&& Microbot.getClient().getRealSkillLevel(Skill.CONSTRUCTION) > 0)
+		{
+			sessionStats.observe(event.getXp());
+		}
+	}
+
+	private void updateConstructionXp()
+	{
+		if (Microbot.getClient().getGameState() == GameState.LOGGED_IN
+			&& Microbot.getClient().getRealSkillLevel(Skill.CONSTRUCTION) > 0)
+		{
+			sessionStats.observe(Microbot.getClient().getSkillExperience(Skill.CONSTRUCTION));
+		}
 	}
 
 	@Subscribe
@@ -162,18 +183,21 @@ public final class MahoganyHomesPlugin extends Plugin
 
 	public int getConstructionXpGained()
 	{
-		return Math.max(0, Microbot.getClient().getSkillExperience(Skill.CONSTRUCTION)
-			- startingConstructionXp);
+		return sessionStats.gained();
 	}
 
 	public int getConstructionXpPerHour()
 	{
-		long elapsed = Math.max(1, System.currentTimeMillis() - sessionStartedAt);
-		return (int) (getConstructionXpGained() * 3_600_000L / elapsed);
+		return sessionStats.perHour(sessionStats.gained());
+	}
+
+	public int getContractsPerHour()
+	{
+		return sessionStats.perHour(sessionContracts);
 	}
 
 	public long getSessionRuntimeMillis()
 	{
-		return Math.max(0, System.currentTimeMillis() - sessionStartedAt);
+		return sessionStats.runtimeMillis();
 	}
 }
