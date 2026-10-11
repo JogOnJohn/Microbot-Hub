@@ -12,6 +12,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.GameState;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Skill;
 import net.runelite.api.coords.WorldPoint;
@@ -115,6 +116,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private int turnInAttemptTick;
 	private int turnInAttempts;
 	private WalkerBridge walker;
+	private TransitionSnapshotGuard snapshotGuard = new TransitionSnapshotGuard();
+	private WorldPoint statePosition;
 
 	enum State
 	{
@@ -210,6 +213,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	@Override
 	protected void onState(State state)
 	{
+		if (state != State.ERROR && !captureUsableSnapshot()) return;
 		if (walker == null && state != State.ERROR)
 		{
 			walker = WalkerBridge.bind();
@@ -257,6 +261,53 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 				break;
 			default:
 				fail("The plugin entered an unexpected state. Restart Mahogany Homes.");
+		}
+	}
+
+	private boolean captureUsableSnapshot()
+	{
+		// Do not advance/cancel a route while the scene or local player is unavailable.
+		if (walker != null && "BLOCKED".equals(walker.currentStatus))
+		{
+			fail("Travel to " + travelDescription() + " stopped by Microbot's walker. Check the route and restart.");
+			return false;
+		}
+		var clientThread = Microbot.getClientThread();
+		TravelSnapshot snapshot = clientThread == null ? new TravelSnapshot(null, null)
+			: clientThread.runOnClientThreadOptional(() -> {
+			net.runelite.api.Client client = Microbot.getClient();
+			if (client == null) return new TravelSnapshot(null, null);
+			GameState gameState = client.getGameState();
+			WorldPoint position = gameState == GameState.LOGGED_IN && client.getLocalPlayer() != null
+				? Rs2Player.getWorldLocation() : null;
+			return new TravelSnapshot(gameState, position);
+		}).orElse(new TravelSnapshot(null, null));
+		TransitionSnapshotGuard.Decision decision = snapshotGuard.check(
+			snapshot.gameState, snapshot.position, System.nanoTime() / 1_000_000);
+		if (decision == TransitionSnapshotGuard.Decision.UNAVAILABLE)
+		{
+			fail("Player/scene unavailable or transition wait expired. Check login and the route before restarting.");
+			return false;
+		}
+		if (decision == TransitionSnapshotGuard.Decision.WAIT)
+		{
+			Microbot.status = "Mahogany Homes: waiting for player/scene transition";
+			return false;
+		}
+		statePosition = snapshot.position;
+		if (snapshotGuard.recovered()) lastTravelProgressTick = readyTick;
+		return true;
+	}
+
+	private static final class TravelSnapshot
+	{
+		final GameState gameState;
+		final WorldPoint position;
+
+		TravelSnapshot(GameState gameState, WorldPoint position)
+		{
+			this.gameState = gameState;
+			this.position = position;
 		}
 	}
 
@@ -372,7 +423,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			resetCompletedContract();
 		}
 		refreshHotspots();
-		WorldPoint position = Rs2Player.getWorldLocation();
+		WorldPoint position = statePosition;
 		MahoganyHomesData preferredTier = assignedTier == null ? config.contractTier() : assignedTier;
 		MahoganyHomesContractData assignedContract =
 			MahoganyHomesContractData.forHomeowner(assignedHomeowner);
@@ -879,7 +930,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return;
 		}
 
-		WorldPoint position = Rs2Player.getWorldLocation();
+		WorldPoint position = statePosition;
 		if (contractor == null)
 		{
 			contractor = MahoganyHomesContractorData.nearest(position);
@@ -996,12 +1047,12 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return;
 		}
 
-		WorldPoint position = Rs2Player.getWorldLocation();
+		WorldPoint position = statePosition;
 		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
 		Rs2NpcModel homeowner = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
-		if (homeowner != null)
+		WorldPoint homeownerLocation = homeowner == null ? null : homeowner.getWorldLocation();
+		if (homeownerLocation != null)
 		{
-			WorldPoint homeownerLocation = homeowner.getWorldLocation();
 			if (isHomeownerReachable(position, homeownerLocation, reachable))
 			{
 				walker.cancel();
@@ -1042,7 +1093,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	static boolean isHomeownerReachable(WorldPoint player, WorldPoint homeowner,
 		Set<WorldPoint> reachable)
 	{
-		return isHomeownerInRange(player, homeowner) && reachable.contains(homeowner);
+		return isHomeownerInRange(player, homeowner) && reachable != null && reachable.contains(homeowner);
 	}
 
 	static WorldPoint homeownerApproach(WorldPoint player, WorldPoint homeowner,
@@ -1146,7 +1197,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void validateAssignedContract(MahoganyHomesContractData contract)
 	{
-		WorldPoint position = Rs2Player.getWorldLocation();
+		WorldPoint position = statePosition;
 		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
 		Rs2NpcModel homeowner = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
 		if (homeowner == null || !isHomeownerReachable(position,
@@ -1211,7 +1262,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return;
 		}
 
-		WorldPoint position = Rs2Player.getWorldLocation();
+		WorldPoint position = statePosition;
 		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
 		Work next = workAttempts > 0 && activeWork != null
 			? activeWork : nextWork(work, hotspotValues, position, reachable);
@@ -1302,6 +1353,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void prepareTravel(State returnState)
 	{
+		snapshotGuard = new TransitionSnapshotGuard();
         interactionProbeTick = -1;
         travelStartedAt = System.currentTimeMillis();
         walker.completionCondition = this::isTravelInteractionReady;
@@ -1309,14 +1361,16 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		travelRequested = false;
 		travelArrived = false;
 		needsTravel = true;
-		lastTravelPosition = Rs2Player.getWorldLocation();
+		lastTravelPosition = statePosition;
 		lastTravelProgressTick = readyTick;
 	}
 
 	private void travel()
 	{
-		WorldPoint position = Rs2Player.getWorldLocation();
         String routeStatus = walker.status();
+		// Walker advancement can block through a teleport; discard the pre-walk position.
+		if (!captureUsableSnapshot()) return;
+		WorldPoint position = statePosition;
 		if (hasTravelArrived(travelRequested, routeStatus))
 		{
 			walker.cancel();
@@ -1361,7 +1415,12 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
         interactionProbeTick = readyTick;
         if (travelReturnState != State.GET_CONTRACT && travelReturnState != State.GO_TO_CONTRACT
             && travelReturnState != State.TURN_IN_CONTRACT) return false;
-        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+        var clientThread = Microbot.getClientThread();
+        if (clientThread == null) return false;
+        return clientThread.runOnClientThreadOptional(() -> {
+            net.runelite.api.Client client = Microbot.getClient();
+            if (client == null || client.getGameState() != GameState.LOGGED_IN
+                || client.getLocalPlayer() == null) return false;
             Rs2NpcModel npc;
             String action;
             if (travelReturnState == State.GET_CONTRACT) {
@@ -1374,17 +1433,17 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
                 npc = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
                 action = "Talk-to";
             }
-            if (npc == null) return false;
+            net.runelite.api.NPC liveNpc = npc == null ? null : npc.getNpc();
+            if (liveNpc == null) return false;
             WorldPoint player = Rs2Player.getWorldLocation();
             WorldPoint target = npc.getWorldLocation();
             if (!isHomeownerInRange(player, target)) return false;
-            net.runelite.api.NPCComposition composition = npc.getNpc().getTransformedComposition();
+            net.runelite.api.NPCComposition composition = liveNpc.getTransformedComposition();
             boolean hasAction = composition != null && composition.getActions() != null
                 && Arrays.asList(composition.getActions()).contains(action);
             Shape hull = npc.getConvexHull();
-            Rectangle viewport = new Rectangle(Microbot.getClient().getViewportXOffset(),
-                Microbot.getClient().getViewportYOffset(), Microbot.getClient().getViewportWidth(),
-                Microbot.getClient().getViewportHeight());
+            Rectangle viewport = new Rectangle(client.getViewportXOffset(),
+                client.getViewportYOffset(), client.getViewportWidth(), client.getViewportHeight());
             boolean clickable = hull != null && hull.intersects(viewport);
             return interactionHandoffReady(player, target, hasAction, clickable,
                 Rs2Tile.getReachableTilesFromTile(player, 8).keySet());
@@ -1446,7 +1505,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		String homeownerName = contract.homeowner;
 		int homeownerId = contract.npcId;
 		WorldPoint target = contract.destination;
-		WorldPoint position = Rs2Player.getWorldLocation();
+		WorldPoint position = statePosition;
 		if (position.getPlane() != target.getPlane() || position.distanceTo(target) > 8)
 		{
 			requestTravel(target, State.TURN_IN_CONTRACT);
@@ -1460,6 +1519,11 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		}
 		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
 		WorldPoint homeownerLocation = homeowner.getWorldLocation();
+		if (homeownerLocation == null)
+		{
+			requestTravel(target, State.TURN_IN_CONTRACT);
+			return;
+		}
 		if (!isHomeownerReachable(position, homeownerLocation, reachable))
 		{
 			requestTravel(homeownerApproach(position, homeownerLocation,
@@ -1654,10 +1718,15 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		error = message == null || message.isBlank() ? "The plugin stopped without a detailed reason." : message;
 		String notice = "Error: Mahogany Homes: " + net.runelite.client.util.Text.removeTags(error);
 		Microbot.status = notice;
-		Microbot.getClientThread().invoke(() -> {
-			Microbot.getClient().addChatMessage(net.runelite.api.ChatMessageType.GAMEMESSAGE, "",
-				net.runelite.client.util.ColorUtil.wrapWithColorTag(notice, java.awt.Color.RED), null);
-		});
+		var clientThread = Microbot.getClientThread();
+		if (clientThread != null && Microbot.getClient() != null)
+		{
+			clientThread.invoke(() -> {
+				net.runelite.api.Client client = Microbot.getClient();
+				if (client != null) client.addChatMessage(net.runelite.api.ChatMessageType.GAMEMESSAGE, "",
+					net.runelite.client.util.ColorUtil.wrapWithColorTag(notice, java.awt.Color.RED), null);
+			});
+		}
 		if (walker != null)
 		{
 			walker.cancel();

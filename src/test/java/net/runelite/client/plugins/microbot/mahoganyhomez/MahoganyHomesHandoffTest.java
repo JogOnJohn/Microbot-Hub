@@ -21,4 +21,11 @@ class MahoganyHomesHandoffTest {
         assertFalse(MahoganyHomesScript.interactionHandoffReady(player, npc, true, false, Set.of(npc)));
         assertFalse(MahoganyHomesScript.interactionHandoffReady(null, npc, true, true, Set.of(npc)));
     }
+
+    @Test void missingNpcLocationAndReachabilityCannotCancelRoute() {
+        assertFalse(MahoganyHomesScript.interactionHandoffReady(player, null, true, true, Set.of(npc)));
+        assertFalse(MahoganyHomesScript.interactionHandoffReady(player, npc, true, true, null));
+        assertFalse(MahoganyHomesScript.isHomeownerReachable(player, npc, null));
+        assertFalse(MahoganyHomesScript.isHomeownerReachable(null, npc, Set.of(npc)));
+    }
 }
