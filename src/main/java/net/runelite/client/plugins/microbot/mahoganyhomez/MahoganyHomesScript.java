@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.inject.Inject;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Skill;
 import net.runelite.api.coords.WorldPoint;
@@ -33,6 +34,7 @@ import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.walker.WalkerState;
 
+@Slf4j
 public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesScript.State>
 {
 	private static final int[] HOTSPOT_VARBITS =
@@ -261,6 +263,15 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	@Override
 	protected State onError(State state, Exception exception)
 	{
+		// Read only owned fields: live player/route queries may be the source of the exception.
+		WalkerBridge bridge = walker;
+		log.error("Mahogany Homes exception: state={} tick={} returnState={} target={} nearestBank={} "
+			+ "requested={} arrived={} lastPosition={} lastProgressTick={} homeowner={} "
+			+ "bridgeStatus={} bridgeTarget={} ownedTarget={}",
+			state, readyTick, travelReturnState, travelTarget, travelToNearestBank,
+			travelRequested, travelArrived, lastTravelPosition, lastTravelProgressTick, assignedHomeowner,
+			bridge == null ? null : bridge.currentStatus, bridge == null ? null : bridge.requestedTarget,
+			bridge == null ? null : bridge.ownedActiveTarget.get(), exception);
 		fail("An unexpected error stopped the plugin. Check your current contract before restarting.");
 		return State.ERROR;
 	}
