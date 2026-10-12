@@ -65,6 +65,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     private int interactionProbeTick = -1;
     private boolean skipEarlyHandoff;
     private long travelStartedAt;
+    private WorldPoint travelOrigin;
 	private MahoganyHomesConfig config;
 	private MahoganyHomesData setupTier;
 	private int setupPlanks;
@@ -1356,6 +1357,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		snapshotGuard = new TransitionSnapshotGuard();
         interactionProbeTick = -1;
         travelStartedAt = System.currentTimeMillis();
+		travelOrigin = statePosition;
+		net.runelite.client.plugins.microbot.util.walker.WebWalkLog.spInfo(
+			"mahogany_journey | event=start from={} to={} purpose={} homeowner={}",
+			travelOrigin, travelToNearestBank ? "nearest-bank" : travelTarget, returnState, assignedHomeowner);
         walker.completionCondition = this::isTravelInteractionReady;
 		travelReturnState = returnState;
 		travelRequested = false;
@@ -1378,6 +1383,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
             net.runelite.client.plugins.microbot.util.walker.WebWalkLog.spInfo(
                 "mahogany_travel_return | state={} elapsedMs={} at={}",
                 travelReturnState, System.currentTimeMillis() - travelStartedAt, position);
+			net.runelite.client.plugins.microbot.util.walker.WebWalkLog.spInfo(
+				"mahogany_journey | event=arrived from={} to={} at={} purpose={} elapsedMs={}",
+				travelOrigin, travelToNearestBank ? "nearest-bank" : travelTarget, position,
+				travelReturnState, System.currentTimeMillis() - travelStartedAt);
 			needsTravel = false;
 			travelArrived = true;
 			return;

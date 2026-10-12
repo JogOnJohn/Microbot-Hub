@@ -28,7 +28,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 )
 public final class MahoganyHomesPlugin extends Plugin
 {
-	public static final String version = "1.0.9";
+	public static final String version = "1.0.10";
 
 	@Inject
 	Provider<MahoganyHomesScript> scriptProvider;
@@ -112,6 +112,8 @@ public final class MahoganyHomesPlugin extends Plugin
 			if (!alreadyComplete && script.isComplete())
 			{
 				sessionContracts++;
+				net.runelite.client.plugins.microbot.util.walker.WebWalkLog.spInfo(
+					"mahogany_homes_completed | count={}", sessionContracts);
 			}
 		}
 	}

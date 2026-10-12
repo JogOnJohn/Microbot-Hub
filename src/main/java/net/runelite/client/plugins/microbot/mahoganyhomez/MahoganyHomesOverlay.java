@@ -57,7 +57,7 @@ final class MahoganyHomesOverlay extends OverlayPanel
 			line("Planks needed", Integer.toString(plugin.getCurrentRequiredPlanks()));
 			line("Steel bars needed", Integer.toString(plugin.getCurrentRequiredSteelBars()));
 		}
-		line("Contracts", String.format("%,d", plugin.getSessionContracts()));
+		line("Homes completed", String.format("%,d", plugin.getSessionContracts()));
 		line("Contracts/hr", String.format("%,d", plugin.getContractsPerHour()));
 		line("Runtime", formatRuntime(plugin.getSessionRuntimeMillis()));
 		line("Construction XP", String.format("%,d", plugin.getConstructionXpGained()));
