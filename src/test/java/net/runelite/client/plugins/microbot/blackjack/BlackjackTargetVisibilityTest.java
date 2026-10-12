@@ -8,6 +8,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class BlackjackTargetVisibilityTest
 {
     @Test
+    void zoomEnforcementIsRestrictedToBlackjacking()
+    {
+        for (BlackjackState state : BlackjackState.values())
+        {
+            boolean expected = state == BlackjackState.FINDING_TARGET
+                    || state == BlackjackState.KNOCKING_OUT
+                    || state == BlackjackState.PICKPOCKETING
+                    || state == BlackjackState.WAITING_FOR_TARGET_CLEAR;
+            assertEquals(expected, BlackjackScript.isBlackjackingCameraState(state), state.name());
+        }
+    }
+
+    @Test
     void disarmedVisibilityRecoveryHasBoundedWindow()
     {
         assertTrue(BlackjackScript.combatVisibilityRecoveryAllowed(1000, 1000));

@@ -68,7 +68,7 @@ public interface BlackjackConfig extends Config
     @ConfigItem(
             keyName = "returnCameraZoom",
             name = "Return camera zoom",
-            description = "Zoom restored after travel; 0 captures the zoom on enable. Higher values zoom in further.",
+            description = "Preferred zoom maintained only while blackjacking; 0 captures the zoom on enable. Temporary visibility recovery may zoom out. Higher values zoom in further.",
             position = 2,
             section = setupSection
     )

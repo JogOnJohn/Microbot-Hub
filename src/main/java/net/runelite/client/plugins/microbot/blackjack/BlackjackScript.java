@@ -334,6 +334,7 @@ public class BlackjackScript extends Script
     private int hiddenTargetZoomAttempts;
     private int hiddenTargetIndex = -1;
     private long nextHiddenTargetRecoveryAt;
+    private long visibilityStableSince;
     private WorldPoint lastCameraTargetLocation;
     private String targetClearReason = "None";
     private boolean restockAfterCombatReset;
@@ -427,6 +428,7 @@ public class BlackjackScript extends Script
         hiddenTargetZoomAttempts = 0;
         hiddenTargetIndex = -1;
         nextHiddenTargetRecoveryAt = 0;
+        visibilityStableSince = 0;
         log.info("Captured operator blackjack zoom on enable: {}", targetCameraZoom);
         lastBlackjackFeedbackAt = 0;
         lastContinuousRecoveryAt = 0;
@@ -4526,7 +4528,7 @@ public class BlackjackScript extends Script
 
     private void maintainTargetZoom()
     {
-        if (!isInsideHouse() || Microbot.getClient().isMenuOpen())
+        if (!isBlackjackingCameraState(state) || !isInsideHouse() || Microbot.getClient().isMenuOpen())
         {
             return;
         }
@@ -4546,15 +4548,18 @@ public class BlackjackScript extends Script
         }
         int desiredZoom = effectiveTargetZoom();
         int tolerance = Math.max(1, desiredZoom * CAMERA_ZOOM_TOLERANCE_PERCENT / 100);
+        boolean drifted = Math.abs(currentZoom - desiredZoom) > tolerance;
         if (!restoreZoomAfterTravel)
         {
-            if (config.returnCameraZoom() == 0 && visibilityCameraZoom < 0)
+            lastCameraZoomAt = now;
+            if (!drifted)
             {
-                targetCameraZoom = currentZoom;
+                return;
             }
-            return;
+            restoreZoomAfterTravel = true;
+            zoomRestore.reset();
         }
-        if (Math.abs(currentZoom - desiredZoom) > tolerance)
+        if (drifted)
         {
             zoomRestore.reset();
             Rs2Camera.setZoom(desiredZoom);
@@ -4589,9 +4594,30 @@ public class BlackjackScript extends Script
         }
         if (targetAnchor(target, null) != null)
         {
-            hiddenTargetZoomAttempts = 0;
+            long now = System.currentTimeMillis();
+            if (visibilityCameraZoom >= 0 && !Rs2Player.isMoving())
+            {
+                if (visibilityStableSince == 0)
+                {
+                    visibilityStableSince = now;
+                }
+                if (now - visibilityStableSince >= 8_000)
+                {
+                    visibilityCameraZoom = -1;
+                    visibilityStableSince = 0;
+                    restoreZoomAfterTravel = true;
+                    zoomRestore.reset();
+                    lastCameraZoomAt = 0;
+                    log.info("Visible southern target stable; restoring preferred zoom {}", targetCameraZoom);
+                }
+            }
+            else
+            {
+                visibilityStableSince = 0;
+            }
             return false;
         }
+        visibilityStableSince = 0;
         nextAction = "Recover off-screen southern tent target";
         long now = System.currentTimeMillis();
         if (Rs2Player.isMoving() || Microbot.getClient().isMenuOpen()
@@ -4610,7 +4636,8 @@ public class BlackjackScript extends Script
         if (hiddenTargetZoomAttempts < 2)
         {
             int zoom = Rs2Camera.getZoom();
-            visibilityCameraZoom = zoomForHiddenTarget(zoom);
+            visibilityCameraZoom = Math.max(zoomForHiddenTarget(zoom),
+                    zoomForHiddenTarget(zoomForHiddenTarget(targetCameraZoom)));
             hiddenTargetZoomAttempts++;
             restoreZoomAfterTravel = true;
             zoomRestore.reset();
@@ -4633,6 +4660,14 @@ public class BlackjackScript extends Script
     static boolean combatVisibilityRecoveryAllowed(long now, long phaseStartedAt)
     {
         return now - phaseStartedAt < 5_000;
+    }
+
+    static boolean isBlackjackingCameraState(BlackjackState state)
+    {
+        return state == BlackjackState.FINDING_TARGET
+                || state == BlackjackState.KNOCKING_OUT
+                || state == BlackjackState.PICKPOCKETING
+                || state == BlackjackState.WAITING_FOR_TARGET_CLEAR;
     }
 
     private int frontFacingTargetYaw(Rs2NpcModel target)
@@ -5332,6 +5367,13 @@ public class BlackjackScript extends Script
             zoomRestore.reset();
             visibilityCameraZoom = -1;
             hiddenTargetZoomAttempts = 0;
+            visibilityStableSince = 0;
+        }
+        if (isBlackjackingCameraState(newState) && !isBlackjackingCameraState(state))
+        {
+            restoreZoomAfterTravel = true;
+            zoomRestore.reset();
+            lastCameraZoomAt = 0;
         }
         if (newState != BlackjackState.PREPARING_SOUTHERN_TENT)
         {

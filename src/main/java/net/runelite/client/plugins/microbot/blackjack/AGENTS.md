@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.23 requests zoom restoration on entry to the blackjacking states and checks drift once per second there only, confirming queued writes by readback. Travel/preparation/healing/break states do not enforce preferred zoom. Visibility recovery retains its two-step budget through brief visibility, has a floor relative to preferred zoom, and releases its temporary override after eight seconds of stable stationary visibility. This supersedes adoption of arbitrary in-tent zoom changes; zero config captures startup preference. Live return and recovery validation required.
+
 - Version 1.1.22 extends southern-target visibility recovery to the disarmed Knock-Out stage, bounded to five seconds before re-equipping/fallback. This stage only adjusts camera; it never approaches while unarmed. Normal acquisition/continuous clicking retain zoom-out and approach recovery from 1.1.21. Live combat-reset validation remains required.
 
 - Version 1.1.21 recovers a confirmed southern-tent thug lacking a viewport-safe anchor: up to two bounded zoom-out steps, then an in-tent approach using the existing inner-curtain routing. Recovery zoom overrides the preferred zoom only until the next preparation/travel cycle so camera maintenance cannot immediately undo it. Visible targets retain normal clicking. Gameplay validation remains required.
