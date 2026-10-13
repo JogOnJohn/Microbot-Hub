@@ -28,7 +28,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 )
 public final class MahoganyHomesPlugin extends Plugin
 {
-	public static final String version = "1.0.10";
+	public static final String version = "1.0.11";
 
 	@Inject
 	Provider<MahoganyHomesScript> scriptProvider;
@@ -182,6 +182,10 @@ public final class MahoganyHomesPlugin extends Plugin
 	{
 		return sessionContracts;
 	}
+
+	public int getLoosePlanks() { return script == null ? 0 : script.getLoosePlanks(); }
+	public int getStoredPlanks() { return script == null ? 0 : script.getStoredPlanks(); }
+	public int getSteelBars() { return script == null ? 0 : script.getSteelBars(); }
 
 	public int getConstructionXpGained()
 	{
