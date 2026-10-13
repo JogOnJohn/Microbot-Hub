@@ -6,6 +6,16 @@ import static net.runelite.client.plugins.microbot.mahoganyhomez.ContractLayoutR
 
 class ContractLayoutReadinessTest
 {
+	@Test void recoveryCannotFinishOutsideTheHouseOrOnTheWrongFloor()
+	{
+		assertEquals(0, MahoganyHomesScript.arrivalDistanceFor(MahoganyHomesScript.State.VALIDATE_CONTRACT));
+		assertFalse(MahoganyHomesScript.layoutContextReady(MahoganyHomesContractData.TAU,
+			new net.runelite.api.coords.WorldPoint(3038, 3352, 0)));
+		assertFalse(MahoganyHomesScript.layoutContextReady(MahoganyHomesContractData.TAU,
+			new net.runelite.api.coords.WorldPoint(3047, 3343, 1)));
+		assertTrue(MahoganyHomesScript.layoutContextReady(MahoganyHomesContractData.TAU,
+			new net.runelite.api.coords.WorldPoint(3047, 3343, 0)));
+	}
 	@Test void tauOutsideHandoffWaitsForHouseContextAndLayout()
 	{
 		ContractLayoutReadiness guard = new ContractLayoutReadiness();

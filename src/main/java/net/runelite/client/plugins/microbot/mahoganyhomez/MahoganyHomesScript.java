@@ -1242,7 +1242,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		WorldPoint position = statePosition;
 		boolean pendingLayout = layoutReadiness.pending();
 		ContractLayoutReadiness.Decision readiness = layoutReadiness.check(
-			position != null && contract.contains(position), isLoadedContractLayout(hotspotValues), readyTick);
+            layoutContextReady(contract, position), isLoadedContractLayout(hotspotValues), readyTick);
 		if (readiness != ContractLayoutReadiness.Decision.READY)
 		{
 			if (!pendingLayout || readiness == ContractLayoutReadiness.Decision.EXPIRED)
@@ -1255,7 +1255,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 				return;
 			}
 			Microbot.status = "Mahogany Homes: waiting for " + contract.homeowner + "'s repair layout";
-			if (position != null && !contract.contains(position))
+			if (position != null && !position.equals(contract.destination))
 				requestTravel(contract.destination, State.VALIDATE_CONTRACT);
 			return;
 		}
@@ -1504,7 +1504,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     {
         if (skipEarlyHandoff || travelToNearestBank || interactionProbeTick == readyTick) return false;
         interactionProbeTick = readyTick;
-        if (travelReturnState != State.DO_CONTRACT && travelReturnState != State.GET_CONTRACT && travelReturnState != State.GO_TO_CONTRACT
+        if (travelReturnState != State.DO_CONTRACT && travelReturnState != State.VALIDATE_CONTRACT
+            && travelReturnState != State.GET_CONTRACT && travelReturnState != State.GO_TO_CONTRACT
             && travelReturnState != State.TURN_IN_CONTRACT) return false;
         var clientThread = Microbot.getClientThread();
         if (clientThread == null) return false;
@@ -1512,6 +1513,11 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
             net.runelite.api.Client client = Microbot.getClient();
             if (client == null || client.getGameState() != GameState.LOGGED_IN
                 || client.getLocalPlayer() == null) return false;
+            if (travelReturnState == State.VALIDATE_CONTRACT) {
+                refreshHotspots();
+                return layoutContextReady(MahoganyHomesContractData.forHomeowner(assignedHomeowner),
+                        Rs2Player.getWorldLocation()) && isLoadedContractLayout(hotspotValues);
+            }
             if (travelReturnState == State.DO_CONTRACT) {
                 Work candidate = findReadyFurniture(null);
                 if (candidate != null) {
@@ -1639,7 +1645,14 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     {
         // Even one tile of tolerance can finish outside a closed door. The reachable-NPC
         // completion condition still hands off early once the intended interaction is safe.
-        return returnState == State.GO_TO_CONTRACT || returnState == State.TURN_IN_CONTRACT ? 0 : 4;
+        return returnState == State.GO_TO_CONTRACT || returnState == State.TURN_IN_CONTRACT
+                || returnState == State.VALIDATE_CONTRACT ? 0 : 4;
+    }
+
+    static boolean layoutContextReady(MahoganyHomesContractData contract, WorldPoint position)
+    {
+        return contract != null && position != null && contract.contains(position)
+                && position.getPlane() == contract.destination.getPlane();
     }
 
 	private void turnIn()
