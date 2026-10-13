@@ -93,6 +93,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private boolean contractArrived;
 	private boolean contractValidated;
 	private int contractArrivalWaitTick = -1;
+	private final ContractLayoutReadiness layoutReadiness = new ContractLayoutReadiness();
 	private int pendingBankItemId = -1;
 	private int pendingBankItemQuantity;
 	private int pendingBankActionTick;
@@ -180,6 +181,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			transition(State.GO_TO_CONTRACT, State.VALIDATE_CONTRACT,
 				() -> contractArrived, "Assigned contract reached"),
 			transition(State.VALIDATE_CONTRACT, State.ERROR, () -> error != null, "Validation failed"),
+			transition(State.VALIDATE_CONTRACT, State.TRAVEL, () -> needsTravel, "Approaching the repair layout"),
 			transition(State.VALIDATE_CONTRACT, State.DO_CONTRACT,
 				() -> contractValidated, "Contract verified"),
 			transition(State.DO_CONTRACT, State.ERROR, () -> error != null, "Work failed"),
@@ -197,6 +199,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 				"Assigned home reached"),
 			transition(State.TRAVEL, State.DO_CONTRACT,
 				() -> travelArrived && travelReturnState == State.DO_CONTRACT, "Work floor reached"),
+			transition(State.TRAVEL, State.VALIDATE_CONTRACT,
+				() -> travelArrived && travelReturnState == State.VALIDATE_CONTRACT, "Repair layout approach reached"),
 			transition(State.TRAVEL, State.TURN_IN_CONTRACT,
 				() -> travelArrived && travelReturnState == State.TURN_IN_CONTRACT,
 				"Homeowner reached"),
@@ -387,6 +391,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void resetCompletedContract()
 	{
+		layoutReadiness.reset();
 		complete = false;
 		nextContractReady = false;
 		completedAtTick = -1;
@@ -1192,6 +1197,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		assignedHomeowner = homeowner;
 		assignedTier = tier;
 		contractArrived = false;
+		layoutReadiness.reset();
 		contractValidated = false;
 		contractArrivalWaitTick = -1;
 		configManager.setRSProfileConfiguration(MahoganyHomesConfig.GROUP, ASSIGNED_HOME_KEY, homeowner);
@@ -1205,6 +1211,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void clearAssignment()
 	{
+		layoutReadiness.reset();
 		knownSupplyHomeowner = null;
 		knownSupplyTier = null;
 		assignedHomeowner = null;
@@ -1233,17 +1240,31 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private void validateAssignedContract(MahoganyHomesContractData contract)
 	{
 		WorldPoint position = statePosition;
+		boolean pendingLayout = layoutReadiness.pending();
+		ContractLayoutReadiness.Decision readiness = layoutReadiness.check(
+			position != null && contract.contains(position), isLoadedContractLayout(hotspotValues), readyTick);
+		if (readiness != ContractLayoutReadiness.Decision.READY)
+		{
+			if (!pendingLayout || readiness == ContractLayoutReadiness.Decision.EXPIRED)
+				log.info("mahogany_layout | phase={} at={} target={} values={}", readiness,
+					position, contract.destination, Arrays.toString(hotspotValues));
+			if (readiness == ContractLayoutReadiness.Decision.EXPIRED)
+			{
+				fail("Could not load the repair layout for " + contract.homeowner
+					+ " after approaching the house. Report this assignment for review.");
+				return;
+			}
+			Microbot.status = "Mahogany Homes: waiting for " + contract.homeowner + "'s repair layout";
+			if (position != null && !contract.contains(position))
+				requestTravel(contract.destination, State.VALIDATE_CONTRACT);
+			return;
+		}
 		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
 		Rs2NpcModel homeowner = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
 		if (homeowner == null || !isHomeownerReachable(position,
 			homeowner.getWorldLocation(), reachable))
 		{
 			fail("Could not speak to " + contract.homeowner + " to check the contract. Move near them, then restart.");
-			return;
-		}
-		if (!isLoadedContractLayout(hotspotValues))
-		{
-				fail("Could not recognise the repair layout for " + contract.homeowner + ". Report this assignment for review.");
 			return;
 		}
 		if (!hasTool(ItemCollections.HAMMER) || !hasTool(ItemCollections.SAW))
@@ -1889,6 +1910,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	{
 		if (error != null) return;
 		error = message == null || message.isBlank() ? "The plugin stopped without a detailed reason." : message;
+		log.warn("mahogany_error | reason={} at={} homeowner={} values={}", error,
+			statePosition, assignedHomeowner, Arrays.toString(hotspotValues));
 		String notice = "Error: Mahogany Homes: " + net.runelite.client.util.Text.removeTags(error);
 		Microbot.status = notice;
 		var clientThread = Microbot.getClientThread();
