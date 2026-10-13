@@ -19,6 +19,11 @@ final class PlankSack
 		ItemID.PLANK_IRONWOOD,
 		ItemID.PLANK_ROSEWOOD
 	};
+	private static final int[] NOTED_PLANK_IDS =
+	{
+		ItemID.Cert.WOODPLANK, ItemID.Cert.PLANK_OAK,
+		ItemID.Cert.PLANK_TEAK, ItemID.Cert.PLANK_MAHOGANY
+	};
 	private static final int[] CONTENT_VARBITS =
 	{
 		VarbitID.PLANK_SACK_PLAIN,
@@ -68,15 +73,26 @@ final class PlankSack
 
 	static boolean hasWrongContents(MahoganyHomesData tier)
 	{
-		return total() > count(tier);
+		return hasWrongContents(total(), count(tier));
+	}
+
+	static boolean hasWrongContents(int total, int matching)
+	{
+		return total > matching;
 	}
 
 	static int firstWrongInventoryPlank(MahoganyHomesData tier)
 	{
-		return Arrays.stream(PLANK_IDS)
-			.filter(id -> id != tier.getPlankId() && Rs2Inventory.contains(id))
+		return java.util.stream.IntStream.concat(Arrays.stream(PLANK_IDS), Arrays.stream(NOTED_PLANK_IDS))
+			.filter(id -> isWrongPlankId(id, tier) && Rs2Inventory.contains(id))
 			.findFirst()
 			.orElse(-1);
+	}
+
+	static boolean isWrongPlankId(int id, MahoganyHomesData tier)
+	{
+		return id != tier.getPlankId() && (Arrays.stream(PLANK_IDS).anyMatch(plank -> plank == id)
+			|| Arrays.stream(NOTED_PLANK_IDS).anyMatch(plank -> plank == id));
 	}
 
 	static int fillWithdrawal(int stored, int loose, int banked)

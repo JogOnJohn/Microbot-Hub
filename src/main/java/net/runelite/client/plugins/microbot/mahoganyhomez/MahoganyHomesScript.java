@@ -70,6 +70,11 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private MahoganyHomesData setupTier;
 	private int setupPlanks;
 	private int setupSteelBars;
+	private String knownSupplyHomeowner;
+	private MahoganyHomesData knownSupplyTier;
+	private int knownSupplyPlanks;
+	private int knownSupplyBars;
+	private String lastSupplyReport = "";
 	private boolean currentContract;
 	private boolean currentContractAtHomeowner;
 	private boolean setupReady;
@@ -386,6 +391,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		setupTier = null;
 		setupPlanks = 0;
 		setupSteelBars = 0;
+		knownSupplyHomeowner = null;
 		currentContract = false;
 		currentContractAtHomeowner = false;
 		setupReady = false;
@@ -439,10 +445,19 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		}
 		boolean assignedAtHome = assignedContract != null && assignedContract.contains(position)
 			&& isLoadedContractLayout(hotspotValues);
+		if (assignedAtHome)
+		{
+			knownSupplyHomeowner = assignedHomeowner;
+			knownSupplyTier = preferredTier;
+			knownSupplyPlanks = assignedContract.requiredPlanks(hotspotValues);
+			knownSupplyBars = assignedContract.requiredSteelBars(hotspotValues);
+		}
 		Setup setup = assignedAtHome
 			? new Setup(preferredTier, assignedContract.requiredPlanks(hotspotValues),
 				assignedContract.requiredSteelBars(hotspotValues), true)
-			: selectSetup(preferredTier, false, hotspotValues);
+			: assignedHomeowner != null && assignedHomeowner.equals(knownSupplyHomeowner) && preferredTier == knownSupplyTier
+				? new Setup(preferredTier, knownSupplyPlanks, knownSupplyBars, true)
+				: selectSetup(preferredTier, false, hotspotValues);
 		setupTier = setup.tier;
 		setupPlanks = setup.planks;
 		setupSteelBars = setup.steelBars;
@@ -485,6 +500,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 				return;
 			}
 			setupReady = true;
+			reportSupplies(setup, "ready", null);
 			Microbot.status = "Mahogany Homes: " + setupTier.getName() + " setup ready";
 			return;
 		}
@@ -493,6 +509,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		{
 			if (!travelArrived || !travelToNearestBank)
 			{
+				reportSupplies(setup, "bank: below contract minimum or missing tool", null);
 				requestNearestBank(State.GET_SETUP);
 				return;
 			}
@@ -546,8 +563,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		}
 		if (!PlankSack.isCarried() && Rs2Bank.hasBankItem(ItemID.PLANK_SACK, 1))
 		{
-			if (Rs2Inventory.emptySlotCount() == 0 && depositFirstSurplus(setup.tier))
+			if (Rs2Inventory.emptySlotCount() == 0)
 			{
+				if (!depositFirstSupply(setup.tier))
+					fail("Free one inventory slot for the plank sack; travel items were retained.");
 				return;
 			}
 			withdraw(ItemID.PLANK_SACK, 1, "plank sack");
@@ -568,7 +587,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		{
 			if (Rs2Inventory.emptySlotCount() == 0)
 			{
-				if (!depositFirstNonSack())
+				if (!depositFirstSupply(setup.tier))
 				{
 					fail("Could not make room to empty the plank sack. Free inventory space at the bank, then restart.");
 				}
@@ -595,32 +614,26 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 				}
 				return;
 			}
-			int fillWithdrawal = PlankSack.fillWithdrawal(PlankSack.count(setup.tier), 0,
-				Rs2Bank.count(setup.tier.getPlankId()));
+			int fillWithdrawal = Math.min(Rs2Inventory.emptySlotCount(),
+				PlankSack.fillWithdrawal(PlankSack.count(setup.tier), 0,
+					Rs2Bank.count(setup.tier.getPlankId())));
 			if (fillWithdrawal > 0)
 			{
-				if (Rs2Inventory.emptySlotCount() < fillWithdrawal
-					&& depositFirstSurplus(setup.tier))
-				{
-					return;
-				}
 				withdraw(setup.tier.getPlankId(), fillWithdrawal, setup.tier.getPlankName());
 				return;
 			}
 		}
-		int loosePlanks = Rs2Inventory.count(setup.tier.getPlankId());
-		int availableLoosePlanks = Math.min(Math.max(0, setup.planks - loosePlanks),
-			Rs2Bank.count(setup.tier.getPlankId()));
-		int missingSlots = availableLoosePlanks
-			+ Math.max(0, setup.steelBars - Rs2Inventory.count(ItemID.STEEL_BAR))
-			+ (hasTool(ItemCollections.HAMMER) ? 0 : 1)
-			+ (hasTool(ItemCollections.SAW) ? 0 : 1);
-		if (Rs2Inventory.emptySlotCount() < missingSlots)
+		MahoganyHomesSupplyPlan plan = supplyPlan(setup);
+		reportSupplies(setup, "bank refill", plan);
+		if (!plan.minimumStock)
 		{
-			if (!depositFirstSurplus(setup.tier))
-			{
-				fail("Could not clear your inventory for supplies. Open the bank and deposit unneeded items, then restart.");
-			}
+			fail("Bank supplies do not cover this contract: need " + setup.planks + " usable planks and "
+				+ setup.steelBars + " steel bars. Add the missing supplies before restarting.");
+			return;
+		}
+		if (!plan.minimumFits)
+		{
+			fail("Not enough space for this contract's minimum supplies and tools. Free inventory space at the bank; travel items were retained.");
 			return;
 		}
 		if (!hasTool(ItemCollections.HAMMER))
@@ -633,24 +646,23 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			withdrawTool(AmysSaw.preferredSawIds(), "saw");
 			return;
 		}
-		int missingLoosePlanks = setup.planks - Rs2Inventory.count(setup.tier.getPlankId());
-		int withdrawablePlanks = Math.min(Math.max(0, missingLoosePlanks),
-			Rs2Bank.count(setup.tier.getPlankId()));
-		if (withdrawablePlanks > 0)
+		int bars = Rs2Inventory.count(ItemID.STEEL_BAR);
+		if (bars > plan.barsTarget)
 		{
-			withdraw(setup.tier.getPlankId(), withdrawablePlanks, setup.tier.getPlankName());
+			deposit(ItemID.STEEL_BAR, "surplus steel bars");
 			return;
 		}
-		if (PlankSack.available(setup.tier) < setup.planks)
+		if (bars < plan.barsTarget)
 		{
-			fail("Missing " + (setup.planks - PlankSack.available(setup.tier)) + " " + setup.tier.getPlankName()
-				+ ". Add them to your bank, then restart.");
+			int amount = Math.min(plan.barsTarget - bars, Rs2Inventory.emptySlotCount());
+			if (amount > 0) withdraw(ItemID.STEEL_BAR, amount, "steel bars");
+			else deposit(setup.tier.getPlankId(), "loose planks to reserve steel bar space");
 			return;
 		}
-		int missingBars = setup.steelBars - Rs2Inventory.count(ItemID.STEEL_BAR);
-		if (missingBars > 0)
+		int missingLoosePlanks = plan.looseTarget - Rs2Inventory.count(setup.tier.getPlankId());
+		if (missingLoosePlanks > 0)
 		{
-			withdraw(ItemID.STEEL_BAR, missingBars, "steel bars");
+			withdraw(setup.tier.getPlankId(), missingLoosePlanks, setup.tier.getPlankName());
 		}
 	}
 
@@ -684,28 +696,42 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return Rs2Bank.hasBankItem(ItemID.PLANK_SACK, 1);
 		}
 		if (PlankSack.hasWrongContents(setup.tier)
-			|| PlankSack.firstWrongInventoryPlank(setup.tier) >= 0)
+			|| PlankSack.firstWrongInventoryPlank(setup.tier) >= 0
+			|| Rs2Inventory.contains(ItemID.Cert.STEEL_BAR))
 		{
 			return true;
 		}
-		int bankedPlanks = Rs2Bank.count(setup.tier.getPlankId());
-		return PlankSack.freeCapacity() > 0
-			&& (Rs2Inventory.count(setup.tier.getPlankId()) > 0 || bankedPlanks > 0)
-			|| Rs2Inventory.count(setup.tier.getPlankId()) < setup.planks && bankedPlanks > 0;
+		MahoganyHomesSupplyPlan plan = supplyPlan(setup);
+		return pendingBankItemId >= 0 || pendingSackQuantity >= 0
+			|| PlankSack.freeCapacity() > 0 && (Rs2Inventory.count(setup.tier.getPlankId()) > 0
+				|| Rs2Inventory.emptySlotCount() > 0 && Rs2Bank.count(setup.tier.getPlankId()) > 0)
+			|| Rs2Inventory.count(setup.tier.getPlankId()) < plan.looseTarget
+			|| Rs2Inventory.count(ItemID.STEEL_BAR) != plan.barsTarget;
 	}
 
-	private boolean depositFirstNonSack()
+	private MahoganyHomesSupplyPlan supplyPlan(Setup setup)
 	{
-		int id = Rs2Inventory.items(item -> item.getId() != ItemID.PLANK_SACK)
-			.mapToInt(item -> item.getId()).findFirst().orElse(-1);
-		return deposit(id, "inventory item");
+		return MahoganyHomesSupplyPlan.plan(PlankSack.isCarried(), PlankSack.count(setup.tier),
+			Rs2Inventory.count(setup.tier.getPlankId()), Rs2Inventory.count(ItemID.STEEL_BAR),
+			Rs2Inventory.emptySlotCount(), (hasTool(ItemCollections.HAMMER) ? 0 : 1)
+				+ (hasTool(ItemCollections.SAW) ? 0 : 1), Rs2Bank.count(setup.tier.getPlankId()),
+			Rs2Bank.count(ItemID.STEEL_BAR), setup.planks, setup.steelBars, setup.tier.getSetupPlanks());
 	}
 
-	private boolean depositFirstSurplus(MahoganyHomesData tier)
+	private boolean depositFirstSupply(MahoganyHomesData tier)
 	{
-		int id = Rs2Inventory.items(item -> !isSetupItem(item.getId(), tier))
-			.mapToInt(item -> item.getId()).findFirst().orElse(-1);
-		return deposit(id, "surplus inventory item");
+		int id = Rs2Inventory.contains(tier.getPlankId()) ? tier.getPlankId()
+			: Rs2Inventory.contains(ItemID.STEEL_BAR) ? ItemID.STEEL_BAR : -1;
+		return deposit(id, "temporary supply space");
+	}
+
+	private void reportSupplies(Setup setup, String reason, MahoganyHomesSupplyPlan plan)
+	{
+		String report = reason + " tier=" + setup.tier.getName() + " loose=" + Rs2Inventory.count(setup.tier.getPlankId())
+			+ " stored=" + PlankSack.count(setup.tier) + " bars=" + Rs2Inventory.count(ItemID.STEEL_BAR)
+			+ " minimum=" + setup.planks + "/" + setup.steelBars
+			+ (plan == null ? "" : " refill=" + plan.looseTarget + "/" + plan.barsTarget);
+		if (!report.equals(lastSupplyReport)) { log.info("[MH_SUPPLIES] {}", report); lastSupplyReport = report; }
 	}
 
 	private boolean deposit(int id, String name)
@@ -914,8 +940,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private static boolean hasSetup(Setup setup)
 	{
 		return hasTool(ItemCollections.HAMMER) && hasTool(ItemCollections.SAW)
-			&& PlankSack.available(setup.tier) >= setup.planks
-			&& Rs2Inventory.count(ItemID.STEEL_BAR) >= setup.steelBars;
+			&& MahoganyHomesSupplyPlan.ready(setup.planks, setup.steelBars,
+				Rs2Inventory.count(setup.tier.getPlankId()), PlankSack.count(setup.tier),
+				Rs2Inventory.count(ItemID.STEEL_BAR));
 	}
 
 	private void getContract()
@@ -1173,6 +1200,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void clearAssignment()
 	{
+		knownSupplyHomeowner = null;
+		knownSupplyTier = null;
 		assignedHomeowner = null;
 		assignedTier = null;
 		contractAcquired = false;
@@ -1219,6 +1248,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return;
 		}
 		int planks = contract.requiredPlanks(hotspotValues);
+		knownSupplyHomeowner = assignedHomeowner;
+		knownSupplyTier = assignedTier;
+		knownSupplyPlanks = planks;
+		knownSupplyBars = contract.requiredSteelBars(hotspotValues);
 		if (PlankSack.available(assignedTier) < planks)
 		{
 			fail("Missing " + (planks - PlankSack.available(assignedTier)) + " " + assignedTier.getPlankName()
@@ -1643,6 +1676,26 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		}
 		return new Setup(configuredTier, configuredTier.getSetupPlanks(),
 			configuredTier.getSetupSteelBars(), false);
+	}
+
+	int getLoosePlanks()
+	{
+		return Rs2Inventory.count(supplyTier().getPlankId());
+	}
+
+	int getStoredPlanks()
+	{
+		return PlankSack.count(supplyTier());
+	}
+
+	int getSteelBars()
+	{
+		return Rs2Inventory.count(ItemID.STEEL_BAR);
+	}
+
+	private MahoganyHomesData supplyTier()
+	{
+		return assignedTier != null ? assignedTier : setupTier != null ? setupTier : config.contractTier();
 	}
 
 	static boolean allFixed(int[] values)
