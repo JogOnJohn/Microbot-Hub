@@ -29,6 +29,7 @@ import net.runelite.client.plugins.microbot.util.bank.enums.BankLocation;
 import net.runelite.client.plugins.microbot.util.dialogues.Rs2Dialogue;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
+import net.runelite.client.plugins.microbot.util.input.InputArbiter;
 import net.runelite.client.plugins.microbot.util.misc.Rs2UiHelper;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
@@ -64,6 +65,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private int processedTick = -1;
     private int interactionProbeTick = -1;
     private boolean skipEarlyHandoff;
+    private volatile Work earlyHandoffWork;
     private long travelStartedAt;
     private WorldPoint travelOrigin;
 	private MahoganyHomesConfig config;
@@ -409,6 +411,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		lastTravelPosition = null;
 		pending = null;
 		activeWork = null;
+		earlyHandoffWork = null;
 		workAttempts = 0;
 		missingObjectSince = -1;
 		turnInRequested = false;
@@ -1300,6 +1303,16 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
 		Work next = workAttempts > 0 && activeWork != null
 			? activeWork : nextWork(work, hotspotValues, position, reachable);
+        Work handedOff = earlyHandoffWork;
+        earlyHandoffWork = null;
+        if (handedOff != null && !isActionable(hotspotValues[handedOff.hotspot])) handedOff = null;
+        if (handedOff != null) {
+            if (!isFurnitureInteractionReady(handedOff)) {
+                resumeWorkApproach("readiness-lost");
+                return;
+            }
+            next = handedOff;
+        }
 		if (next == null)
 		{
 			Work otherFloor = nextWork(work, hotspotValues, 1 - position.getPlane());
@@ -1321,6 +1334,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		Rs2TileObjectModel object = exactObject(next);
 		if (object == null || !hasAction(object.getObjectComposition(), action))
 		{
+            if (handedOff != null) {
+                resumeWorkApproach("object-or-action-changed");
+                return;
+            }
 			if (missingObjectSince < 0)
 			{
 				missingObjectSince = readyTick;
@@ -1338,7 +1355,13 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		pendingValue = hotspotValues[next.hotspot];
 		lastWorkProgressTick = readyTick;
 		workAttempts++;
-		object.click(action);
+        boolean dispatched = object.click(action);
+        if (handedOff != null && !dispatched) {
+            pending = activeWork = null;
+            workAttempts = 0;
+            resumeWorkApproach("dispatch-failed");
+            return;
+        }
 		Microbot.status = "Mahogany Homes: " + action + " " + object.getName();
 	}
 
@@ -1388,6 +1411,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private void prepareTravel(State returnState)
 	{
 		snapshotGuard = new TransitionSnapshotGuard();
+        earlyHandoffWork = null;
         interactionProbeTick = -1;
         travelStartedAt = System.currentTimeMillis();
 		travelOrigin = statePosition;
@@ -1455,7 +1479,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     {
         if (skipEarlyHandoff || travelToNearestBank || interactionProbeTick == readyTick) return false;
         interactionProbeTick = readyTick;
-        if (travelReturnState != State.GET_CONTRACT && travelReturnState != State.GO_TO_CONTRACT
+        if (travelReturnState != State.DO_CONTRACT && travelReturnState != State.GET_CONTRACT && travelReturnState != State.GO_TO_CONTRACT
             && travelReturnState != State.TURN_IN_CONTRACT) return false;
         var clientThread = Microbot.getClientThread();
         if (clientThread == null) return false;
@@ -1463,6 +1487,16 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
             net.runelite.api.Client client = Microbot.getClient();
             if (client == null || client.getGameState() != GameState.LOGGED_IN
                 || client.getLocalPlayer() == null) return false;
+            if (travelReturnState == State.DO_CONTRACT) {
+                Work candidate = findReadyFurniture(null);
+                if (candidate != null) {
+                    earlyHandoffWork = candidate;
+                    log.info("mahogany_work_handoff | phase=ready object={} access={} routeTarget={}",
+                        candidate.objectId, candidate.access, travelTarget);
+                    return true;
+                }
+                return false;
+            }
             Rs2NpcModel npc;
             String action;
             if (travelReturnState == State.GET_CONTRACT) {
@@ -1497,6 +1531,59 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     {
         return isHomeownerInRange(player, target) && hasAction && clickable
             && reachable != null && reachable.contains(target);
+    }
+
+    private boolean isFurnitureInteractionReady(Work work) {
+        return work != null && findReadyFurniture(work) == work;
+    }
+
+    private Work findReadyFurniture(Work preferred) {
+        var clientThread = Microbot.getClientThread();
+        if (clientThread == null || pending != null || workAttempts > 0) return null;
+        return clientThread.runOnClientThreadOptional(() -> {
+            var client = Microbot.getClient();
+            if (client == null || client.getGameState() != GameState.LOGGED_IN || client.getLocalPlayer() == null
+                || client.getTopLevelWorldView() == null || client.getTopLevelWorldView().isInstance()
+                || Microbot.pauseAllScripts.get() || InputArbiter.isHuman()
+                || Rs2Player.isAnimating() || Rs2Player.isInteracting()) return null;
+            WorldPoint player = Rs2Player.getWorldLocation();
+            MahoganyHomesContractData contract = MahoganyHomesContractData.forHomeowner(assignedHomeowner);
+            if (player == null || contract == null || !contract.contains(player) || travelTarget == null
+                || player.getPlane() != travelTarget.getPlane()) return null;
+            refreshHotspots();
+            Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(player, 8).keySet();
+            Rectangle viewport = new Rectangle(client.getViewportXOffset(), client.getViewportYOffset(),
+                client.getViewportWidth(), client.getViewportHeight());
+            Work best = null;
+            for (Work work : contract.work) {
+                if ((preferred != null && work != preferred) || work.access == null
+                    || !isActionable(hotspotValues[work.hotspot]) || !reachable.contains(work.access)) continue;
+                Rs2TileObjectModel object = exactObject(work);
+                if (object == null) continue;
+                Shape clickbox = object.getClickbox();
+                if (furnitureHandoffReady(player, travelTarget, work, object.getWorldLocation(), object.getId(),
+                    hasAction(object.getObjectComposition(), actionFor(hotspotValues[work.hotspot])),
+                    clickbox != null && clickbox.intersects(viewport), reachable)
+                    && (best == null || player.distanceTo2D(work.location) < player.distanceTo2D(best.location))) best = work;
+            }
+            return best;
+        }).orElse(null);
+    }
+
+    static boolean furnitureHandoffReady(WorldPoint player, WorldPoint routeTarget, Work work,
+                                         WorldPoint objectLocation, int objectId, boolean action,
+                                         boolean clickable, Set<WorldPoint> reachable) {
+        return player != null && routeTarget != null && work != null && work.access != null
+            && work.objectId == objectId && work.location.equals(objectLocation)
+            && player.getPlane() == routeTarget.getPlane() && player.getPlane() == work.location.getPlane()
+            && work.access.getPlane() == player.getPlane() && player.distanceTo2D(work.location) <= 8
+            && action && clickable && reachable != null && reachable.contains(work.access);
+    }
+
+    private void resumeWorkApproach(String reason) {
+        log.info("mahogany_work_handoff | phase=resume reason={} target={}", reason, travelTarget);
+        skipEarlyHandoff = true;
+        requestTravel(travelTarget, State.DO_CONTRACT);
     }
 
 	private String travelDescription()
