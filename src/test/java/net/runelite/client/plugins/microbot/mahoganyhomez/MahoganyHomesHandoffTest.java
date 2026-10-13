@@ -9,6 +9,36 @@ class MahoganyHomesHandoffTest {
     private final WorldPoint player = new WorldPoint(3000, 3300, 0);
     private final WorldPoint npc = new WorldPoint(3003, 3300, 0);
 
+    @Test void barbaraApproachMustCrossTheWallInsteadOfArrivingOneTileOutside() {
+        WorldPoint outside = new WorldPoint(1746, 3538, 0);
+        WorldPoint inside = new WorldPoint(1747, 3538, 0);
+        WorldPoint homeowner = new WorldPoint(1748, 3538, 0);
+        WorldPoint approach = MahoganyHomesScript.homeownerApproach(outside, homeowner,
+            Set.of(inside, homeowner, new WorldPoint(1748, 3537, 0)));
+        assertEquals(inside, approach);
+        assertEquals(1, outside.distanceTo(approach));
+        for (var state : new MahoganyHomesScript.State[]{MahoganyHomesScript.State.GO_TO_CONTRACT,
+            MahoganyHomesScript.State.TURN_IN_CONTRACT}) {
+            assertEquals(0, MahoganyHomesScript.arrivalDistanceFor(state));
+            assertTrue(outside.distanceTo(approach) > MahoganyHomesScript.arrivalDistanceFor(state));
+            assertFalse(MahoganyHomesScript.interactionHandoffReady(outside, homeowner,
+                true, true, Set.of(outside)));
+            assertTrue(MahoganyHomesScript.interactionHandoffReady(inside, homeowner,
+                true, true, Set.of(inside, homeowner)));
+        }
+    }
+
+    @Test void nonHomeownerRoutesKeepTheirExistingTolerance() {
+        assertEquals(4, MahoganyHomesScript.arrivalDistanceFor(MahoganyHomesScript.State.GET_SETUP));
+        assertEquals(4, MahoganyHomesScript.arrivalDistanceFor(MahoganyHomesScript.State.GET_CONTRACT));
+        assertEquals(4, MahoganyHomesScript.arrivalDistanceFor(MahoganyHomesScript.State.DO_CONTRACT));
+    }
+
+    @Test void homeownerApproachUsesNpcTileWhenNoAdjacentAccessExists() {
+        assertEquals(npc, MahoganyHomesScript.homeownerApproach(player, npc, Set.of(npc)));
+        assertEquals(npc, MahoganyHomesScript.homeownerApproach(player, npc, Set.of()));
+    }
+
     @Test void visibleNpcBehindClosedDoorDoesNotCancelRoute() {
         assertFalse(MahoganyHomesScript.interactionHandoffReady(player, npc, true, true, Set.of(player)));
         assertTrue(MahoganyHomesScript.interactionHandoffReady(player, npc, true, true, Set.of(player, npc)));

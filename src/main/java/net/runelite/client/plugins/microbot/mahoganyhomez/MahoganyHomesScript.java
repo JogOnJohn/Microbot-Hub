@@ -111,6 +111,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private boolean travelRequested;
 	private State travelReturnState;
 	private WorldPoint travelTarget;
+	private int travelArrivalDistance;
 	private boolean travelToNearestBank;
 	private WorldPoint lastTravelPosition;
 	private int lastTravelProgressTick;
@@ -1411,13 +1412,15 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private void prepareTravel(State returnState)
 	{
 		snapshotGuard = new TransitionSnapshotGuard();
+        travelArrivalDistance = arrivalDistanceFor(returnState);
         earlyHandoffWork = null;
         interactionProbeTick = -1;
         travelStartedAt = System.currentTimeMillis();
 		travelOrigin = statePosition;
 		net.runelite.client.plugins.microbot.util.walker.WebWalkLog.spInfo(
-			"mahogany_journey | event=start from={} to={} purpose={} homeowner={}",
-			travelOrigin, travelToNearestBank ? "nearest-bank" : travelTarget, returnState, assignedHomeowner);
+			"mahogany_journey | event=start from={} to={} purpose={} homeowner={} arrivalDistance={}",
+			travelOrigin, travelToNearestBank ? "nearest-bank" : travelTarget, returnState, assignedHomeowner,
+            travelArrivalDistance);
         walker.completionCondition = this::isTravelInteractionReady;
 		travelReturnState = returnState;
 		travelRequested = false;
@@ -1456,7 +1459,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		if (!travelRequested)
 		{
 			boolean accepted = travelToNearestBank
-				? walker.walkToNearestBank() : walker.walkTo(travelTarget);
+				? walker.walkToNearestBank() : walker.walkTo(travelTarget, travelArrivalDistance);
 			if (!accepted)
 			{
 				fail("Could not start travel to " + travelDescription() + " with Microbot's walker, then restart.");
@@ -1596,6 +1599,13 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	{
 		return requested && "ARRIVED".equals(walkerStatus);
 	}
+
+    static int arrivalDistanceFor(State returnState)
+    {
+        // Even one tile of tolerance can finish outside a closed door. The reachable-NPC
+        // completion condition still hands off early once the intended interaction is safe.
+        return returnState == State.GO_TO_CONTRACT || returnState == State.TURN_IN_CONTRACT ? 0 : 4;
+    }
 
 	private void turnIn()
 	{
@@ -1997,6 +2007,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private static final class WalkerBridge
 	{
 		private volatile WorldPoint requestedTarget;
+        private int requestedArrivalDistance;
         private final java.util.concurrent.atomic.AtomicReference<WorldPoint> ownedActiveTarget =
             new java.util.concurrent.atomic.AtomicReference<>();
 		private volatile String currentStatus = "IDLE";
@@ -2012,15 +2023,15 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return true;
 		}
 
-		boolean walkTo(WorldPoint point)
+		boolean walkTo(WorldPoint point, int arrivalDistance)
 		{
-			return startRoute(point);
+			return startRoute(point, arrivalDistance);
 		}
 
 		boolean walkToNearestBank()
 		{
 			BankLocation bank = Rs2Bank.getNearestBank();
-			return bank != null && startRoute(bank.getWorldPoint());
+			return bank != null && startRoute(bank.getWorldPoint(), 4);
 		}
 
 		boolean prepareTeleportResourcesAtBank()
@@ -2030,7 +2041,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return isAvailable();
 		}
 
-		private boolean startRoute(WorldPoint target)
+		private boolean startRoute(WorldPoint target, int arrivalDistance)
 		{
 			if (!isAvailable() || target == null)
 			{
@@ -2042,6 +2053,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 				return false;
 			}
 			requestedTarget = target;
+            requestedArrivalDistance = arrivalDistance;
             ownedActiveTarget.set(activeTarget);
 			currentStatus = "MOVING";
 			return advanceRoute();
@@ -2051,7 +2063,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		{
 			WorldPoint target = requestedTarget;
 			if (!isAvailable() || target == null) return false;
-            WalkerState state = Rs2Walker.walkWithBankedTransportsUntil(target, 4, ownedActiveTarget, completionCondition);
+            WalkerState state = Rs2Walker.walkWithBankedTransportsUntil(target, requestedArrivalDistance,
+                ownedActiveTarget, completionCondition);
 			currentStatus = state == WalkerState.ARRIVED ? "ARRIVED"
 				: state == WalkerState.MOVING ? "MOVING" : "BLOCKED";
 			return state != WalkerState.EXIT && state != WalkerState.UNREACHABLE;
