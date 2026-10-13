@@ -54,6 +54,7 @@ public interface ConstructionConfig extends Config {
                 "Call the butler and use the planks on him you're going to use." +
                 " Then start the plugin next to the build space with " +
                 "at least 10,000 coins for the butler's wage, a saw, a hammer and your noted planks and the rest of your inventory un-noted planks. " +
+                "A carried plank sack is filled automatically and its matching planks count toward building. " +
                 "The script stops with a message when the demon butler, noted planks or coins are missing.";
     }
 

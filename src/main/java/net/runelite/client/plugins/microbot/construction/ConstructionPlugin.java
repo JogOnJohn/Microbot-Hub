@@ -29,7 +29,7 @@ import java.awt.*;
 )
 @Slf4j
 public class ConstructionPlugin extends Plugin {
-    public static final String version = "1.3.4";
+    public static final String version = "1.3.5";
 
     @Inject
     private net.runelite.client.plugins.microbot.construction.ConstructionConfig config;
@@ -72,5 +72,8 @@ public class ConstructionPlugin extends Plugin {
     public boolean isButlerPresent() { return ConstructionScript.isButlerPresent(); }
     public int getButlerDistance() { return ConstructionScript.getButlerDistance(); }
     public int getPlankCount() { return ConstructionScript.getPlankCount(); }
+    public int getSackPlankCount() { return ConstructionScript.getSackPlankCount(); }
+    public int getTotalPlankCount() { return ConstructionScript.getTotalPlankCount(); }
+    public int getSackFreeCapacity() { return ConstructionScript.getSackFreeCapacity(); }
     public int getFreeSlots() { return ConstructionScript.getFreeSlots(); }
 }

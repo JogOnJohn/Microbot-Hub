@@ -29,6 +29,7 @@ public class ConstructionScript extends Script {
     private static final int DIRECT_BUTLER_RANGE = 3;
     private static final long CALL_SERVANT_RETRY_MS = 3_000L;
     private static final long CONSTRUCTION_CLICK_GUARD_MS = 250L;
+    private static final long PLANK_SACK_ACTION_GUARD_MS = 750L;
     private static final int HOUSE_OPTIONS_WIDGET_ID = 7602207;
     private static final int CALL_SERVANT_WIDGET_ID = 24248342;
     private ConstructionState state = ConstructionState.Idle;
@@ -42,6 +43,9 @@ public class ConstructionScript extends Script {
     private volatile boolean butlerPresent;
     private volatile int butlerDistance = -1;
     private volatile int plankCount;
+    private volatile int sackPlankCount;
+    private volatile int totalPlankCount;
+    private volatile int sackFreeCapacity;
     private volatile int freeSlots;
     private volatile OverflowStage overflowStage = OverflowStage.NONE;
     private int minimumPlanksDuringTrip;
@@ -53,6 +57,7 @@ public class ConstructionScript extends Script {
     private long lastOverflowActionAt;
     private long lastCallServantAttemptAt;
     private long lastConstructionClickAt;
+    private long lastPlankSackActionAt;
 
     private enum OverflowStage {
         NONE,
@@ -124,6 +129,7 @@ public class ConstructionScript extends Script {
                 if (!Microbot.isLoggedIn()) return;
                 if (!super.run()) return;
                 updateDebugSnapshot(config);
+                if (fillPlankSackIfUseful(config)) return;
                 if (hasOverflowDialogue()) {
                     handleOverflowDialogue(config);
                 }
@@ -140,7 +146,7 @@ public class ConstructionScript extends Script {
                     }
                     return;
                 }
-                int currentPlanks = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+                int currentPlanks = getAvailablePlanks(config);
                 if (!butlerTrip.isTripInProgress() && currentPlanks <= getRequiredPlanks(config)) {
                     logAction("Planks at proactive refill threshold (" + currentPlanks
                             + " <= " + getRequiredPlanks(config) + "); checking Butler before next build");
@@ -181,8 +187,7 @@ public class ConstructionScript extends Script {
     }
 
     public boolean grabPlanksWhileWeBuild(net.runelite.client.plugins.microbot.construction.ConstructionConfig config, int actionDelay){
-        int plankCount = Rs2Inventory.count(config.selectedMode().getPlankItemId());
-        boolean enoughToBuild = plankCount >= getRequiredPlanks(config);
+        boolean enoughToBuild = getAvailablePlanks(config) >= getRequiredPlanks(config);
 
         Rs2NpcModel butler = getButler();
         ButlerTripTracker.Action tripAction = butlerTrip.observe(
@@ -221,7 +226,7 @@ public class ConstructionScript extends Script {
         }, Rs2Random.between(750,1500));
         butler = getButler();
         if ((butler != null && butler.isInteractingWithPlayer())
-                || plankCount < getRequiredPlanks(config)) {
+                || getAvailablePlanks(config) < getRequiredPlanks(config)) {
             butler(config, actionDelay);
         }
         return true;
@@ -234,15 +239,15 @@ public class ConstructionScript extends Script {
         switch (config.selectedMode()) {
             case OAK_DUNGEON_DOOR:
                 objectIDs = OAK_DUNGEON_DOOR;
-                hasRequiredPlanks =  Rs2Inventory.hasItemAmount(config.selectedMode().getPlankItemId(), 10);
+                hasRequiredPlanks = hasRequiredPlanks(config);
                 break;
             case OAK_LARDER:
                 objectIDs = OAK_LARDER;
-                hasRequiredPlanks =  Rs2Inventory.hasItemAmount(config.selectedMode().getPlankItemId(), 8);
+                hasRequiredPlanks = hasRequiredPlanks(config);
                 break;
             case MAHOGANY_TABLE:
                 objectIDs = MAHOGANY_TABLE;
-                hasRequiredPlanks =  Rs2Inventory.hasItemAmount(config.selectedMode().getPlankItemId(), 6);
+                hasRequiredPlanks = hasRequiredPlanks(config);
                 break;
             default:
                 return;
@@ -293,7 +298,14 @@ public class ConstructionScript extends Script {
     }
 
     private boolean hasRequiredPlanks(ConstructionConfig config) {
-        return Rs2Inventory.count(config.selectedMode().getPlankItemId()) >= getRequiredPlanks(config);
+        return getAvailablePlanks(config) >= getRequiredPlanks(config);
+    }
+
+    private int getAvailablePlanks(ConstructionConfig config) {
+        int loose = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+        boolean carried = ConstructionPlankSack.isCarried();
+        int stored = carried ? ConstructionPlankSack.count(config.selectedMode()) : 0;
+        return ConstructionPlankSack.available(loose, stored, carried);
     }
 
     private int getRequiredPlanks(ConstructionConfig config) {
@@ -379,7 +391,7 @@ public class ConstructionScript extends Script {
         }
 
         if (space == null) return false;
-        int planksBeforeBuild = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+        int planksBeforeBuild = getAvailablePlanks(config);
         if (space.click("Build")) {
             lastConstructionClickAt = System.currentTimeMillis();
             System.out.println("Interacted with build space: " + space.getId());
@@ -390,7 +402,7 @@ public class ConstructionScript extends Script {
             boolean objectReady = workingObjectId() != spaceId;
             System.out.println("Built object: " + config.selectedMode());
             return objectReady
-                    || Rs2Inventory.count(config.selectedMode().getPlankItemId()) < planksBeforeBuild;
+                    || getAvailablePlanks(config) < planksBeforeBuild;
         } else {
             System.out.println("Failed to interact with build space: " + space.getId());
         }
@@ -587,6 +599,40 @@ public class ConstructionScript extends Script {
                 || Rs2Dialogue.hasDialogueOption("Thanks");
     }
 
+    private boolean fillPlankSackIfUseful(ConstructionConfig config) {
+        boolean carried = ConstructionPlankSack.isCarried();
+        int loose = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+        int totalStored = carried ? ConstructionPlankSack.total() : 0;
+        if (!ConstructionPlankSack.shouldFill(loose, totalStored, carried)) return false;
+        if (Rs2Dialogue.isInDialogue() && !hasOverflowDialogue()) return false;
+
+        long now = System.currentTimeMillis();
+        if (now - lastPlankSackActionAt < PLANK_SACK_ACTION_GUARD_MS) return false;
+        lastPlankSackActionAt = now;
+
+        int selectedBefore = ConstructionPlankSack.count(config.selectedMode());
+        int looseBefore = loose;
+        Rs2Tab.switchTo(InterfaceTab.INVENTORY);
+        if (!ConstructionPlankSack.fill()) {
+            logAction("Plank sack Fill interaction failed; continuing with loose planks");
+            return false;
+        }
+
+        boolean filled = sleepUntil(() ->
+                        ConstructionPlankSack.count(config.selectedMode()) > selectedBefore
+                                || Rs2Inventory.count(config.selectedMode().getPlankItemId()) < looseBefore,
+                1_500);
+        if (filled) {
+            int selectedAfter = ConstructionPlankSack.count(config.selectedMode());
+            int looseAfter = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+            logAction("Filled plank sack (loose " + looseBefore + " -> " + looseAfter
+                    + ", stored " + selectedBefore + " -> " + selectedAfter + ")");
+        } else {
+            logAction("Plank sack Fill was not confirmed; continuing with live inventory state");
+        }
+        return filled;
+    }
+
     private void handleOverflowDialogue(ConstructionConfig config) {
         long now = System.currentTimeMillis();
         if (now - lastOverflowActionAt < 2_000L) return;
@@ -707,6 +753,10 @@ public class ConstructionScript extends Script {
         butlerPresent = currentButler != null;
         butlerDistance = distanceToButler(currentButler);
         plankCount = Rs2Inventory.count(config.selectedMode().getPlankItemId());
+        boolean sackCarried = ConstructionPlankSack.isCarried();
+        sackPlankCount = sackCarried ? ConstructionPlankSack.count(config.selectedMode()) : 0;
+        totalPlankCount = ConstructionPlankSack.available(plankCount, sackPlankCount, sackCarried);
+        sackFreeCapacity = sackCarried ? ConstructionPlankSack.freeCapacity() : 0;
         freeSlots = Rs2Inventory.emptySlotCount();
         dialogueState = getDialogueState();
         if (butlerTrip.isAwaitingReturn()
@@ -762,5 +812,8 @@ public class ConstructionScript extends Script {
     public boolean isButlerPresent() { return butlerPresent; }
     public int getButlerDistance() { return butlerDistance; }
     public int getPlankCount() { return plankCount; }
+    public int getSackPlankCount() { return sackPlankCount; }
+    public int getTotalPlankCount() { return totalPlankCount; }
+    public int getSackFreeCapacity() { return sackFreeCapacity; }
     public int getFreeSlots() { return freeSlots; }
 }

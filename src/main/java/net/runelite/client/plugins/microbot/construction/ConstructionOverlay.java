@@ -52,8 +52,13 @@ public class ConstructionOverlay extends OverlayPanel {
                 .right(plugin.getDialogueState())
                 .build());
         panelComponent.getChildren().add(LineComponent.builder()
-                .left("Planks / free:")
-                .right(plugin.getPlankCount() + " / " + plugin.getFreeSlots())
+                .left("Planks L/S/T:")
+                .right(plugin.getPlankCount() + " / " + plugin.getSackPlankCount()
+                        + " / " + plugin.getTotalPlankCount())
+                .build());
+        panelComponent.getChildren().add(LineComponent.builder()
+                .left("Sack cap / inv free:")
+                .right(plugin.getSackFreeCapacity() + " / " + plugin.getFreeSlots())
                 .build());
         panelComponent.getChildren().add(LineComponent.builder()
                 .left("Last:")
