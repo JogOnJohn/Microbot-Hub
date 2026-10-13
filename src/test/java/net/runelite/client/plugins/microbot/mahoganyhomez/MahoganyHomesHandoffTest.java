@@ -1,13 +1,59 @@
 package net.runelite.client.plugins.microbot.mahoganyhomez;
 
 import java.util.Set;
+import java.awt.Rectangle;
+import java.awt.geom.Path2D;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.geometry.SimplePolygon;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MahoganyHomesHandoffTest {
     private final WorldPoint player = new WorldPoint(3000, 3300, 0);
     private final WorldPoint npc = new WorldPoint(3003, 3300, 0);
+
+    @Test void barbaraContainedSimplePolygonMustCountAsClickable() {
+        var hull = new SimplePolygon(new int[]{808, 838, 838, 808},
+            new int[]{446, 446, 508, 508}, 4);
+        var viewport = new Rectangle(0, 0, 1635, 857);
+        assertFalse(hull.intersects(viewport), "Reproduce RuneLite's contained-shape intersection bug");
+        assertTrue(MahoganyHomesScript.clickboxVisible(hull, viewport));
+        WorldPoint outsideNpcTile = new WorldPoint(1747, 3539, 0);
+        WorldPoint npcTile = new WorldPoint(1747, 3538, 0);
+        assertTrue(MahoganyHomesScript.interactionHandoffReady(outsideNpcTile, npcTile, true,
+            MahoganyHomesScript.clickboxVisible(hull, viewport), Set.of(outsideNpcTile, npcTile)));
+        assertFalse(MahoganyHomesScript.interactionHandoffReady(outsideNpcTile, npcTile, true,
+            MahoganyHomesScript.clickboxVisible(hull, viewport), Set.of(outsideNpcTile)),
+            "A visible NPC behind a closed crossing must still require travel");
+    }
+
+    @Test void clippedAndViewportEnclosingPolygonsAreVisibleButOffscreenShapesAreNot() {
+        var viewport = new Rectangle(0, 0, 100, 100);
+        var clipped = new SimplePolygon(new int[]{-10, 10, 10, -10}, new int[]{20, 20, 40, 40}, 4);
+        var enclosing = new SimplePolygon(new int[]{-10, 110, 110, -10}, new int[]{-10, -10, 110, 110}, 4);
+        var offscreen = new SimplePolygon(new int[]{110, 120, 120, 110}, new int[]{20, 20, 40, 40}, 4);
+        assertTrue(MahoganyHomesScript.clickboxVisible(clipped, viewport));
+        assertTrue(MahoganyHomesScript.clickboxVisible(enclosing, viewport));
+        assertFalse(MahoganyHomesScript.clickboxVisible(offscreen, viewport));
+    }
+
+    @Test void boundingBoxOverlapAloneDoesNotPermitHandoff() {
+        var viewport = new Rectangle(0, 0, 100, 100);
+        var hull = new SimplePolygon(new int[]{80, 130, 130}, new int[]{130, 80, 130}, 3);
+        assertTrue(hull.getBounds().intersects(viewport));
+        assertFalse(MahoganyHomesScript.clickboxVisible(hull, viewport));
+    }
+
+    @Test void missingEmptyAndDegenerateShapesDoNotPermitHandoff() {
+        var viewport = new Rectangle(0, 0, 100, 100);
+        var line = new SimplePolygon(new int[]{10, 20}, new int[]{10, 20}, 2);
+        assertFalse(MahoganyHomesScript.clickboxVisible(null, viewport));
+        assertFalse(MahoganyHomesScript.clickboxVisible(new Rectangle(10, 10, 20, 20), null));
+        assertFalse(MahoganyHomesScript.clickboxVisible(new Path2D.Double(), viewport));
+        assertFalse(MahoganyHomesScript.clickboxVisible(new Rectangle(10, 10, 0, 10), viewport));
+        assertFalse(MahoganyHomesScript.clickboxVisible(line, viewport));
+        assertFalse(MahoganyHomesScript.clickboxVisible(new Rectangle(10, 10, 10, 10), new Rectangle()));
+    }
 
     @Test void barbaraApproachMustCrossTheWallInsteadOfArrivingOneTileOutside() {
         WorldPoint outside = new WorldPoint(1746, 3538, 0);

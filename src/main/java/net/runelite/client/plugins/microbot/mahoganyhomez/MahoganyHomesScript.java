@@ -7,6 +7,7 @@ import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.awt.Shape;
 import java.awt.Rectangle;
+import java.awt.geom.Area;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -1523,9 +1524,13 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
             Shape hull = npc.getConvexHull();
             Rectangle viewport = new Rectangle(client.getViewportXOffset(),
                 client.getViewportYOffset(), client.getViewportWidth(), client.getViewportHeight());
-            boolean clickable = hull != null && hull.intersects(viewport);
-            return interactionHandoffReady(player, target, hasAction, clickable,
+            boolean ready = interactionHandoffReady(player, target, hasAction, clickboxVisible(hull, viewport),
                 Rs2Tile.getReachableTilesFromTile(player, 8).keySet());
+            if (ready) {
+                log.info("mahogany_npc_handoff | phase=ready action={} npc={} at={} npcTile={} routeTarget={}",
+                    action, npc.getId(), player, target, travelTarget);
+            }
+            return ready;
         }).orElse(false);
     }
 
@@ -1534,6 +1539,15 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     {
         return isHomeownerInRange(player, target) && hasAction && clickable
             && reachable != null && reachable.contains(target);
+    }
+
+    static boolean clickboxVisible(Shape clickbox, Rectangle viewport)
+    {
+        if (clickbox == null || viewport == null || viewport.isEmpty()
+            || clickbox.getBounds().isEmpty() || !clickbox.getBounds().intersects(viewport)) return false;
+        // RuneLite's SimplePolygon intersection misses shapes wholly inside the rectangle.
+        // Use its path with AWT geometry, retaining a real shape test for clipped/offscreen models.
+        return new Area(clickbox).intersects(viewport);
     }
 
     private boolean isFurnitureInteractionReady(Work work) {
@@ -1566,7 +1580,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
                 Shape clickbox = object.getClickbox();
                 if (furnitureHandoffReady(player, travelTarget, work, object.getWorldLocation(), object.getId(),
                     hasAction(object.getObjectComposition(), actionFor(hotspotValues[work.hotspot])),
-                    clickbox != null && clickbox.intersects(viewport), reachable)
+                    clickboxVisible(clickbox, viewport), reachable)
                     && (best == null || player.distanceTo2D(work.location) < player.distanceTo2D(best.location))) best = work;
             }
             return best;
