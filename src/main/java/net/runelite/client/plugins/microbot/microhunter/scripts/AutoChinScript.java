@@ -513,6 +513,7 @@ public class AutoChinScript extends Script {
             Set<WorldType> types = world.getTypes();
             if (types == null || types.contains(WorldType.MEMBERS) != members) continue;
             if (!Collections.disjoint(types, UNSAFE_WORLD_TYPES)) continue;
+            if (types.stream().anyMatch(type -> "HARDCORE_MAIN".equals(type.name()))) continue;
             if (world.getPlayers() < 0 || world.getPlayers() >= 1_900) continue;
             if (rejectedWorlds.containsKey(world.getId())) continue;
             candidates.add(world);

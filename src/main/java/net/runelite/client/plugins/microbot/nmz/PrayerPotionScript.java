@@ -98,7 +98,11 @@ public class PrayerPotionScript extends Script {
 
     public boolean isPrayerRestoreDue() {
         int realPrayer = Microbot.getClient().getRealSkillLevel(Skill.PRAYER);
-        return realPrayer > 0 && (Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER) * 100) / realPrayer <= DRINK_THRESHOLD_PERCENT;
+        return !isPrayerAboveThreshold(Microbot.getClient().getBoostedSkillLevel(Skill.PRAYER), realPrayer, DRINK_THRESHOLD_PERCENT);
+    }
+
+    static boolean isPrayerAboveThreshold(int boostedLevel, int realLevel, int thresholdPercent) {
+        return realLevel <= 0 || (boostedLevel * 100) / realLevel > thresholdPercent;
     }
 
     public boolean isActionInFlight() { return actionInFlight; }
