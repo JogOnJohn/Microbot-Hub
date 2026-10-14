@@ -318,6 +318,25 @@ class AutoChinHopResultTest {
         }
     }
 
+    @Test
+    void hardcoreWorldIsNotAnOrdinaryHunterCandidate() throws Exception {
+        AutoChinScript script = new AutoChinScript();
+        Client client = mock(Client.class);
+        when(client.getWorld()).thenReturn(SOURCE_WORLD);
+        WorldService service = australianWorlds(TARGET_WORLD, TARGET_WORLD + 1);
+        World hardcore = service.getWorlds().getWorlds().get(1);
+        when(hardcore.getTypes()).thenReturn(EnumSet.of(WorldType.MEMBERS, WorldType.HARDCORE_MAIN));
+        try (MockedStatic<Microbot> microbot = mockStatic(Microbot.class);
+             MockedStatic<Rs2Player> player = mockStatic(Rs2Player.class)) {
+            microbot.when(Microbot::getClient).thenReturn(client);
+            microbot.when(Microbot::getWorldService).thenReturn(service);
+            player.when(Rs2Player::isMember).thenReturn(true);
+            Method select = AutoChinScript.class.getDeclaredMethod("selectAustralianWorld");
+            select.setAccessible(true);
+            assertEquals(TARGET_WORLD, select.invoke(script));
+        }
+    }
+
     private static WorldService australianWorlds(int... ids) {
         List<World> worlds = new ArrayList<>();
         for (int id : ids) {
