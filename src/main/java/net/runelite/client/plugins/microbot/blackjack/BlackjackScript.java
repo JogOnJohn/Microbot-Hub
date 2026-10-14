@@ -277,6 +277,7 @@ public class BlackjackScript extends Script
     private SouthernTentPhase southernTentPhase = SouthernTentPhase.ASSESSING;
     private long southernTentPhaseEnteredAt;
     private long southernCrossingStartedAt;
+    private long lastSouthernLureWaitLogAt;
     private WorldPoint pendingSouthernCurtain;
     private String pendingSouthernCurtainAction;
     private long pendingSouthernCurtainAt;
@@ -1379,6 +1380,17 @@ public class BlackjackScript extends Script
         Rs2NpcModel target = southernTentLureTarget();
         if (!canContinueSouthernLureRoute(target))
         {
+            long now = System.currentTimeMillis();
+            if (southernTentPhase == SouthernTentPhase.MOVING_TO_CURTAIN
+                    && now - lastSouthernLureWaitLogAt >= 5_000)
+            {
+                lastSouthernLureWaitLogAt = now;
+                log.info("Southern lure approach waiting: reason={} player={} target={} following={} crossingAgeMs={}",
+                        nextAction, Rs2Player.getWorldLocation(),
+                        target == null ? null : target.getWorldLocation(),
+                        target != null && target.isInteractingWithPlayer(),
+                        southernCrossingStartedAt == 0 ? 0 : now - southernCrossingStartedAt);
+            }
             return;
         }
         WorldPoint player = Rs2Player.getWorldLocation();
@@ -2096,6 +2108,13 @@ public class BlackjackScript extends Script
 
     private void setSouthernTentPhase(SouthernTentPhase phase, String action)
     {
+        if (phase == SouthernTentPhase.APPROACHING_TARGET)
+        {
+            // Re-luring abandons the old crossing; its timer must not consume the next attempt.
+            southernCrossingStartedAt = 0;
+            lastSouthernLureWaitLogAt = 0;
+            clearSouthernCurtainAction();
+        }
         if (phase == SouthernTentPhase.MOVING_TO_CURTAIN && southernCrossingStartedAt == 0)
         {
             southernCrossingStartedAt = System.currentTimeMillis();

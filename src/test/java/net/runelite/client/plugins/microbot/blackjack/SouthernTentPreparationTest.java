@@ -12,6 +12,38 @@ import static org.junit.jupiter.api.Assertions.*;
 class SouthernTentPreparationTest
 {
     @Test
+    void newLureAttemptClearsOldCrossingWithoutResettingOverallDeadline() throws Exception
+    {
+        BlackjackScript script = preparedScript(BlackjackScript.SouthernTentPhase.MOVING_TO_CURTAIN);
+        try
+        {
+            long preparationStarted = (long) get(script, "stateEnteredAt");
+            set(script, "southernCrossingStartedAt", System.currentTimeMillis() - 28_000);
+            set(script, "lureAttempts", 2);
+            set(script, "pendingSouthernCurtainAction", "Open");
+            Method transition = BlackjackScript.class.getDeclaredMethod("setSouthernTentPhase",
+                    BlackjackScript.SouthernTentPhase.class, String.class);
+            transition.setAccessible(true);
+            transition.invoke(script, BlackjackScript.SouthernTentPhase.APPROACHING_TARGET, "Retry Lure");
+            assertEquals(0L, get(script, "southernCrossingStartedAt"));
+            assertNull(get(script, "pendingSouthernCurtainAction"));
+            assertEquals(preparationStarted, get(script, "stateEnteredAt"));
+            assertEquals(2, get(script, "lureAttempts"));
+
+            long before = System.currentTimeMillis();
+            transition.invoke(script, BlackjackScript.SouthernTentPhase.MOVING_TO_CURTAIN, "Fresh crossing");
+            long started = (long) get(script, "southernCrossingStartedAt");
+            assertTrue(started >= before);
+            transition.invoke(script, BlackjackScript.SouthernTentPhase.OPENING_CURTAIN, "Open");
+            assertEquals(started, get(script, "southernCrossingStartedAt"));
+        }
+        finally
+        {
+            dispose(script);
+        }
+    }
+
+    @Test
     void frontFacingCameraConvertsActorConventionAndWrapsYaw()
     {
         assertEquals(0, BlackjackScript.frontFacingCameraYaw(0));

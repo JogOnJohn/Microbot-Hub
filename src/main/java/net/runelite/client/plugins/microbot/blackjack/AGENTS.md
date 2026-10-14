@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.24 clears the abandoned crossing timer/pending curtain action when entering APPROACHING_TARGET for a new lure attempt. The next confirmed lure gets a fresh crossing deadline; phase changes within that crossing retain the deadline. Overall preparation age and attempt budget remain unchanged. Rate-limited approach-wait logs record reason, player/target tiles, follow flag and crossing age. Doorway geometry is unchanged: the curtain tile already satisfies approach distance. Live retry validation required.
+
 - Version 1.1.23 requests zoom restoration on entry to the blackjacking states and checks drift once per second there only, confirming queued writes by readback. Travel/preparation/healing/break states do not enforce preferred zoom. Visibility recovery retains its two-step budget through brief visibility, has a floor relative to preferred zoom, and releases its temporary override after eight seconds of stable stationary visibility. This supersedes adoption of arbitrary in-tent zoom changes; zero config captures startup preference. Live return and recovery validation required.
 
 - Version 1.1.22 extends southern-target visibility recovery to the disarmed Knock-Out stage, bounded to five seconds before re-equipping/fallback. This stage only adjusts camera; it never approaches while unarmed. Normal acquisition/continuous clicking retain zoom-out and approach recovery from 1.1.21. Live combat-reset validation remains required.
