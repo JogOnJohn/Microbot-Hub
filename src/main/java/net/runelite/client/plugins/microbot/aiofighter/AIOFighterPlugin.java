@@ -65,7 +65,7 @@ import java.util.stream.Collectors;
 @PluginDependency(MInventorySetupsPlugin.class)
 @Slf4j
 public class AIOFighterPlugin extends Plugin {
-    public static final String version = "2.2.4";
+    public static final String version = "2.2.5";
     public static boolean needShopping = false;
     private static final String SET = "Set";
     private static final String CENTER_TILE = ColorUtil.wrapWithColorTag("Center Tile", JagexColors.MENU_TARGET);
