@@ -22,7 +22,7 @@ import java.util.function.Supplier;
 @Slf4j
 public class ClueSolverScript extends Script {
     private Future<?> currentTask;
-    private Future<?> itemRequirementsTask;
+    private volatile Future<?> itemRequirementsTask;
     private volatile ClueScroll currentClue;
     private final ScheduledExecutorService executorService = Executors.newScheduledThreadPool(3);
 
