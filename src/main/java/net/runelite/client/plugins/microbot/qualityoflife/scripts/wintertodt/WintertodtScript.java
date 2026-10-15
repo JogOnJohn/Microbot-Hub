@@ -9,6 +9,7 @@ import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.ObjectID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.client.util.Text;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.Script;
@@ -243,9 +244,14 @@ public class WintertodtScript extends Script {
         if (widgetText == null) {
             return -1;
         }
-        Matcher matcher = DIGITS.matcher(widgetText);
+        Matcher matcher = DIGITS.matcher(Text.removeTags(widgetText));
         if (matcher.find()) {
-            return Integer.parseInt(matcher.group());
+            try {
+                int hp = Integer.parseInt(matcher.group());
+                return hp <= 100 ? hp : -1;
+            } catch (NumberFormatException e) {
+                return -1;
+            }
         }
         return -1;
     }
