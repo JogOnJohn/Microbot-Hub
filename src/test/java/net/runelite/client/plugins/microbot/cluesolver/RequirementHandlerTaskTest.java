@@ -138,7 +138,42 @@ class RequirementHandlerTaskTest {
         assertTrue(result.join());
 
         task.onGameTick(new GameTick());
-        assertEquals(1, executor.queued.size());
+        assertEquals(0, executor.queued.size());
+    }
+
+    @Test
+    void failedTaskIgnoresLateTicksEvenIfBankOpens() {
+        task.run();
+        executor.runAll();
+        assertFalse(result.join());
+        bank.when(Rs2Bank::isOpen).thenReturn(true);
+        bank.clearInvocations();
+
+        task.onGameTick(new GameTick());
+
+        bank.verifyNoInteractions();
+        assertEquals(0, executor.queued.size());
+    }
+
+    @Test
+    void completedTaskDropsAlreadyQueuedBankWork() {
+        task.run();
+        task.cancel();
+        bank.clearInvocations();
+
+        executor.runAll();
+
+        bank.verifyNoInteractions();
+        assertFalse(result.join());
+    }
+
+    @Test
+    void cancellationBeforeStartDoesNotQueueBankWork() {
+        task.cancel();
+        task.run();
+        assertEquals(0, executor.queued.size());
+        assertFalse(result.join());
+        bank.verifyNoInteractions();
     }
 
     @Test
