@@ -32,7 +32,7 @@ class ClueSolverScriptRequirementsTest {
 
         assertNull(field("currentClue").get(script));
         assertTrue(requirements.isCancelled());
-        verify(script.overlay).updateTaskStatus("Clue Solver Script stopped.");
+        verify(script.overlay).updateTaskStatus("Clue Solver Script stopped");
     }
     @Test
     void pendingRequirementsDoNotLoseTheirClueToANewClue() throws Exception {
