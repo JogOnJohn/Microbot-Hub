@@ -7,8 +7,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
 import net.runelite.client.plugins.cluescrolls.ClueScrollPlugin;
 import net.runelite.client.plugins.cluescrolls.clues.CoordinateClue;
+import net.runelite.client.eventbus.EventBus;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -17,6 +19,21 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class ClueSolverScriptRequirementsTest {
+    @Test
+    void shutdownClearsClueAndCancelsOutstandingRequirements() throws Exception {
+        RecordingScript script = new RecordingScript();
+        script.overlay = mock(ClueSolverOverlay.class);
+        script.eventBus = mock(EventBus.class);
+        field("currentClue").set(script, mock(CoordinateClue.class));
+        CompletableFuture<Boolean> requirements = new CompletableFuture<>();
+        field("itemRequirementsTask").set(script, requirements);
+
+        script.shutdown();
+
+        assertNull(field("currentClue").get(script));
+        assertTrue(requirements.isCancelled());
+        verify(script.overlay).updateTaskStatus("Clue Solver Script stopped.");
+    }
     @Test
     void pendingRequirementsDoNotLoseTheirClueToANewClue() throws Exception {
         RecordingScript script = new RecordingScript();
