@@ -102,8 +102,10 @@ public class ClueSolverScript extends Script {
                     if (currentClue == clue) onRequirementsComplete(success);
                 })
                         .exceptionally(ex -> {
-                            log.error("Failed to fulfill requirements", ex);
-                            overlay.updateTaskStatus("Requirement fulfillment failed");
+                            if (!requirementFuture.isCancelled()) {
+                                log.error("Failed to fulfill requirements", ex);
+                                overlay.updateTaskStatus("Requirement fulfillment failed");
+                            }
                             return null;
                         });
 
@@ -203,6 +205,7 @@ public class ClueSolverScript extends Script {
 
     @Override
     public void shutdown() {
+        currentClue = null;
         super.shutdown();
         if (currentTask != null && !currentTask.isDone()) {
             currentTask.cancel(true);
