@@ -1180,6 +1180,14 @@ public class GotrScript extends Script {
                 && Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation().getX()) <= hugeMineX;
     }
 
+    static boolean isActiveAltarRenderable(Renderable renderable) {
+        if (!(renderable instanceof DynamicObject)) {
+            return false;
+        }
+        Animation animation = ((DynamicObject) renderable).getAnimation();
+        return animation != null && animation.getId() == 9363;
+    }
+
     public static boolean isGuardianPortal(GameObject gameObject) {
         return guardianPortalInfo.containsKey(gameObject.getId());
     }
@@ -1318,12 +1326,7 @@ public class GotrScript extends Script {
     }
 
     private static boolean isActiveGuardianPortal(GameObject portal) {
-        if (!(portal.getRenderable() instanceof DynamicObject)) {
-            return false;
-        }
-        DynamicObject dynamicObject = (DynamicObject) portal.getRenderable();
-        return dynamicObject.getAnimation() != null
-            && dynamicObject.getAnimation().getId() == ACTIVE_GUARDIAN_PORTAL_ANIMATION;
+        return isActiveAltarRenderable(portal.getRenderable());
     }
 
     private static boolean hasAltarTransitionStarted(
