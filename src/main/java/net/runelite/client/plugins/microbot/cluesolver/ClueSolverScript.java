@@ -22,8 +22,8 @@ import java.util.function.Supplier;
 @Slf4j
 public class ClueSolverScript extends Script {
     private Future<?> currentTask;
-    private Future<?> itemRequirementsTask;
-    private ClueScroll currentClue;
+    private volatile Future<?> itemRequirementsTask;
+    private volatile ClueScroll currentClue;
     private final ScheduledExecutorService executorService = Executors.newScheduledThreadPool(3);
 
     @Inject
@@ -81,30 +81,37 @@ public class ClueSolverScript extends Script {
 
         ClueScroll clue = clueScrollPlugin.getClue();
         if (clue != null && !clue.equals(currentClue)) {
+            if (itemRequirementsTask != null && !itemRequirementsTask.isDone()) {
+                return;
+            }
             currentClue = clue;
             overlay.updateTaskStatus("New Clue Detected: " + clue.getClass().getSimpleName());
             log.info("New Clue Detected: {}", clue.getClass().getSimpleName());
 
             List<ItemRequirement> requiredItems = determineRequiredItems(clue);
             if (!requiredItems.isEmpty()) {
-                if (itemRequirementsTask != null && !itemRequirementsTask.isDone()) {
-                    log.warn("Previous item requirements task is still running, skipping this clue.");
-                    return;
-                }
                 RequirementHandlerTask requirementHandlerTask = new RequirementHandlerTask(client, requiredItems, eventBus, clueScrollPlugin, clueSolverPlugin, executorService);
 
                 CompletableFuture<Boolean> requirementFuture = new CompletableFuture<>();
                 requirementHandlerTask.setFuture(requirementFuture);
 
-                requirementFuture.thenRun(this::onRequirementsMet)
+                requirementFuture.whenComplete((success, error) -> {
+                    if (requirementFuture.isCancelled()) requirementHandlerTask.cancel();
+                });
+                requirementFuture.thenAccept(success -> {
+                    if (currentClue == clue) onRequirementsComplete(success);
+                })
                         .exceptionally(ex -> {
                             log.error("Failed to fulfill requirements", ex);
                             overlay.updateTaskStatus("Requirement fulfillment failed");
                             return null;
                         });
 
-                if (!executorService.isShutdown()) {
-                   itemRequirementsTask = executorService.submit(requirementHandlerTask);
+                itemRequirementsTask = requirementFuture;
+                try {
+                    executorService.submit(requirementHandlerTask);
+                } catch (RejectedExecutionException e) {
+                    requirementHandlerTask.cancel();
                 }
             } else {
                 startClueTask(createClueTaskForClue(clue));
@@ -150,7 +157,15 @@ public class ClueSolverScript extends Script {
         return (taskSupplier != null) ? taskSupplier.get() : null;
     }
 
-    private void onRequirementsMet() {
+    void onRequirementsComplete(Boolean success) {
+        if (Boolean.TRUE.equals(success)) {
+            onRequirementsMet();
+        } else {
+            overlay.updateTaskStatus("Requirement fulfillment failed");
+        }
+    }
+
+    void onRequirementsMet() {
         if (currentClue != null) {
             overlay.updateTaskStatus("Starting clue task...");
             startClueTask(createClueTaskForClue(currentClue));

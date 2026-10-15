@@ -35,6 +35,7 @@ public class RequirementHandlerTask extends ClueTask {
     private volatile ItemRequirement currentRequirement;
     private volatile BankLocation targetBank;
     private final AtomicBoolean bankStepRunning = new AtomicBoolean(false);
+    private final AtomicBoolean completed = new AtomicBoolean(false);
 
     @Inject
     private ClientThread clientThread;
@@ -48,20 +49,27 @@ public class RequirementHandlerTask extends ClueTask {
 
     @Override
     protected boolean executeTask() {
+        if (completed.get()) return false;
         eventBus.register(this);
+        if (completed.get()) {
+            eventBus.unregister(this);
+            return false;
+        }
         log.info("Checking for missing items.");
         runBankStep(this::checkForMissingItems);
         return true;
     }
 
     private void runBankStep(Runnable step) {
-        if (!bankStepRunning.compareAndSet(false, true)) {
+        if (completed.get() || !bankStepRunning.compareAndSet(false, true)) {
             return;
         }
         try {
             backgroundExecutor.submit(() -> {
                 try {
-                    step.run();
+                    if (!completed.get()) {
+                        step.run();
+                    }
                 } catch (Exception e) {
                     log.warn("Requirement bank step failed: {}", e.getMessage(), e);
                     completeTask(false);
@@ -175,12 +183,14 @@ public class RequirementHandlerTask extends ClueTask {
             return;
         }
 
-        itemReceivedFuture = new CompletableFuture<>();
+        CompletableFuture<Boolean> receivedFuture = new CompletableFuture<>();
+        itemReceivedFuture = receivedFuture;
         Rs2Bank.withdrawAndEquip(itemName);
 
         backgroundExecutor.submit(() -> {
             try {
-                boolean received = itemReceivedFuture.get(5, TimeUnit.SECONDS);
+                boolean received = receivedFuture.get(5, TimeUnit.SECONDS);
+                if (completed.get()) return;
 
                 if (received) {
                     Microbot.log("Item " + itemName + " received: " + received);
@@ -191,7 +201,11 @@ public class RequirementHandlerTask extends ClueTask {
                     Rs2Bank.closeBank();
                     completeTask(false);
                 }
-            } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                completeTask(false);
+            } catch (ExecutionException | TimeoutException e) {
+                if (completed.get()) return;
                 log.warn("Error waiting for item {}: {}", itemName, e.getMessage());
                 Rs2Bank.closeBank();
                 completeTask(false);
@@ -201,7 +215,7 @@ public class RequirementHandlerTask extends ClueTask {
 
     @Subscribe
     public void onGameTick(GameTick event) {
-        if (bankStepRunning.get()) {
+        if (completed.get() || bankStepRunning.get()) {
             return;
         }
         if (Rs2Bank.isOpen() && currentRequirement == null) {
@@ -220,17 +234,28 @@ public class RequirementHandlerTask extends ClueTask {
 
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
-        if (event.getContainerId() == InventoryID.INVENTORY.getId() && currentRequirement != null && itemReceivedFuture != null && !itemReceivedFuture.isDone()) {
-            if (currentRequirement.fulfilledBy(event.getItemContainer().getItems())) {
-                itemReceivedFuture.complete(true);
+        ItemRequirement requirement = currentRequirement;
+        CompletableFuture<Boolean> pending = itemReceivedFuture;
+        if (!completed.get() && event.getContainerId() == InventoryID.INVENTORY.getId() && requirement != null && pending != null && !pending.isDone()) {
+            if (requirement.fulfilledBy(event.getItemContainer().getItems())) {
+                pending.complete(true);
             }
         }
     }
 
+    public void cancel() {
+        completeTask(false);
+    }
+
     @Override
     protected void completeTask(boolean success) {
-        super.completeTask(success);
+        if (!completed.compareAndSet(false, true)) return;
         eventBus.unregister(this);
+        CompletableFuture<Boolean> pending = itemReceivedFuture;
+        if (pending != null) pending.complete(false);
+        currentRequirement = null;
+        targetBank = null;
+        super.completeTask(success);
         log.info("Requirement handling task completed with status: {}", success ? "Success" : "Failure");
     }
 }
