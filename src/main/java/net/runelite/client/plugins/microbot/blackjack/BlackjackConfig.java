@@ -154,7 +154,7 @@ public interface BlackjackConfig extends Config
     @ConfigItem(
             keyName = "humanizerBreaks",
             name = "Random breaks",
-            description = "Take approximately 30-second breaks around every 10 minutes and 1-2 minute breaks every 20-30 minutes",
+            description = "Take scheduled breaks using the interval and duration ranges below, at safe blackjacking boundaries",
             position = 2,
             section = humanizerSection
     )
@@ -162,4 +162,52 @@ public interface BlackjackConfig extends Config
     {
         return true;
     }
+
+    @Range(min = 1, max = 240)
+    @ConfigItem(keyName = "microBreakIntervalMin", name = "Micro interval min (minutes)",
+            description = "Minimum time before a micro break; applied when the next break is scheduled",
+            position = 3, section = humanizerSection)
+    default int microBreakIntervalMin() { return 9; }
+
+    @Range(min = 1, max = 240)
+    @ConfigItem(keyName = "microBreakIntervalMax", name = "Micro interval max (minutes)",
+            description = "Maximum time before a micro break; reversed bounds are automatically ordered",
+            position = 4, section = humanizerSection)
+    default int microBreakIntervalMax() { return 11; }
+
+    @Range(min = 1, max = 600)
+    @ConfigItem(keyName = "microBreakDurationMin", name = "Micro duration min (seconds)",
+            description = "Minimum micro-break duration; applied when the break starts",
+            position = 5, section = humanizerSection)
+    default int microBreakDurationMin() { return 25; }
+
+    @Range(min = 1, max = 600)
+    @ConfigItem(keyName = "microBreakDurationMax", name = "Micro duration max (seconds)",
+            description = "Maximum micro-break duration; reversed bounds are automatically ordered",
+            position = 6, section = humanizerSection)
+    default int microBreakDurationMax() { return 35; }
+
+    @Range(min = 1, max = 240)
+    @ConfigItem(keyName = "smallBreakIntervalMin", name = "Small interval min (minutes)",
+            description = "Minimum time before a small break; applied when the next break is scheduled",
+            position = 7, section = humanizerSection)
+    default int smallBreakIntervalMin() { return 20; }
+
+    @Range(min = 1, max = 240)
+    @ConfigItem(keyName = "smallBreakIntervalMax", name = "Small interval max (minutes)",
+            description = "Maximum time before a small break; reversed bounds are automatically ordered",
+            position = 8, section = humanizerSection)
+    default int smallBreakIntervalMax() { return 30; }
+
+    @Range(min = 1, max = 600)
+    @ConfigItem(keyName = "smallBreakDurationMin", name = "Small duration min (seconds)",
+            description = "Minimum small-break duration; applied when the break starts",
+            position = 9, section = humanizerSection)
+    default int smallBreakDurationMin() { return 60; }
+
+    @Range(min = 1, max = 600)
+    @ConfigItem(keyName = "smallBreakDurationMax", name = "Small duration max (seconds)",
+            description = "Maximum small-break duration; reversed bounds are automatically ordered",
+            position = 10, section = humanizerSection)
+    default int smallBreakDurationMax() { return 120; }
 }

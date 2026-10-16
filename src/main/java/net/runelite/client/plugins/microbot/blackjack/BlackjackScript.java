@@ -150,10 +150,6 @@ public class BlackjackScript extends Script
     private static final int TARGET_CAMERA_PITCH_TOLERANCE = 8;
     private static final long HUMANIZER_MOUSE_MIN_INTERVAL_MS = 45_000;
     private static final long HUMANIZER_MOUSE_MAX_INTERVAL_MS = 120_001;
-    private static final long HUMANIZER_MICRO_BREAK_MIN_INTERVAL_MS = 540_000;
-    private static final long HUMANIZER_MICRO_BREAK_MAX_INTERVAL_MS = 660_001;
-    private static final long HUMANIZER_SMALL_BREAK_MIN_INTERVAL_MS = 1_200_000;
-    private static final long HUMANIZER_SMALL_BREAK_MAX_INTERVAL_MS = 1_800_001;
 
     private enum KnockoutResult
     {
@@ -451,10 +447,8 @@ public class BlackjackScript extends Script
         long now = System.currentTimeMillis();
         nextHumanizerMouseAt = scheduleFromNow(now,
                 HUMANIZER_MOUSE_MIN_INTERVAL_MS, HUMANIZER_MOUSE_MAX_INTERVAL_MS);
-        nextMicroBreakAt = scheduleFromNow(now,
-                HUMANIZER_MICRO_BREAK_MIN_INTERVAL_MS, HUMANIZER_MICRO_BREAK_MAX_INTERVAL_MS);
-        nextSmallBreakAt = scheduleFromNow(now,
-                HUMANIZER_SMALL_BREAK_MIN_INTERVAL_MS, HUMANIZER_SMALL_BREAK_MAX_INTERVAL_MS);
+        nextMicroBreakAt = now + configuredBreakInterval(true);
+        nextSmallBreakAt = now + configuredBreakInterval(false);
         humanizerMouseRecoverAt = 0;
         humanizerBreakUntil = 0;
         knockoutAttemptReadyAt = 0;
@@ -4310,14 +4304,13 @@ public class BlackjackScript extends Script
 
         if (config.humanizerBreaks() && now >= nextSmallBreakAt)
         {
-            startHumanizerBreak("Small break", randomBetween(60_000, 120_001));
-            nextMicroBreakAt = scheduleFromNow(humanizerBreakUntil,
-                    HUMANIZER_MICRO_BREAK_MIN_INTERVAL_MS, HUMANIZER_MICRO_BREAK_MAX_INTERVAL_MS);
+            startHumanizerBreak("Small break", configuredBreakDuration(false));
+            nextMicroBreakAt = humanizerBreakUntil + configuredBreakInterval(true);
             return true;
         }
         if (config.humanizerBreaks() && now >= nextMicroBreakAt)
         {
-            startHumanizerBreak("Micro break", randomBetween(25_000, 35_001));
+            startHumanizerBreak("Micro break", configuredBreakDuration(true));
             return true;
         }
         if (config.randomMouseRecovery() && now >= nextHumanizerMouseAt)
@@ -4423,13 +4416,11 @@ public class BlackjackScript extends Script
 
         if ("Micro break".equals(humanizerBreakType))
         {
-            nextMicroBreakAt = scheduleFromNow(now,
-                    HUMANIZER_MICRO_BREAK_MIN_INTERVAL_MS, HUMANIZER_MICRO_BREAK_MAX_INTERVAL_MS);
+            nextMicroBreakAt = now + configuredBreakInterval(true);
         }
         else
         {
-            nextSmallBreakAt = scheduleFromNow(now,
-                    HUMANIZER_SMALL_BREAK_MIN_INTERVAL_MS, HUMANIZER_SMALL_BREAK_MAX_INTERVAL_MS);
+            nextSmallBreakAt = now + configuredBreakInterval(false);
         }
         humanizerBreakUntil = 0;
         humanizerBreakType = "None";
@@ -4449,11 +4440,29 @@ public class BlackjackScript extends Script
         {
             humanizerBreakUntil = 0;
             humanizerBreakType = "None";
-            nextMicroBreakAt = scheduleFromNow(now,
-                    HUMANIZER_MICRO_BREAK_MIN_INTERVAL_MS, HUMANIZER_MICRO_BREAK_MAX_INTERVAL_MS);
-            nextSmallBreakAt = scheduleFromNow(now,
-                    HUMANIZER_SMALL_BREAK_MIN_INTERVAL_MS, HUMANIZER_SMALL_BREAK_MAX_INTERVAL_MS);
+            nextMicroBreakAt = now + configuredBreakInterval(true);
+            nextSmallBreakAt = now + configuredBreakInterval(false);
         }
+    }
+
+    private long configuredBreakInterval(boolean micro)
+    {
+        return randomBreakDelay(micro ? config.microBreakIntervalMin() : config.smallBreakIntervalMin(),
+                micro ? config.microBreakIntervalMax() : config.smallBreakIntervalMax(), 60_000, 240);
+    }
+
+    private long configuredBreakDuration(boolean micro)
+    {
+        return randomBreakDelay(micro ? config.microBreakDurationMin() : config.smallBreakDurationMin(),
+                micro ? config.microBreakDurationMax() : config.smallBreakDurationMax(), 1_000, 600);
+    }
+
+    static long randomBreakDelay(int minimum, int maximum, long unitMillis, int limit)
+    {
+        int first = Math.max(1, Math.min(limit, minimum));
+        int second = Math.max(1, Math.min(limit, maximum));
+        return ThreadLocalRandom.current().nextLong(Math.min(first, second) * unitMillis,
+                Math.max(first, second) * unitMillis + 1);
     }
 
     private int randomPickpocketDelay(boolean firstClick)
