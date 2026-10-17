@@ -42,6 +42,8 @@ Do not infer a menu miss from a disappearing menu alone. Correlate the verified 
 
 ## Pending Live Validation
 
+- Version 1.1.26 initializes session XP from the first positive logged-in Thieving snapshot on the client thread before gameplay actions. Zero/unavailable snapshots keep the overlay at zero and defer actions until skills load. Login StatChanged events before initialization cannot become Knock-Out feedback. Break/relogin snapshots do not reset an established baseline. Regression coverage includes logged-out startup and subsequent snapshots; live validation pending.
+
 - Version 1.1.25 exposes micro/small break interval ranges (minutes) and duration ranges (seconds). Defaults remain 9-11 minutes/25-35 seconds and 20-30 minutes/60-120 seconds. Ranges are ordered/clamped; interval edits apply at the next scheduling event and duration edits at the next break start. Existing deadline, small-break priority, safe-boundary and interruption policies are unchanged. No click timing, lure, restock or combat changes. Config UI/live validation remains required.
 
 - Version 1.1.24 clears the abandoned crossing timer/pending curtain action when entering APPROACHING_TARGET for a new lure attempt. The next confirmed lure gets a fresh crossing deadline; phase changes within that crossing retain the deadline. Overall preparation age and attempt budget remain unchanged. Rate-limited approach-wait logs record reason, player/target tiles, follow flag and crossing age. Doorway geometry is unchanged: the curtain tile already satisfies approach distance. Live retry validation required.

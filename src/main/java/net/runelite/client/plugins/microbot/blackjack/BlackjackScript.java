@@ -263,7 +263,7 @@ public class BlackjackScript extends Script
 
     private BlackjackConfig config;
     private Instant startTime;
-    private int startXp;
+    private volatile int startXp = -1;
     private int lastObservedThievingXp;
     private int targetIndex = -1;
     private int southernTentLureTargetIndex = -1;
@@ -460,8 +460,8 @@ public class BlackjackScript extends Script
         shutdownRequested = false;
         stopReason = "";
         startTime = Instant.now();
-        startXp = currentThievingXp();
-        lastObservedThievingXp = startXp;
+        startXp = -1;
+        lastObservedThievingXp = 0;
         transition(BlackjackState.STARTING, "Validate setup");
 
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
@@ -478,6 +478,11 @@ public class BlackjackScript extends Script
                     return;
                 }
 
+                if (!ensureXpBaseline())
+                {
+                    nextAction = "Wait for logged-in Thieving XP snapshot";
+                    return;
+                }
                 updateHealingRequirement();
                 if (handleBreakPreparation())
                 {
@@ -3872,7 +3877,7 @@ public class BlackjackScript extends Script
 
     public void onStatChanged(Skill skill, int xp)
     {
-        if (skill != Skill.THIEVING)
+        if (skill != Skill.THIEVING || startXp < 0)
         {
             return;
         }
@@ -5445,8 +5450,44 @@ public class BlackjackScript extends Script
                 () -> Microbot.getClient().getSkillExperience(Skill.THIEVING)).orElse(0);
     }
 
+    private boolean ensureXpBaseline()
+    {
+        if (startXp >= 0)
+        {
+            return true;
+        }
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            if (!Microbot.isLoggedIn())
+            {
+                return false;
+            }
+            return initializeXpBaseline(Microbot.getClient().getSkillExperience(Skill.THIEVING));
+        }).orElse(false);
+    }
+
+    boolean initializeXpBaseline(int xp)
+    {
+        if (startXp >= 0)
+        {
+            return true;
+        }
+        // Supported targets require 45+ Thieving, so zero is an unpopulated login snapshot.
+        if (xp <= 0)
+        {
+            return false;
+        }
+        lastObservedThievingXp = xp;
+        startXp = xp;
+        log.info("Initialized blackjack session Thieving XP baseline: {}", xp);
+        return true;
+    }
+
     public int getXpGained()
     {
+        if (startXp < 0)
+        {
+            return 0;
+        }
         return Math.max(0, currentThievingXp() - startXp);
     }
 
