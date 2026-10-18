@@ -14,6 +14,7 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.microbot.PluginConstants;
 import net.runelite.client.plugins.microbot.blackjack.BlackjackPlugin;
+import net.runelite.client.plugins.microbot.blackjack.BlackjackTarget;
 
 import javax.inject.Inject;
 
@@ -119,7 +120,8 @@ public class BlackjackEntrySwapPlugin extends Plugin
         {
             return false;
         }
-        return npc.getName().equalsIgnoreCase("Bandit")
-                || npc.getName().equalsIgnoreCase("Menaphite Thug");
+        return BlackjackTarget.BANDIT_41.matches(npc.getName(), npc.getCombatLevel())
+                || BlackjackTarget.BANDIT_56.matches(npc.getName(), npc.getCombatLevel())
+                || BlackjackTarget.MENAPHITE_THUG.matches(npc.getName(), npc.getCombatLevel());
     }
 }

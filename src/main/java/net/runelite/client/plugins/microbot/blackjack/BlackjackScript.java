@@ -75,7 +75,6 @@ public class BlackjackScript extends Script
     private static final int CLOSED_CURTAIN_ID = 1533;
     private static final int OPEN_CURTAIN_ID = 1534;
     private static final WorldPoint WINE_MERCHANT_TILE = new WorldPoint(3359, 2990, 0);
-    private static final String WINE_EXIT_OBJECT_NAME = "Curtain";
 
     private static final int WINE_ID = 1993;
     private static final int NOTED_WINE_ID = 1994;
@@ -264,6 +263,8 @@ public class BlackjackScript extends Script
     private BlackjackConfig config;
     private Instant startTime;
     private volatile int startXp = -1;
+    private volatile BlackjackTarget automaticTarget;
+    private long banditDoorCloseAttemptAt;
     private int lastObservedThievingXp;
     private int targetIndex = -1;
     private int southernTentLureTargetIndex = -1;
@@ -377,6 +378,8 @@ public class BlackjackScript extends Script
         breakPhase = BreakPhase.NONE;
         breakRequestedAt = 0;
         this.config = config;
+        automaticTarget = null;
+        banditDoorCloseAttemptAt = 0;
         outcomes.clear();
         successfulKnockouts = 0;
         failedKnockouts = 0;
@@ -2235,6 +2238,32 @@ public class BlackjackScript extends Script
             }
         }
 
+        if (selectedTarget() != BlackjackTarget.MENAPHITE_THUG)
+        {
+            if (!isInsideHouse())
+            {
+                transition(BlackjackState.RETURNING_TO_HOUSE, "Return inside marked Bandit house");
+                return;
+            }
+            Rs2TileObjectModel openDoor = findWineDoor("Close");
+            if (openDoor != null)
+            {
+                long now = System.currentTimeMillis();
+                if (now - banditDoorCloseAttemptAt >= 3_000
+                        && interactWithWineDoor(openDoor, "Close", "Secure Bandit house before blackjacking"))
+                {
+                    banditDoorCloseAttemptAt = now;
+                }
+                return;
+            }
+            if (findWineDoor("Open") == null)
+            {
+                waitForWineDoor("Resolve Bandit house door before blackjacking");
+                return;
+            }
+            banditDoorCloseAttemptAt = 0;
+        }
+
         Rs2NpcModel target = findEligibleTarget();
         if (target == null)
         {
@@ -2250,7 +2279,7 @@ public class BlackjackScript extends Script
 
         targetIndex = target.getIndex();
         targetDescription = target.getName() + " (level " + target.getCombatLevel() + ")";
-        if (recoverHiddenSouthernTarget(target))
+        if (recoverHiddenHouseTarget(target))
         {
             return;
         }
@@ -2359,7 +2388,7 @@ public class BlackjackScript extends Script
             return;
         }
 
-        if (recoverHiddenSouthernTarget(target))
+        if (recoverHiddenHouseTarget(target))
         {
             return;
         }
@@ -2824,7 +2853,7 @@ public class BlackjackScript extends Script
         {
             Rs2NpcModel target = currentTarget();
             if (target != null && combatVisibilityRecoveryAllowed(now, combatResetPhaseAt)
-                    && recoverHiddenSouthernTarget(target, false))
+                    && recoverHiddenHouseTarget(target, false))
             {
                 nextAction = "Recover view for disarmed Knock-Out";
                 return true;
@@ -3432,14 +3461,11 @@ public class BlackjackScript extends Script
         }
         else
         {
-            WorldPoint insideTile = activeWineDoorInsideTile();
             door = new Rs2TileObjectQueryable()
-                    .withName(WINE_EXIT_OBJECT_NAME)
                     .where(object -> {
-                        WorldPoint location = object.getWorldLocation();
-                        return location != null
-                                && location.distanceTo2D(insideTile) <= 1
-                                && hasObjectAction(object, action);
+                        ObjectComposition composition = object.getObjectComposition();
+                        return composition != null && isBanditWineDoor(composition.getName(),
+                                object.getWorldLocation(), composition.getActions(), action);
                     })
                     .first();
         }
@@ -3448,6 +3474,15 @@ public class BlackjackScript extends Script
             wineDoorMissingSince = 0;
         }
         return door;
+    }
+
+    static boolean isBanditWineDoor(String name, WorldPoint location, String[] actions, String action)
+    {
+        return "Door".equalsIgnoreCase(name) && location != null
+                && location.getPlane() == BANDIT_WINE_DOOR_INSIDE_TILE.getPlane()
+                && location.distanceTo2D(BANDIT_WINE_DOOR_INSIDE_TILE) <= 1
+                && actions != null && Arrays.stream(actions).filter(Objects::nonNull)
+                .anyMatch(candidate -> candidate.equalsIgnoreCase(action));
     }
 
     private Rs2TileObjectModel findSouthTentCurtain(String action)
@@ -3925,18 +3960,7 @@ public class BlackjackScript extends Script
         {
             return false;
         }
-        BlackjackTarget target = selectedTarget();
-        switch (target)
-        {
-            case BANDIT_41:
-                return npc.getName().equalsIgnoreCase("Bandit") && npc.getCombatLevel() == 41;
-            case BANDIT_56:
-                return npc.getName().equalsIgnoreCase("Bandit") && npc.getCombatLevel() == 56;
-            case MENAPHITE_THUG:
-                return npc.getName().equalsIgnoreCase("Menaphite Thug");
-            default:
-                return false;
-        }
+        return selectedTarget().matches(npc.getName(), npc.getCombatLevel());
     }
 
     private String expectedTargetDescription()
@@ -3956,17 +3980,26 @@ public class BlackjackScript extends Script
 
     private BlackjackTarget selectedTarget()
     {
+        if ((config == null || config.target() == BlackjackTarget.AUTO) && automaticTarget != null)
+        {
+            return automaticTarget;
+        }
+        return selectTargetForLevel(config != null && config.target() != BlackjackTarget.AUTO
+                ? 0 : Rs2Player.getRealSkillLevel(Skill.THIEVING));
+    }
+
+    BlackjackTarget selectTargetForLevel(int thievingLevel)
+    {
         BlackjackTarget configuredTarget = config == null ? BlackjackTarget.AUTO : config.target();
         if (configuredTarget != BlackjackTarget.AUTO)
         {
             return configuredTarget;
         }
-        int thievingLevel = Rs2Player.getRealSkillLevel(Skill.THIEVING);
-        if (thievingLevel < 55)
+        if (automaticTarget == null && thievingLevel > 0)
         {
-            return BlackjackTarget.BANDIT_41;
+            automaticTarget = BlackjackTarget.forLevel(thievingLevel);
         }
-        return thievingLevel < 70 ? BlackjackTarget.BANDIT_56 : BlackjackTarget.MENAPHITE_THUG;
+        return automaticTarget == null ? BlackjackTarget.forLevel(thievingLevel) : automaticTarget;
     }
 
     private boolean hasCurrentKnockoutPickpocketClick()
@@ -3976,17 +4009,7 @@ public class BlackjackScript extends Script
 
     private int requiredThievingLevel(BlackjackTarget target)
     {
-        switch (target)
-        {
-            case BANDIT_41:
-                return 45;
-            case BANDIT_56:
-                return 55;
-            case MENAPHITE_THUG:
-                return 65;
-            default:
-                return 45;
-        }
+        return target.requiredThievingLevel();
     }
 
     private boolean hasBlackjackEquipped()
@@ -4611,17 +4634,16 @@ public class BlackjackScript extends Script
         return visibilityCameraZoom >= 0 ? visibilityCameraZoom : targetCameraZoom;
     }
 
-    private boolean recoverHiddenSouthernTarget(Rs2NpcModel target)
+    private boolean recoverHiddenHouseTarget(Rs2NpcModel target)
     {
-        return recoverHiddenSouthernTarget(target, true);
+        return recoverHiddenHouseTarget(target, true);
     }
 
-    private boolean recoverHiddenSouthernTarget(Rs2NpcModel target, boolean allowApproach)
+    private boolean recoverHiddenHouseTarget(Rs2NpcModel target, boolean allowApproach)
     {
         WorldPoint playerTile = Rs2Player.getWorldLocation();
         WorldPoint targetTile = target.getWorldLocation();
-        if (selectedTarget() != BlackjackTarget.MENAPHITE_THUG
-                || !isInsideSouthTent(playerTile) || !isInsideSouthTent(targetTile))
+        if (!isInsideActiveHouse(playerTile) || !isInsideActiveHouse(targetTile))
         {
             return false;
         }
@@ -4641,7 +4663,7 @@ public class BlackjackScript extends Script
                     restoreZoomAfterTravel = true;
                     zoomRestore.reset();
                     lastCameraZoomAt = 0;
-                    log.info("Visible southern target stable; restoring preferred zoom {}", targetCameraZoom);
+                    log.info("Visible blackjack target stable; restoring preferred zoom {}", targetCameraZoom);
                 }
             }
             else
@@ -4651,7 +4673,7 @@ public class BlackjackScript extends Script
             return false;
         }
         visibilityStableSince = 0;
-        nextAction = "Recover off-screen southern tent target";
+        nextAction = "Recover off-screen blackjack target";
         long now = System.currentTimeMillis();
         if (Rs2Player.isMoving() || Microbot.getClient().isMenuOpen()
                 || now < nextHiddenTargetRecoveryAt)
@@ -4676,11 +4698,20 @@ public class BlackjackScript extends Script
             zoomRestore.reset();
             Rs2Camera.setZoom(visibilityCameraZoom);
             lastCameraZoomAt = now;
-            log.info("Off-screen southern target: zoom {} -> {} target={}", zoom, visibilityCameraZoom, targetTile);
+            log.info("Off-screen blackjack target: zoom {} -> {} target={}", zoom, visibilityCameraZoom, targetTile);
         }
         else if (allowApproach && playerTile.distanceTo2D(targetTile) > 1)
         {
-            walkSouthernRoute(targetTile, true, "Approach off-screen southern tent target");
+            if (selectedTarget() == BlackjackTarget.MENAPHITE_THUG)
+            {
+                walkSouthernRoute(targetTile, true, "Approach off-screen southern tent target");
+            }
+            else
+            {
+                Rs2Walker.walkFastCanvas(targetTile);
+                lastInteractionAt = now;
+                nextAction = "Approach off-screen Bandit inside marked house";
+            }
         }
         return true;
     }

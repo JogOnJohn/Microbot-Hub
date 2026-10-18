@@ -38,19 +38,25 @@ class BlackjackCombatDetectionTest
     @Test
     void banditDetectionRespectsSelectedLevel() throws Exception
     {
-        BlackjackScript script = script(BlackjackTarget.BANDIT_41);
-        try
+        for (BlackjackTarget target : new BlackjackTarget[]{BlackjackTarget.BANDIT_41, BlackjackTarget.BANDIT_56})
         {
-            Player player = (Player) Proxy.newProxyInstance(Player.class.getClassLoader(),
-                    new Class<?>[]{Player.class}, (proxy, method, args) -> null);
-            WorldPoint inside = new WorldPoint(3358, 2993, 0);
-            assertTrue(script.isBlackjackAttacker(npc("Bandit", 41, inside, player), player));
-            assertFalse(script.isBlackjackAttacker(npc("Bandit", 56, inside, player), player));
-            assertFalse(script.isBlackjackAttacker(npc("Genie", 0, inside, player), player));
-        }
-        finally
-        {
-            dispose(script);
+            BlackjackScript script = script(target);
+            try
+            {
+                Player player = (Player) Proxy.newProxyInstance(Player.class.getClassLoader(),
+                        new Class<?>[]{Player.class}, (proxy, method, args) -> null);
+                WorldPoint inside = new WorldPoint(3358, 2993, 0);
+                int level = target == BlackjackTarget.BANDIT_41 ? 41 : 56;
+                assertTrue(script.isBlackjackAttacker(npc("Bandit", level, inside, player), player));
+                assertFalse(script.isBlackjackAttacker(npc("Bandit", level == 41 ? 56 : 41, inside, player), player));
+                assertFalse(script.isBlackjackAttacker(npc("Genie", 0, inside, player), player));
+                assertFalse(script.isBlackjackAttacker(npc("Bandit", level,
+                        new WorldPoint(3350, 2954, 0), player), player));
+            }
+            finally
+            {
+                dispose(script);
+            }
         }
     }
 

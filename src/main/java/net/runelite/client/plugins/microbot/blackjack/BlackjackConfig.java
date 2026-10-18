@@ -45,7 +45,7 @@ public interface BlackjackConfig extends Config
     default String guide()
     {
         return "Requires [JOJ] Blackjack Entry Swap to be enabled at the same time. Requires 45 Thieving, an equipped blackjack, coins, and a supported Pollnivneach target. " +
-                "Choose the target below. Automatic mode selects level 41 Bandits until 55, level 56 Bandits until 70, then Menaphite Thugs. Bandits must already be inside their marked house. Menaphite Thugs are automatically lured into the southern tent, and extra thugs are led back outside. " +
+                "Choose the target below. On enable, Automatic mode selects level 41 Bandits below 55 Thieving, level 56 Bandits below 70, then Menaphite Thugs. That choice stays fixed until re-enabled. Bandits require 45/55 Thieving respectively and must already be lured into the marked northern house near 3358,2993; the script closes its east Door. Bandits are not automatically lured. Menaphite Thugs are automatically lured into the southern tent, and extra thugs are led back outside. " +
                 "The helper selects Knock-Out while the target is standing and Pickpocket while it is unconscious. Keep attack options hidden. " +
                 "The combat reset can temporarily drop and recover one full wine to unequip the blackjack. " +
                 "For automatic restocking, carry noted wine and coins. The script isolates the target " +
