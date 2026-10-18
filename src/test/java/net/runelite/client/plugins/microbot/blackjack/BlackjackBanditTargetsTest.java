@@ -86,13 +86,17 @@ class BlackjackBanditTargetsTest
     }
 
     @Test
-    void banditWineDoorUsesLiveDoorActionsNotSouthernCurtain()
+    void banditEntranceAcceptsConfirmedCurtainAndLegacyDoorOnlyAtItsLocation()
     {
         WorldPoint door = new WorldPoint(3361, 2993, 0);
         assertTrue(BlackjackScript.isBanditWineDoor("Door", door, new String[]{"Open", null}, "Open"));
         assertTrue(BlackjackScript.isBanditWineDoor("Door", door, new String[]{"Close"}, "Close"));
         assertFalse(BlackjackScript.isBanditWineDoor("Door", door, new String[]{"Close"}, "Open"));
-        assertFalse(BlackjackScript.isBanditWineDoor("Curtain", door, new String[]{"Open"}, "Open"));
+        assertTrue(BlackjackScript.isBanditWineDoor("Curtain", door, new String[]{"Open"}, "Open"));
+        assertTrue(BlackjackScript.isBanditWineDoor("Curtain", door, new String[]{"Close"}, "Close"));
+        assertFalse(BlackjackScript.isBanditWineDoor("Curtain", door, new String[]{"Close"}, "Open"));
+        assertFalse(BlackjackScript.isBanditWineDoor("Curtain", new WorldPoint(3350, 2957, 0), new String[]{"Open"}, "Open"));
+        assertFalse(BlackjackScript.isBanditWineDoor("Crate", door, new String[]{"Open"}, "Open"));
         assertFalse(BlackjackScript.isBanditWineDoor("Door", new WorldPoint(3350, 2957, 0), new String[]{"Open"}, "Open"));
         assertFalse(BlackjackScript.isBanditWineDoor("Door", new WorldPoint(3361, 2993, 1), new String[]{"Open"}, "Open"));
         assertFalse(BlackjackScript.isBanditWineDoor("Door", null, new String[]{"Open"}, "Open"));

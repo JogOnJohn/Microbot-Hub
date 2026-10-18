@@ -4,7 +4,7 @@ Review date: 2026-10-18. Baseline: Blackjack 1.1.26 (`b3635ab2`).
 
 ## Corrected Findings
 
-- Both Bandit wine routes searched for Curtain after the Thug work. The original Bandit implementation (`234f7f6`) used Door near its east exit. Restore that name, retain live Open/Close actions and the existing location tolerance, and reject a different plane. This shared lookup also serves scheduled-break exits.
+- The operator confirmed the Bandit entrance is a Curtain. The initial audit incorrectly inferred Door from historical code (`234f7f6`); the resulting Door-only restriction in undeployed 1.1.27 was wrong and is superseded by 1.1.28. Accept Curtain plus legacy Door at the existing east-exit location tolerance, require the live Open/Close action, and reject a different plane. This shared lookup also serves scheduled-break exits.
 - Bandit acquisition could run with the player outside, and did not close an open door after initial arrival. Return inside first and confirm the east door is closed before clicking. No automatic Bandit luring is implemented.
 - AUTO re-evaluated level on each call, potentially changing NPC type/house mid-fight or mid-wine trip at level 55/70. Pin the first populated level-based choice for each enable session. Explicit choices remain available at higher player levels.
 - The bounded zoom/approach recovery was Thug-only. Apply it to an eligible target and player inside either supported house. Bandit approach stays local; Thug inner-curtain handling is unchanged. Disarmed recovery remains camera-only and bounded.
@@ -22,7 +22,7 @@ Review date: 2026-10-18. Baseline: Blackjack 1.1.26 (`b3635ab2`).
 
 Offline compilation/tests are not live gameplay proof. For EACH Bandit mode, validate:
 
-1. Equip blackjack, fill inventory with wine/coins/notes, isolate the correct Bandit, and start inside with the east door open. Confirm closure, correct target selection and repeated Knock-Out/Pickpocket cycles.
+1. Equip blackjack, fill inventory with wine/coins/notes, isolate the correct Bandit, and start inside with the east curtain open. Confirm closure, correct target selection and repeated Knock-Out/Pickpocket cycles.
 2. Start outside that house. Confirm entry, closure and acquisition; wrong-level/outside-house NPCs must not be selected.
 3. Put the NPC off-screen. Confirm bounded camera recovery and local approach without walking outside or moving the cursor beyond its hull.
 4. Trigger a combat reset: test disarming with a full inventory, re-equip/recover owned wine, safespot fallback if needed and successful resumption.

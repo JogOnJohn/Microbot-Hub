@@ -12,7 +12,7 @@ Enable both **JOJ Blackjack** and **JOJ Blackjack Entry Swap**. Entry Swap choos
 
 AUTO chooses from the loaded starting Thieving level: level-41 Bandit below 55, level-56 Bandit below 70, Thug from 70. It retains that choice for the session. Re-enable to choose again after levelling; explicit targets remain selectable at higher player levels.
 
-Bandit automation does not lure NPCs. Isolate exactly the selected Bandit before starting. Its supported house covers x3357-3360, y2991-2995 on plane 0. The east Door is secured before acquisition and when leaving/returning for wine. The southern Thug tent and its curtains are separate geometry.
+Bandit automation does not lure NPCs. Isolate exactly the selected Bandit before starting. Its supported house covers x3357-3360, y2991-2995 on plane 0. The east curtain is secured before acquisition and when leaving/returning for wine. The southern Thug tent and its curtains are separate geometry.
 
 ## Supplies
 

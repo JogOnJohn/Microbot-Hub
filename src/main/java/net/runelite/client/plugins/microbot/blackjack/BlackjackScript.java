@@ -3478,7 +3478,7 @@ public class BlackjackScript extends Script
 
     static boolean isBanditWineDoor(String name, WorldPoint location, String[] actions, String action)
     {
-        return "Door".equalsIgnoreCase(name) && location != null
+        return ("Curtain".equalsIgnoreCase(name) || "Door".equalsIgnoreCase(name)) && location != null
                 && location.getPlane() == BANDIT_WINE_DOOR_INSIDE_TILE.getPlane()
                 && location.distanceTo2D(BANDIT_WINE_DOOR_INSIDE_TILE) <= 1
                 && actions != null && Arrays.stream(actions).filter(Objects::nonNull)
