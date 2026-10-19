@@ -12,6 +12,20 @@ class MahoganyHomesHandoffTest {
     private final WorldPoint player = new WorldPoint(3000, 3300, 0);
     private final WorldPoint npc = new WorldPoint(3003, 3300, 0);
 
+    @Test void jeffTableRequiresNorthRoomAccessBeforeClickingThroughTheDoor() {
+        var table = MahoganyHomesContractData.JEFF.work.stream()
+            .filter(work -> work.objectId == 39989).findFirst().orElseThrow();
+        var southRoom = new WorldPoint(3238, 3449, 0);
+        var northRoom = new WorldPoint(3242, 3452, 0);
+        assertEquals(northRoom, table.access);
+        assertTrue(MahoganyHomesScript.needsWorkAccess(southRoom, table, 0, false));
+        assertTrue(MahoganyHomesScript.needsWorkAccess(southRoom, table, 1, true));
+        assertFalse(MahoganyHomesScript.furnitureHandoffReady(southRoom, northRoom, table,
+            table.location, table.objectId, true, true, Set.of(southRoom)));
+        assertTrue(MahoganyHomesScript.furnitureHandoffReady(northRoom, northRoom, table,
+            table.location, table.objectId, true, true, Set.of(northRoom)));
+    }
+
     @Test void barbaraContainedSimplePolygonMustCountAsClickable() {
         var hull = new SimplePolygon(new int[]{808, 838, 838, 808},
             new int[]{446, 446, 508, 508}, 4);

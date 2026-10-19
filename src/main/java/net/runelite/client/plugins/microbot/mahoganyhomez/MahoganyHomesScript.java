@@ -1439,7 +1439,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		boolean accessReachable = next.access == null || reachable.contains(next.access);
 		if (needsWorkAccess(position, next, workAttempts, accessReachable))
 		{
-			requestTravel(next.access, State.DO_CONTRACT);
+			// A radius may include the wrong side of a room door. Safe handoff remains available.
+			requestTravel(next.access, State.DO_CONTRACT, 0);
 			return;
 		}
 
@@ -1509,9 +1510,14 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void requestTravel(WorldPoint target, State returnState)
 	{
+		requestTravel(target, returnState, arrivalDistanceFor(returnState));
+	}
+
+	private void requestTravel(WorldPoint target, State returnState, int arrivalDistance)
+	{
 		travelTarget = target;
 		travelToNearestBank = false;
-		prepareTravel(returnState);
+		prepareTravel(returnState, arrivalDistance);
 	}
 
 	private void requestNearestBank(State returnState)
@@ -1523,8 +1529,13 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void prepareTravel(State returnState)
 	{
+		prepareTravel(returnState, arrivalDistanceFor(returnState));
+	}
+
+	private void prepareTravel(State returnState, int arrivalDistance)
+	{
 		snapshotGuard = new TransitionSnapshotGuard();
-        travelArrivalDistance = arrivalDistanceFor(returnState);
+        travelArrivalDistance = arrivalDistance;
         earlyHandoffWork = null;
         interactionProbeTick = -1;
         travelStartedAt = System.currentTimeMillis();
