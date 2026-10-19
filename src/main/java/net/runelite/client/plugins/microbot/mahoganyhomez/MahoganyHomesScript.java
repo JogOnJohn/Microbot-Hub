@@ -198,7 +198,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			transition(State.DO_CONTRACT, State.ERROR, () -> error != null, "Work failed"),
 			transition(State.DO_CONTRACT, State.TRAVEL, () -> needsTravel,
 				"Another floor has active work"),
-			transition(State.DO_CONTRACT, State.TURN_IN_CONTRACT, this::allFixed,
+			transition(State.DO_CONTRACT, State.TURN_IN_CONTRACT,
+				() -> workReadyToFinish(allFixed(), furnitureInteraction != null),
 				"Every active hotspot has an authoritative effect"),
 			transition(State.TRAVEL, State.ERROR, () -> error != null, "Microbot walker failed"),
 			transition(State.TRAVEL, State.GET_SETUP,
@@ -1895,6 +1896,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
     static boolean turnInReadyToFinish(boolean completed, boolean dialogueOpen, boolean pendingInteraction) {
         return completed && !dialogueOpen && !pendingInteraction;
+    }
+
+    static boolean workReadyToFinish(boolean fixed, boolean pendingInteraction) {
+        return fixed && !pendingInteraction;
     }
 
     private void advanceTurnInInteraction() {

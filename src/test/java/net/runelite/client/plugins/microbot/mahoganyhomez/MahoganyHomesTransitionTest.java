@@ -9,6 +9,13 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class MahoganyHomesTransitionTest
 {
+	@Test void finalFurnitureEffectMustReleaseItsInteractionBeforeHandIn()
+	{
+		assertFalse(MahoganyHomesScript.workReadyToFinish(true, true));
+		assertFalse(MahoganyHomesScript.workReadyToFinish(false, false));
+		assertTrue(MahoganyHomesScript.workReadyToFinish(true, false));
+	}
+
 	@Test void handInCannotAdvanceBeforeReleasingPendingInteraction()
 	{
 		assertFalse(MahoganyHomesScript.turnInReadyToFinish(true, false, true));
