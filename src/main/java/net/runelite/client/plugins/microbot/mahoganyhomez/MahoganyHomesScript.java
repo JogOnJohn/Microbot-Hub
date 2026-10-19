@@ -36,6 +36,8 @@ import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.tile.Rs2Tile;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.util.walker.WalkerState;
+import net.runelite.client.plugins.microbot.util.walker.interaction.InteractionRequest;
+import net.runelite.client.plugins.microbot.util.walker.interaction.InteractionResult;
 
 @Slf4j
 public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesScript.State>
@@ -72,6 +74,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     private int interactionProbeTick = -1;
     private boolean skipEarlyHandoff;
     private volatile Work earlyHandoffWork;
+    private InteractionRequest turnInInteraction;
+    private InteractionRequest furnitureInteraction;
+    private Work interactionWork;
     private long travelStartedAt;
     private WorldPoint travelOrigin;
 	private MahoganyHomesConfig config;
@@ -349,6 +354,14 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	public boolean run(MahoganyHomesConfig config)
 	{
+		if (config.interactionAwareTurnIn() || config.interactionAwareFurniture()) {
+			try { Class.forName("net.runelite.client.plugins.microbot.util.walker.interaction.InteractionRequest"); }
+			catch (ClassNotFoundException | LinkageError ex) {
+				Microbot.status = "Mahogany Homes: interaction-aware walking requires the paired client build";
+				log.error("Missing interaction-aware walker API", ex);
+				return false;
+			}
+		}
 		this.config = config;
 		loadAssignment();
 		mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() ->
@@ -367,6 +380,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	@Override
 	public void shutdown()
 	{
+		cancelInteractionRequests();
 		if (walker != null)
 		{
 			walker.cancel();
@@ -404,6 +418,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void resetCompletedContract()
 	{
+		cancelInteractionRequests();
 		assignmentMessage = null;
 		contactPickerSteps = 0;
 		contactSelectedTick = -1;
@@ -1395,6 +1410,10 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return;
 		}
 		List<Work> work = contract.work;
+		if (furnitureInteraction != null) {
+			advanceFurnitureInteraction();
+			return;
+		}
 		if (!isActiveOrFixedLayout(hotspotValues))
 		{
 			fail("The repair state at " + contract.homeowner + "'s home was not recognised. Check the contract and report the issue if it repeats.");
@@ -1464,6 +1483,15 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		}
 
 		missingObjectSince = -1;
+		if (config.interactionAwareFurniture() && next.access != null) {
+			final Work selected = next;
+			final int before = hotspotValues[next.hotspot];
+			interactionWork = next;
+			furnitureInteraction = InteractionRequest.object(next.objectId, next.location, next.access, action,
+				() -> interactionWorkChanged(before, Microbot.getVarbitValue(HOTSPOT_VARBITS[selected.hotspot])));
+			advanceFurnitureInteraction();
+			return;
+		}
 		pending = next;
 		activeWork = next;
 		pendingValue = hotspotValues[next.hotspot];
@@ -1793,6 +1821,28 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		String homeownerName = contract.homeowner;
 		int homeownerId = contract.npcId;
 		WorldPoint target = contract.destination;
+		if (config.interactionAwareTurnIn()) {
+			if (turnInRequested) {
+				if (readyTick - turnInAttemptTick < NO_PROGRESS_TICKS) return;
+				if (turnInAttempts >= MAX_ATTEMPTS) {
+					fail("The homeowner dialogue did not complete the contract after retrying.");
+					return;
+				}
+				turnInRequested = false;
+			}
+			if (turnInInteraction == null)
+				turnInInteraction = InteractionRequest.npc(homeownerId, homeownerName, target, "Talk-to", () -> complete);
+			InteractionResult result = Rs2Walker.walkWithBankedTransportsAndState(target, 0, turnInInteraction);
+			if (result == InteractionResult.SUCCEEDED) {
+				turnInRequested = true;
+				turnInAttemptTick = readyTick;
+				turnInAttempts++;
+				turnInInteraction = null;
+			} else if (result != InteractionResult.IN_PROGRESS) {
+				fail("Interaction-aware hand-in stopped: " + result + ". Check the homeowner and restart.");
+			}
+			return;
+		}
 		WorldPoint position = statePosition;
 		if (position.getPlane() != target.getPlane() || position.distanceTo(target) > 8)
 		{
@@ -1845,6 +1895,33 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	{
 		return message != null && COMPLETION_MESSAGE.matcher(message).matches();
 	}
+
+    private void advanceFurnitureInteraction() {
+        InteractionResult result = Rs2Walker.walkWithBankedTransportsAndState(
+            interactionWork.access, 0, furnitureInteraction);
+        if (result == InteractionResult.SUCCEEDED) {
+            completedEffects++;
+            activeWork = pending = null;
+            workAttempts = 0;
+            lastWorkProgressTick = readyTick;
+            furnitureInteraction = null;
+            interactionWork = null;
+        } else if (result != InteractionResult.IN_PROGRESS) {
+            fail("Interaction-aware furniture work stopped: " + result + ". Check the room and restart.");
+        }
+    }
+
+    static boolean interactionWorkChanged(int before, int after) {
+        return before == 1 && after == 2 || before == 3 && (after == 4 || after == 7)
+            || before == 4 && after == 7;
+    }
+
+    private void cancelInteractionRequests() {
+        if (turnInInteraction != null) Rs2Walker.cancelInteraction(turnInInteraction);
+        if (furnitureInteraction != null) Rs2Walker.cancelInteraction(furnitureInteraction);
+        turnInInteraction = furnitureInteraction = null;
+        interactionWork = null;
+    }
 
 	private void refreshHotspots()
 	{

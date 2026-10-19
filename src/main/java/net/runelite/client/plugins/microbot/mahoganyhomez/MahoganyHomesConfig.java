@@ -41,4 +41,12 @@ public interface MahoganyHomesConfig extends Config
 	{
 		return false;
 	}
+
+    @ConfigItem(keyName = "interactionAwareTurnIn", name = "Interaction-aware hand-in",
+        description = "Let a compatible walker approach and speak to the homeowner with confirmed input handoff", position = 3)
+    default boolean interactionAwareTurnIn() { return false; }
+
+    @ConfigItem(keyName = "interactionAwareFurniture", name = "Interaction-aware mapped furniture",
+        description = "Let a compatible walker approach mapped furniture and confirm its repair state change", position = 4)
+    default boolean interactionAwareFurniture() { return false; }
 }

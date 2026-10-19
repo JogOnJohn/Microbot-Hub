@@ -23,12 +23,12 @@ import net.runelite.client.ui.overlay.OverlayManager;
 	tags = {"mahogany homes", "construction", "microbot"},
 	enabledByDefault = false,
 	isExternal = true,
-	minClientVersion = "2.6.30",
+	minClientVersion = "2.6.34",
 	version = MahoganyHomesPlugin.version
 )
 public final class MahoganyHomesPlugin extends Plugin
 {
-	public static final String version = "1.0.19";
+	public static final String version = "1.0.20";
 
 	@Inject
 	Provider<MahoganyHomesScript> scriptProvider;
