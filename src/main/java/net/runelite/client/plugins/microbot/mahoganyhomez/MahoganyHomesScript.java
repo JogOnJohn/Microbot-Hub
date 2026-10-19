@@ -99,6 +99,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private boolean contractValidated;
 	private int contractArrivalWaitTick = -1;
 	private final ContractLayoutReadiness layoutReadiness = new ContractLayoutReadiness();
+	private final HomeownerValidationRecovery homeownerValidationRecovery = new HomeownerValidationRecovery();
 	private int pendingBankItemId = -1;
 	private int pendingBankItemQuantity;
 	private int pendingBankActionTick;
@@ -407,6 +408,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		contactPickerSteps = 0;
 		contactSelectedTick = -1;
 		layoutReadiness.reset();
+		homeownerValidationRecovery.reset();
 		complete = false;
 		nextContractReady = false;
 		completedAtTick = -1;
@@ -1267,6 +1269,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		assignedTier = tier;
 		contractArrived = false;
 		layoutReadiness.reset();
+		homeownerValidationRecovery.reset();
 		contractValidated = false;
 		contractArrivalWaitTick = -1;
 		configManager.setRSProfileConfiguration(MahoganyHomesConfig.GROUP, ASSIGNED_HOME_KEY, homeowner);
@@ -1281,6 +1284,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private void clearAssignment()
 	{
 		layoutReadiness.reset();
+		homeownerValidationRecovery.reset();
 		knownSupplyHomeowner = null;
 		knownSupplyTier = null;
 		assignedHomeowner = null;
@@ -1330,10 +1334,27 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		}
 		Set<WorldPoint> reachable = Rs2Tile.getReachableTilesFromTile(position).keySet();
 		Rs2NpcModel homeowner = Microbot.getRs2NpcCache().query().withId(contract.npcId).nearest();
-		if (homeowner == null || !isHomeownerReachable(position,
-			homeowner.getWorldLocation(), reachable))
+		WorldPoint homeownerLocation = homeowner == null ? null : homeowner.getWorldLocation();
+		HomeownerValidationRecovery.Decision access = homeownerValidationRecovery.check(
+			isHomeownerReachable(position, homeownerLocation, reachable), readyTick);
+		if (access != HomeownerValidationRecovery.Decision.READY)
 		{
-			fail("Could not speak to " + contract.homeowner + " to check the contract. Move near them, then restart.");
+			log.info("mahogany_validation_access | phase={} homeowner={} at={} liveAt={} npcTile={} reachableTiles={} tick={}",
+				access, contract.homeowner, position, Rs2Player.getWorldLocation(), homeownerLocation,
+				reachable.size(), readyTick);
+			if (access == HomeownerValidationRecovery.Decision.EXPIRED)
+			{
+				fail("Could not reach " + contract.homeowner + " after retrying contract validation. Check the door or obstacle, then restart.");
+				return;
+			}
+			Microbot.status = "Mahogany Homes: checking access to " + contract.homeowner;
+			if (access == HomeownerValidationRecovery.Decision.APPROACH)
+			{
+				skipEarlyHandoff = true;
+				requestTravel(homeownerLocation == null ? contract.destination
+					: homeownerApproach(position, homeownerLocation,
+						Rs2Tile.getReachableTilesFromTile(homeownerLocation, 1).keySet()), State.VALIDATE_CONTRACT);
+			}
 			return;
 		}
 		if (!hasTool(ItemCollections.HAMMER) || !hasTool(ItemCollections.SAW))
