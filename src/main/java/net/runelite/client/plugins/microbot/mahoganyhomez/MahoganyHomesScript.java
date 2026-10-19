@@ -1899,7 +1899,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
     private void advanceTurnInInteraction() {
         InteractionResult result = Rs2Walker.walkWithBankedTransportsAndState(
-            turnInInteraction.destination(), 0, turnInInteraction);
+            turnInInteraction.anchor, 0, turnInInteraction);
         if (result == InteractionResult.SUCCEEDED) {
             turnInRequested = true;
             turnInAttemptTick = readyTick;
