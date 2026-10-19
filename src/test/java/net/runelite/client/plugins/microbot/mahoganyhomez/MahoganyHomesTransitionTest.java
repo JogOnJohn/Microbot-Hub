@@ -9,6 +9,14 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class MahoganyHomesTransitionTest
 {
+	@Test void handInCannotAdvanceBeforeReleasingPendingInteraction()
+	{
+		assertFalse(MahoganyHomesScript.turnInReadyToFinish(true, false, true));
+		assertFalse(MahoganyHomesScript.turnInReadyToFinish(true, true, false));
+		assertFalse(MahoganyHomesScript.turnInReadyToFinish(false, false, false));
+		assertTrue(MahoganyHomesScript.turnInReadyToFinish(true, false, false));
+	}
+
 	private final WorldPoint position = new WorldPoint(3000, 3300, 0);
 
 	@Test void nullPlayerAfterPoolWaitsWithoutDeclaringArrival()

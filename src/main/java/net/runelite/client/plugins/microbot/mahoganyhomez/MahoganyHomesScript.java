@@ -219,7 +219,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			transition(State.TURN_IN_CONTRACT, State.TRAVEL, () -> needsTravel,
 				"Returning to the homeowner"),
 			transition(State.TURN_IN_CONTRACT, State.DONE,
-				() -> complete && !Rs2Dialogue.isInDialogue(),
+				() -> turnInReadyToFinish(complete, Rs2Dialogue.isInDialogue(), turnInInteraction != null),
 				"Contract completion message observed and dialogue closed"),
 			transition(State.DONE, State.GET_CONTRACT, () -> nextContractReady, "Getting the next contract"),
 			transition(State.ERROR, State.VALIDATE_CONTRACT, () -> error == null, "The error was cleared")
@@ -1786,6 +1786,11 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void turnIn()
 	{
+		// Observe the effect and release walker ownership before advancing dialogue/state.
+		if (turnInInteraction != null) {
+			advanceTurnInInteraction();
+			return;
+		}
 		refreshHotspots();
 		if (!allFixed())
 		{
@@ -1832,15 +1837,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			}
 			if (turnInInteraction == null)
 				turnInInteraction = InteractionRequest.npc(homeownerId, homeownerName, target, "Talk-to", () -> complete);
-			InteractionResult result = Rs2Walker.walkWithBankedTransportsAndState(target, 0, turnInInteraction);
-			if (result == InteractionResult.SUCCEEDED) {
-				turnInRequested = true;
-				turnInAttemptTick = readyTick;
-				turnInAttempts++;
-				turnInInteraction = null;
-			} else if (result != InteractionResult.IN_PROGRESS) {
-				fail("Interaction-aware hand-in stopped: " + result + ". Check the homeowner and restart.");
-			}
+			advanceTurnInInteraction();
 			return;
 		}
 		WorldPoint position = statePosition;
@@ -1895,6 +1892,23 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	{
 		return message != null && COMPLETION_MESSAGE.matcher(message).matches();
 	}
+
+    static boolean turnInReadyToFinish(boolean completed, boolean dialogueOpen, boolean pendingInteraction) {
+        return completed && !dialogueOpen && !pendingInteraction;
+    }
+
+    private void advanceTurnInInteraction() {
+        InteractionResult result = Rs2Walker.walkWithBankedTransportsAndState(
+            turnInInteraction.destination(), 0, turnInInteraction);
+        if (result == InteractionResult.SUCCEEDED) {
+            turnInRequested = true;
+            turnInAttemptTick = readyTick;
+            turnInAttempts++;
+            turnInInteraction = null;
+        } else if (result != InteractionResult.IN_PROGRESS) {
+            fail("Interaction-aware hand-in stopped: " + result + ". Check the homeowner and restart.");
+        }
+    }
 
     private void advanceFurnitureInteraction() {
         InteractionResult result = Rs2Walker.walkWithBankedTransportsAndState(
