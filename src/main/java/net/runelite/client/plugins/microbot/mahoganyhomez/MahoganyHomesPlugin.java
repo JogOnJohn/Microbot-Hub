@@ -28,7 +28,7 @@ import net.runelite.client.ui.overlay.OverlayManager;
 )
 public final class MahoganyHomesPlugin extends Plugin
 {
-	public static final String version = "1.0.15";
+	public static final String version = "1.0.17";
 
 	@Inject
 	Provider<MahoganyHomesScript> scriptProvider;
@@ -105,6 +105,10 @@ public final class MahoganyHomesPlugin extends Plugin
 	@Subscribe
 	public void onChatMessage(ChatMessage event)
 	{
+		if (event.getType() == ChatMessageType.DIALOG)
+		{
+			script.onAssignmentMessage(event.getMessage());
+		}
 		if (event.getType() == ChatMessageType.GAMEMESSAGE)
 		{
 			boolean alreadyComplete = script.isComplete();

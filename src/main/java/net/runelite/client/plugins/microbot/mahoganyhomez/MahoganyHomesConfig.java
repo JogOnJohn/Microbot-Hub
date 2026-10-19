@@ -21,10 +21,21 @@ public interface MahoganyHomesConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "useAstralContact",
+		name = "Use Astral Contact",
+		description = "Get contracts from Amy using Lunar Astral Contact. Carry contact runes (or a rune pouch) and teleport items for the walker.",
+		position = 1
+	)
+	default boolean useAstralContact()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "hideOverlay",
 		name = "Hide overlay",
 		description = "Hide the Mahogany Homes metrics overlay",
-		position = 1
+		position = 2
 	)
 	default boolean hideOverlay()
 	{

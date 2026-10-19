@@ -51,6 +51,11 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			+ "(?:his|her)\\s+home\\.?");
 	private static final Pattern CONTRACT_TIER = Pattern.compile(
 		"(?i)currently on an? (Beginner|Novice|Adept|Expert) Contract");
+	private static final Pattern CONTRACT_ANNOUNCEMENT = Pattern.compile(
+		"(?i)^(Beginner|Novice|Adept|Expert) Contract\\s*:\\s*Go see\\s+([a-z][a-z'-]*)\\b");
+	private volatile String assignmentMessage;
+	private int contactPickerSteps;
+	private int contactSelectedTick = -1;
 	private static final String ASSIGNED_HOME_KEY = "assignedHomeowner";
 	private static final String ASSIGNED_TIER_KEY = "assignedTier";
 	@Inject
@@ -376,12 +381,19 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	void onGameMessage(String message)
 	{
 		String text = Rs2UiHelper.stripTagsToSpace(message).trim();
+		onAssignmentMessage(text);
 		if (isCompletionMessage(text))
 		{
 			complete = true;
 			completedAtTick = readyTick;
 			clearAssignment();
 		}
+	}
+
+	void onAssignmentMessage(String message)
+	{
+		if (config != null && parseAssignment(message, config.contractTier()) != null)
+			assignmentMessage = message;
 	}
 
 	static boolean readyForNextContract(int currentTick, int completionTick)
@@ -391,6 +403,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private void resetCompletedContract()
 	{
+		assignmentMessage = null;
+		contactPickerSteps = 0;
+		contactSelectedTick = -1;
 		layoutReadiness.reset();
 		complete = false;
 		nextContractReady = false;
@@ -962,6 +977,16 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			resetCompletedContract();
 		}
 		setupTier = tierForContractRequest(setupTier, config.contractTier());
+		String observed = assignmentMessage;
+		assignmentMessage = null;
+		Assignment observedAssignment = parseAssignment(observed, setupTier);
+		if (observedAssignment != null)
+		{
+			rememberAssignment(observedAssignment.homeowner, observedAssignment.tier);
+			contractAcquired = true;
+			log.info("[MH_CONTRACT] acquired source={} tier={} homeowner={}",
+				config.useAstralContact() ? "Astral Contact" : "contractor", assignedTier, assignedHomeowner);
+		}
 		contractDialogueClosed = contractAcquired && !Rs2Dialogue.isInDialogue();
 		if (contractDialogueClosed)
 		{
@@ -973,10 +998,28 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		{
 			contractor = MahoganyHomesContractorData.nearest(position);
 		}
-		if (position.getPlane() != contractor.location.getPlane()
-			|| position.distanceTo(contractor.location) > 8)
+		if (!config.useAstralContact() && (position.getPlane() != contractor.location.getPlane()
+			|| position.distanceTo(contractor.location) > 8))
 		{
 			requestTravel(contractor.location, State.GET_CONTRACT);
+			return;
+		}
+		if (config.useAstralContact() && AstralContact.pickerOpen())
+		{
+			if (contactSelectedTick >= 0 && readyTick - contactSelectedTick < NO_PROGRESS_TICKS) return;
+			if (++contactPickerSteps > 24)
+			{
+				fail("Could not select Amy in Astral Contact. Check the character picker and restart.");
+				return;
+			}
+			AstralContact.Selection selection = AstralContact.selectAmy();
+			if (selection == AstralContact.Selection.CONTACTED)
+			{
+				contactSelectedTick = readyTick;
+				contractRequestTick = readyTick;
+				log.info("[MH_CONTRACT] Astral Contact: selected Amy; requested tier={}", setupTier);
+			}
+			Microbot.status = "Mahogany Homes: Astral Contact - selecting Amy";
 			return;
 		}
 
@@ -1025,13 +1068,32 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			Rs2Dialogue.clickContinue();
 			return;
 		}
-		if (contractAttempts > 0 && readyTick - contractRequestTick < NO_PROGRESS_TICKS)
+		// The Lunar cast animation can outlast the normal dialogue retry interval.
+		int requestWaitTicks = config.useAstralContact() ? 12 : NO_PROGRESS_TICKS;
+		if (contractAttempts > 0 && readyTick - contractRequestTick < requestWaitTicks)
 		{
 			return;
 		}
 		if (contractAttempts >= MAX_ATTEMPTS)
 		{
-			fail("Could not confirm a new contract from " + contractor.name + ". Speak to them to check your assignment, then restart.");
+			fail(config.useAstralContact()
+				? "Could not confirm a new contract from Amy through Astral Contact. Check the dialogue and restart."
+				: "Could not confirm a new contract from " + contractor.name + ". Speak to them to check your assignment, then restart.");
+			return;
+		}
+		if (config.useAstralContact())
+		{
+			String missing = AstralContact.missingRequirement();
+			if (missing != null) { fail(missing); return; }
+			if (Rs2Bank.isOpen()) { Rs2Bank.closeBank(); return; }
+			contractAttempts++;
+			contractRequestTick = readyTick;
+			contactPickerSteps = 0;
+			contactSelectedTick = -1;
+			boolean cast = net.runelite.client.plugins.microbot.util.magic.Rs2Magic.cast(
+				net.runelite.client.plugins.skillcalculator.skills.MagicAction.NPC_CONTACT);
+			log.info("[MH_CONTRACT] Astral Contact cast={} attempt={} tier={}", cast, contractAttempts, setupTier);
+			Microbot.status = "Mahogany Homes: casting Astral Contact for " + setupTier.getName();
 			return;
 		}
 
@@ -1152,6 +1214,13 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return null;
 		}
 		String text = Rs2UiHelper.stripTagsToSpace(dialogue).trim();
+		Matcher announcement = CONTRACT_ANNOUNCEMENT.matcher(text);
+		if (announcement.find())
+		{
+			String homeowner = announcement.group(2);
+			return new Assignment(Character.toUpperCase(homeowner.charAt(0)) + homeowner.substring(1),
+				MahoganyHomesData.fromName(announcement.group(1)));
+		}
 		Matcher homeMatcher = CONTRACT_HOME.matcher(text);
 		if (!homeMatcher.find())
 		{
