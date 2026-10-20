@@ -51,4 +51,15 @@ the old runtime entirely, close the client and restore the previous client and
 Homes JARs together; do not run a watched JAR alongside the normal sideload.
 `checkpoint/mahogany-before-interaction-20261020` preserves Homes 1.0.19 source.
 `checkpoint/data-sync-before-interaction-20261020` preserves the client base.
+`checkpoint/walker-before-interaction-api-20261020` preserves the later pre-API
+client state with the validated fluidity fixes and selective upstream data port.
 Playable is unchanged until the pilot is accepted.
+
+## Follow-up 1.0.21
+
+The frozen 1.0.20 pair completed six new houses (three EXACT, three LEGACY), with
+six confirmed NPC hand-ins and eight mapped-furniture effects, all one attempt.
+Barbara later failed on its old unmapped bed path outside the north wall.
+Version 1.0.21 supplies the interior south-side access/recovery target for that
+bed. All 63 focused tests pass; this follow-up still needs a live Barbara visit.
+Do not extrapolate the earlier smoke to this later fix or merge playable yet.
