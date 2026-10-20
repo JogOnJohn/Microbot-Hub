@@ -9,6 +9,19 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MahoganyHomesHandoffTest {
+    @Test void jeffBookcaseUsesInteriorAccessInsteadOfRetryingFromOutsideEastWall() {
+        var bookcase = MahoganyHomesContractData.JEFF.work.stream()
+            .filter(work -> work.objectId == 39990).findFirst().orElseThrow();
+        var outside = new WorldPoint(3243, 3454, 0);
+        var northRoom = new WorldPoint(3242, 3452, 0);
+        assertEquals(northRoom, bookcase.access);
+        assertTrue(MahoganyHomesScript.needsWorkAccess(outside, bookcase, 0, false));
+        assertTrue(MahoganyHomesScript.needsWorkAccess(outside, bookcase, 1, true));
+        assertFalse(MahoganyHomesScript.furnitureHandoffReady(outside, northRoom, bookcase,
+            bookcase.location, bookcase.objectId, true, true, Set.of(outside)));
+        assertFalse(MahoganyHomesScript.needsWorkAccess(northRoom, bookcase, 1, true));
+    }
+
     @Test void barbaraBedRetryReturnsInsideInsteadOfClickingFromTheNorthWall() {
         var bed = MahoganyHomesContractData.BARBARA.work.stream()
             .filter(work -> work.objectId == 40013).findFirst().orElseThrow();

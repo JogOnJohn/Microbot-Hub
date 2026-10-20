@@ -158,7 +158,8 @@ enum MahoganyHomesContractData
 		new WorldPoint(3238, 3446, 0), new WorldPoint(3239, 3447, 1), List.of(
 			new MahoganyHomesScript.Work(0, 39989, new WorldPoint(3238, 3452, 0),
 				new WorldPoint(3242, 3452, 0)),
-			new MahoganyHomesScript.Work(1, 39990, new WorldPoint(3242, 3454, 0)),
+			new MahoganyHomesScript.Work(1, 39990, new WorldPoint(3242, 3454, 0),
+				new WorldPoint(3242, 3452, 0)),
 			new MahoganyHomesScript.Work(2, 39991, new WorldPoint(3241, 3447, 0),
 				new WorldPoint(3238, 3446, 0)),
 			new MahoganyHomesScript.Work(3, 39992, new WorldPoint(3239, 3453, 1)),
