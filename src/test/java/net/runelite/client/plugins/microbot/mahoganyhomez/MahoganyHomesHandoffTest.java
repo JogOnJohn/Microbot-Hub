@@ -9,6 +9,19 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MahoganyHomesHandoffTest {
+    @Test void barbaraBedRetryReturnsInsideInsteadOfClickingFromTheNorthWall() {
+        var bed = MahoganyHomesContractData.BARBARA.work.stream()
+            .filter(work -> work.objectId == 40013).findFirst().orElseThrow();
+        var outside = new WorldPoint(1748, 3540, 0);
+        var inside = new WorldPoint(1748, 3537, 0);
+        assertEquals(inside, bed.access);
+        assertTrue(MahoganyHomesScript.needsWorkAccess(outside, bed, 0, false));
+        assertTrue(MahoganyHomesScript.needsWorkAccess(outside, bed, 1, true));
+        assertFalse(MahoganyHomesScript.furnitureHandoffReady(outside, inside, bed,
+            bed.location, bed.objectId, true, true, Set.of(outside)));
+        assertFalse(MahoganyHomesScript.needsWorkAccess(inside, bed, 1, true));
+    }
+
     private final WorldPoint player = new WorldPoint(3000, 3300, 0);
     private final WorldPoint npc = new WorldPoint(3003, 3300, 0);
 
