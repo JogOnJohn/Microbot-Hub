@@ -61,5 +61,10 @@ The frozen 1.0.20 pair completed six new houses (three EXACT, three LEGACY), wit
 six confirmed NPC hand-ins and eight mapped-furniture effects, all one attempt.
 Barbara later failed on its old unmapped bed path outside the north wall.
 Version 1.0.21 supplies the interior south-side access/recovery target for that
-bed. All 63 focused tests pass; this follow-up still needs a live Barbara visit.
-Do not extrapolate the earlier smoke to this later fix or merge playable yet.
+bed. All 63 focused tests pass against client d56349e3ea. The later five-house
+cohort (two EXACT, three LEGACY) confirmed both Barbara bed effects and five NPC
+hand-ins, all first attempt. Barbara completed at 14:23:35 AEDT. The initial
+Remove was issued five tiles away and the observed effect occurred inside.
+Do not extrapolate this bounded smoke to the full controlled efficiency matrix
+or merge playable yet. A separate shared-planner refresh cancellation bug found
+on the preceding build is fixed in d56349e3ea; it was not a missing Homes supply.
