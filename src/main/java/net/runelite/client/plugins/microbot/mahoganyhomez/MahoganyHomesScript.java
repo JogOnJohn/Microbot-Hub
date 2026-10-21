@@ -20,6 +20,7 @@ import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.plugins.microbot.Microbot;
+import net.runelite.client.plugins.microbot.breakhandler.breakhandlerv2.BreakHandlerV2State;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.questhelper.collections.ItemCollections;
@@ -292,12 +293,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 
 	private boolean captureUsableSnapshot()
 	{
-		// Do not advance/cancel a route while the scene or local player is unavailable.
-		if (walker != null && "BLOCKED".equals(walker.currentStatus))
-		{
-			fail("Travel to " + travelDescription() + " stopped by Microbot's walker. Check the route and restart.");
-			return false;
-		}
+		// A blocking walker call can return after Break Handler has already logged out.
+		if (waitForPause()) return false;
 		var clientThread = Microbot.getClientThread();
 		TravelSnapshot snapshot = clientThread == null ? new TravelSnapshot(null, null)
 			: clientThread.runOnClientThreadOptional(() -> {
@@ -309,7 +306,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return new TravelSnapshot(gameState, position);
 		}).orElse(new TravelSnapshot(null, null));
 		TransitionSnapshotGuard.Decision decision = snapshotGuard.check(
-			snapshot.gameState, snapshot.position, System.nanoTime() / 1_000_000);
+			snapshot.gameState, snapshot.position, System.nanoTime() / 1_000_000, readyTick);
+		if (waitForPause()) return false;
 		if (decision == TransitionSnapshotGuard.Decision.UNAVAILABLE)
 		{
 			fail("Player/scene unavailable or transition wait expired. Check login and the route before restarting.");
@@ -321,8 +319,40 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			return false;
 		}
 		statePosition = snapshot.position;
+		if (snapshotGuard.sessionRecovered()) resumeInterruptedWork();
 		if (snapshotGuard.recovered()) lastTravelProgressTick = readyTick;
+		if (walker != null && "BLOCKED".equals(walker.currentStatus))
+		{
+			fail("Travel to " + travelDescription() + " stopped by Microbot's walker. Check the route and restart.");
+			return false;
+		}
 		return true;
+	}
+
+	private boolean waitForPause()
+	{
+		if (!Microbot.pauseAllScripts.get() && !BreakHandlerV2State.isBreakActive()) return false;
+		snapshotGuard.suspend();
+		Microbot.status = "Mahogany Homes: waiting for break/pause recovery";
+		return true;
+	}
+
+	private void resumeInterruptedWork()
+	{
+		// Discard only this plugin's interrupted execution, not the saved assignment/effects.
+		cancelInteractionRequests();
+		if (walker != null) walker.cancel();
+		earlyHandoffWork = null;
+		interactionProbeTick = -1;
+		travelRequested = travelArrived = false;
+		turnInRequested = false;
+		turnInAttempts = 0;
+		lastTravelPosition = statePosition;
+		lastTravelProgressTick = lastWorkProgressTick = readyTick;
+		turnInAttemptTick = pendingBankActionTick = pendingSackActionTick = pendingSawActionTick = readyTick;
+		missingObjectSince = -1;
+		log.info("mahogany_session_resume | homeowner={} at={} tick={} ownedExecutionReset=true",
+			assignedHomeowner, statePosition, readyTick);
 	}
 
 	private static final class TravelSnapshot
@@ -367,6 +397,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		loadAssignment();
 		mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() ->
 		{
+			// Observe pauses even when no game ticks arrive or the base Script guard skips step().
+			if (waitForPause()) return;
 			int tick = readyTick;
 			if (tick == processedTick)
 			{
@@ -1612,6 +1644,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		{
 			boolean accepted = travelToNearestBank
 				? walker.walkToNearestBank() : walker.walkTo(travelTarget, travelArrivalDistance);
+			if (waitForPause()) return;
 			if (!accepted)
 			{
 				fail("Could not start travel to " + travelDescription() + " with Microbot's walker, then restart.");
@@ -1905,6 +1938,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     private void advanceTurnInInteraction() {
         InteractionResult result = Rs2Walker.walkWithBankedTransportsAndState(
             turnInInteraction.anchor, 0, turnInInteraction);
+        if (waitForPause()) return;
         if (result == InteractionResult.SUCCEEDED) {
             turnInRequested = true;
             turnInAttemptTick = readyTick;
@@ -1918,6 +1952,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     private void advanceFurnitureInteraction() {
         InteractionResult result = Rs2Walker.walkWithBankedTransportsAndState(
             interactionWork.access, 0, furnitureInteraction);
+        if (waitForPause()) return;
         if (result == InteractionResult.SUCCEEDED) {
             completedEffects++;
             activeWork = pending = null;

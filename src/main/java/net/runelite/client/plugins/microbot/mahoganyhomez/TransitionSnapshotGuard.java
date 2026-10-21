@@ -12,6 +12,51 @@ final class TransitionSnapshotGuard
 	private long waitingSince = -1;
 	private long waitedMillis;
 	private boolean recovered;
+	private boolean suspended;
+	private boolean sessionRecovered;
+	private int resumeTick = -1;
+	private int resumeSamples;
+
+	void suspend()
+	{
+		suspended = true;
+		waitingSince = -1;
+		waitedMillis = 0;
+		resumeTick = -1;
+		resumeSamples = 0;
+		recovered = sessionRecovered = false;
+	}
+
+	Decision check(GameState gameState, WorldPoint position, long now, int tick)
+	{
+		sessionRecovered = false;
+		if (!suspended) return check(gameState, position, now);
+		recovered = false;
+		if (waitingSince < 0) waitingSince = now;
+		if (now - waitingSince >= MAX_WAIT_MILLIS) return Decision.UNAVAILABLE;
+		if (gameState != GameState.LOGGED_IN || position == null)
+		{
+			resumeSamples = 0;
+			resumeTick = -1;
+			return Decision.WAIT;
+		}
+		if (tick >= 0 && tick != resumeTick)
+		{
+			resumeTick = tick;
+			resumeSamples++;
+		}
+		if (resumeSamples < 2) return Decision.WAIT;
+		suspended = false;
+		waitingSince = -1;
+		waitedMillis = 0;
+		recovered = sessionRecovered = true;
+		return Decision.READY;
+	}
+
+	boolean sessionRecovered()
+	{
+		return sessionRecovered;
+	}
 
 	Decision check(GameState gameState, WorldPoint position, long now)
 	{
