@@ -9,6 +9,8 @@ import java.awt.Shape;
 import java.awt.Rectangle;
 import java.awt.geom.Area;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.inject.Inject;
@@ -141,6 +143,7 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 	private WalkerBridge walker;
 	private TransitionSnapshotGuard snapshotGuard = new TransitionSnapshotGuard();
 	private WorldPoint statePosition;
+	private WorldPoint previousGeBooth;
 
 	enum State
 	{
@@ -588,13 +591,41 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 				requestNearestBank(State.GET_SETUP);
 				return;
 			}
-			if (!Rs2Bank.openBank())
+			if (!openSetupBank())
 			{
 				fail("Could not open the bank. Move within reach of a banker or bank booth, then restart.");
 			}
 			return;
 		}
 		prepareAtBank(setup);
+	}
+
+	private boolean openSetupBank()
+	{
+		WorldPoint player = statePosition;
+		if (player == null || player.distanceTo(BankLocation.GRAND_EXCHANGE.getWorldPoint()) > 20)
+			return Rs2Bank.openBank();
+		List<Rs2TileObjectModel> booths = Microbot.getRs2TileObjectCache().getStream()
+			.filter(object -> object.getId() == 10060 || object.getId() == 30389)
+			.filter(object -> SouthernGeBank.isSouthernBooth(object.getWorldLocation()))
+			.filter(object -> hasAction(object.getObjectComposition(), "Bank"))
+			.filter(Rs2TileObjectModel::isReachable)
+			.collect(Collectors.toList());
+		WorldPoint selected = SouthernGeBank.choose(booths.stream()
+			.map(Rs2TileObjectModel::getWorldLocation).collect(Collectors.toList()), previousGeBooth,
+			bound -> ThreadLocalRandom.current().nextInt(bound));
+		if (selected == null)
+		{
+			log.info("mahogany_bank_choice | no reachable southern GE booth loaded; using shared opener");
+			return Rs2Bank.openBank();
+		}
+		Rs2TileObjectModel booth = booths.stream()
+			.filter(object -> selected.equals(object.getWorldLocation())).findFirst().orElseThrow();
+		log.info("mahogany_bank_choice | side=south target={} object={} candidates={} previous={}",
+			selected, booth.getId(), booths.size(), previousGeBooth);
+		boolean opened = Rs2Bank.openBank(booth);
+		if (opened) previousGeBooth = selected;
+		return opened;
 	}
 
 	static boolean shouldPrepareTeleportResources(boolean bankOpen, boolean resourcesPrepared)
