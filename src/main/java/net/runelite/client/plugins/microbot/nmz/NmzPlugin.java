@@ -31,7 +31,7 @@ import java.awt.*;
 )
 @Slf4j
 public class NmzPlugin extends Plugin {
-    final static String version = "2.4.14";
+    final static String version = "2.4.15";
     @Inject
     private NmzConfig config;
 

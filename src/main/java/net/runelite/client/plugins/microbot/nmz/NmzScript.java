@@ -274,10 +274,14 @@ public class NmzScript extends Script {
     }
 
     private void walkToCenter() {
-        if (center.distanceTo(Rs2Player.getWorldLocation()) > 4) {
+        if (isAwayFromCenter(center, Rs2Player.getWorldLocation())) {
             updateOverlayAction("Walk to NMZ center", "Resume combat", 2500);
             Rs2Walker.walkTo(center, 6);
         }
+    }
+
+    static boolean isAwayFromCenter(WorldPoint center, WorldPoint loc) {
+        return loc != null && center.distanceTo(loc) > 4;
     }
 
     public void startNmzDream() {
