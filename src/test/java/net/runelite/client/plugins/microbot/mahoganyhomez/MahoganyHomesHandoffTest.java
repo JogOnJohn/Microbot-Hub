@@ -9,6 +9,22 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MahoganyHomesHandoffTest {
+    @Test void barbaraClockUsesVerifiedAccessAndGuardedFurniturePath() {
+        var clock = MahoganyHomesContractData.BARBARA.work.stream()
+            .filter(work -> work.objectId == 40011).findFirst().orElseThrow();
+        var access = new WorldPoint(1749, 3537, 0);
+        var outside = new WorldPoint(1749, 3540, 0);
+        assertEquals(access, clock.access);
+        assertEquals(new WorldPoint(1749, 3536, 0), clock.location);
+        assertTrue(MahoganyHomesScript.needsWorkAccess(outside, clock, 0, false));
+        assertFalse(MahoganyHomesScript.needsWorkAccess(access, clock, 1, true));
+        assertFalse(MahoganyHomesScript.furnitureHandoffReady(outside, access, clock,
+            clock.location, clock.objectId, true, true, Set.of(outside)));
+        assertEquals("Repair", MahoganyHomesScript.actionFor(1));
+        assertTrue(MahoganyHomesScript.interactionWorkChanged(1, 2));
+        assertFalse(MahoganyHomesScript.interactionWorkChanged(1, 1));
+    }
+
     @Test void jeffBookcaseUsesInteriorAccessInsteadOfRetryingFromOutsideEastWall() {
         var bookcase = MahoganyHomesContractData.JEFF.work.stream()
             .filter(work -> work.objectId == 39990).findFirst().orElseThrow();

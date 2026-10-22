@@ -1562,6 +1562,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		lastWorkProgressTick = readyTick;
 		workAttempts++;
         boolean dispatched = object.click(action);
+		log.info("mahogany_work_dispatch | mode=direct object={} action={} attempt={} sent={} at={} access={} before={}",
+			next.objectId, action, workAttempts, dispatched, statePosition, next.access, pendingValue);
         if (handedOff != null && !dispatched) {
             pending = activeWork = null;
             workAttempts = 0;
@@ -1576,6 +1578,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		int value = hotspotValues[pending.hotspot];
 		if (value != pendingValue)
 		{
+			log.info("mahogany_work_effect | mode=direct object={} before={} after={} attempts={} at={}",
+				pending.objectId, pendingValue, value, workAttempts, statePosition);
 			completedEffects++;
 			pending = null;
 			activeWork = null;
@@ -1594,6 +1598,8 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		}
 		if (workAttempts >= MAX_ATTEMPTS)
 		{
+			log.warn("mahogany_work_timeout | mode=direct object={} action={} attempts={} before={} after={} at={} access={}",
+				pending.objectId, actionFor(pendingValue), workAttempts, pendingValue, value, statePosition, pending.access);
 			fail("Could not confirm the furniture repair. Check your supplies and the unfinished furniture before restarting.");
 			return;
 		}
