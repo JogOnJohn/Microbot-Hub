@@ -9,6 +9,13 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class MahoganyHomesHandoffTest {
+    @Test void readinessRecoveryIsSingleAndCannotRepeatAnAlreadyDispatchedAction() {
+        assertTrue(MahoganyHomesScript.canRetryUnreadyFurniture("arrived-not-ready", 0, 0));
+        assertFalse(MahoganyHomesScript.canRetryUnreadyFurniture("arrived-not-ready", 0, 1));
+        assertFalse(MahoganyHomesScript.canRetryUnreadyFurniture("arrived-not-ready", 1, 0));
+        assertFalse(MahoganyHomesScript.canRetryUnreadyFurniture("cancelled", 0, 0));
+        assertFalse(MahoganyHomesScript.canRetryUnreadyFurniture("operation-deadline", 0, 0));
+    }
     @Test void barbaraClockUsesVerifiedAccessAndGuardedFurniturePath() {
         var clock = MahoganyHomesContractData.BARBARA.work.stream()
             .filter(work -> work.objectId == 40011).findFirst().orElseThrow();

@@ -79,6 +79,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
     private volatile Work earlyHandoffWork;
     private InteractionRequest turnInInteraction;
     private InteractionRequest furnitureInteraction;
+    private Work readinessRecoveryWork;
+    private String readinessRecoveryAction;
+    private int readinessRecoveries;
     private Work interactionWork;
     private long travelStartedAt;
     private WorldPoint travelOrigin;
@@ -397,6 +400,9 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 			}
 		}
 		this.config = config;
+		readinessRecoveryWork = null;
+		readinessRecoveryAction = null;
+		readinessRecoveries = 0;
 		loadAssignment();
 		mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() ->
 		{
@@ -1550,6 +1556,11 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
 		if (config.interactionAwareFurniture() && next.access != null) {
 			final Work selected = next;
 			final int before = hotspotValues[next.hotspot];
+			if (readinessRecoveryWork != next || !action.equals(readinessRecoveryAction)) {
+				readinessRecoveryWork = next;
+				readinessRecoveryAction = action;
+				readinessRecoveries = 0;
+			}
 			interactionWork = next;
 			furnitureInteraction = InteractionRequest.object(next.objectId, next.location, next.access, action,
 				() -> interactionWorkChanged(before, Microbot.getVarbitValue(HOTSPOT_VARBITS[selected.hotspot])));
@@ -1992,14 +2003,29 @@ public final class MahoganyHomesScript extends StateMachineScript<MahoganyHomesS
         if (waitForPause()) return;
         if (result == InteractionResult.SUCCEEDED) {
             completedEffects++;
+            readinessRecoveries = 0;
             activeWork = pending = null;
             workAttempts = 0;
             lastWorkProgressTick = readyTick;
             furnitureInteraction = null;
             interactionWork = null;
+        } else if (result == InteractionResult.BLOCKED && canRetryUnreadyFurniture(
+                furnitureInteraction.lifecycle.reason(), furnitureInteraction.lifecycle.attempts(), readinessRecoveries)) {
+            log.warn("mahogany_work_retry | object={} reason={} recovery={}", interactionWork.objectId,
+                furnitureInteraction.lifecycle.reason(), ++readinessRecoveries);
+            Rs2Walker.cancelInteraction(furnitureInteraction);
+            furnitureInteraction = null;
+            interactionWork = null;
+            activeWork = pending = null;
+            workAttempts = 0;
+            lastWorkProgressTick = readyTick;
         } else if (result != InteractionResult.IN_PROGRESS) {
             fail("Interaction-aware furniture work stopped: " + result + ". Check the room and restart.");
         }
+    }
+
+    static boolean canRetryUnreadyFurniture(String reason, int attempts, int recoveries) {
+        return "arrived-not-ready".equals(reason) && attempts == 0 && recoveries == 0;
     }
 
     static boolean interactionWorkChanged(int before, int after) {
