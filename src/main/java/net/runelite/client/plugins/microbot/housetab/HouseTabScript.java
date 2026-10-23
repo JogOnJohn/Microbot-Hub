@@ -41,9 +41,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.awt.event.KeyEvent;
@@ -1264,7 +1264,11 @@ public class HouseTabScript extends Script {
         // multiple HouseTab ticks at once would race its pending flags.
         this.houseTabConfig = houseTabConfig;
         this.playerHouses = playerHouses;
-        scheduledExecutorService = Executors.newScheduledThreadPool(1);
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1);
+        executor.setKeepAliveTime(60, TimeUnit.SECONDS);
+        executor.allowCoreThreadTimeOut(true);
+        executor.setRemoveOnCancelPolicy(true);
+        scheduledExecutorService = executor;
     }
 
     private boolean lookForHouseAdvertisementObject() {
