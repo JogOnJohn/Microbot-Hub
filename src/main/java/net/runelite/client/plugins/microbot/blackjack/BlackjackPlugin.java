@@ -33,7 +33,7 @@ import java.util.jar.JarFile;
         description = "Lures and blackjacks a supported Pollnivneach target",
         authors = {"jogonjohn"},
         version = BlackjackPlugin.VERSION,
-        minClientVersion = "2.1.0",
+        minClientVersion = "2.6.38",
         tags = {"thieving", "blackjack", "pollnivneach"},
         enabledByDefault = PluginConstants.DEFAULT_ENABLED,
         isExternal = PluginConstants.IS_EXTERNAL
@@ -41,7 +41,7 @@ import java.util.jar.JarFile;
 @Slf4j
 public class BlackjackPlugin extends Plugin
 {
-    public static final String VERSION = "1.1.28";
+    public static final String VERSION = "1.1.29";
 
     @Inject
     @Getter
@@ -58,6 +58,9 @@ public class BlackjackPlugin extends Plugin
 
     @Inject
     private BlackjackOverlay overlay;
+
+    @Inject
+    private BlackjackHouseOverlay houseOverlay;
 
     @Provides
     BlackjackConfig provideConfig(ConfigManager configManager)
@@ -78,6 +81,7 @@ public class BlackjackPlugin extends Plugin
                 codeSource());
         Microbot.pauseAllScripts.compareAndSet(true, false);
         overlayManager.add(overlay);
+        overlayManager.add(houseOverlay);
         Microbot.getClientThread().invoke(() -> {
             ItemContainer inventory = Microbot.getClient().getItemContainer(InventoryID.INV);
             supplies = inventory == null ? null : BlackjackSupplies.from(inventory.getItems());
@@ -90,6 +94,7 @@ public class BlackjackPlugin extends Plugin
     {
         script.shutdown();
         overlayManager.remove(overlay);
+        overlayManager.remove(houseOverlay);
     }
 
     @Subscribe

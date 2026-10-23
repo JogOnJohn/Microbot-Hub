@@ -38,18 +38,31 @@ public interface BlackjackConfig extends Config
     @ConfigItem(
             keyName = "guide",
             name = "Requirements",
-            description = "How to prepare the first-pass blackjack script",
+            description = "Required equipment, supplies and plugin pairing",
             position = 0,
             section = setupSection
     )
     default String guide()
     {
-        return "Requires [JOJ] Blackjack Entry Swap to be enabled at the same time. Requires 45 Thieving, an equipped blackjack, coins, and a supported Pollnivneach target. " +
-                "Choose the target below. On enable, Automatic mode selects level 41 Bandits below 55 Thieving, level 56 Bandits below 70, then Menaphite Thugs. That choice stays fixed until re-enabled. Bandits require 45/55 Thieving respectively and must already be lured into the marked northern house near 3358,2993; the script closes its east curtain. Bandits are not automatically lured. Menaphite Thugs are automatically lured into the southern tent, and extra thugs are led back outside. " +
-                "The helper selects Knock-Out while the target is standing and Pickpocket while it is unconscious. Keep attack options hidden. " +
-                "The combat reset can temporarily drop and recover one full wine to unequip the blackjack. " +
-                "For automatic restocking, carry noted wine and coins. The script isolates the target " +
-                "behind the east door before clearing empty jugs and exchanging notes with the nearby merchant.";
+        return "Requires a client providing the cooperative BreakPreparation API. Enable BOTH [JOJ] Blackjack and [JOJ] Blackjack Entry Swap. Blackjack handles movement, clicks, healing and wine runs; Entry Swap chooses Knock-Out or Pickpocket as the left-click action from the NPC animation. " +
+                "Start in Pollnivneach with a blackjack equipped and a full inventory: coins, one noted-wine stack, unnoted wines in the remaining slots, and optionally one escape teleport replacing a wine. Allow five coins per wine to unnote (130 coins covers 26 wines). Keep NPC attack options hidden. " +
+                "Menaphite Thugs require 65 Thieving; level-41/56 Bandits require 45/55. Wine is the supported healing supply. The optional combat reset temporarily drops one full wine to unequip the blackjack, then re-equips and recovers it.";
+    }
+
+    @ConfigItem(keyName = "caveats", name = "Scope and caveats",
+            description = "Primary workflow and manual Bandit preparation", position = 3, section = setupSection)
+    default String caveats()
+    {
+        return "Primarily designed for Menaphite Thugs: automatic southern-tent luring, house setup, extra-thug removal, combat recovery and wine unnoting/return. " +
+                "Bandits are supported but not feature-complete: manually lure and isolate the selected Bandit in the highlighted northern house near 3358,2993 before starting. Bandit modes retain healing, combat recovery and wine unnoting/return, but do not automatically lure or remove extras. " +
+                "AUTO selects from your starting level and keeps that choice until re-enabled. Contributions and fixes for any issues are welcome.";
+    }
+
+    @ConfigItem(keyName = "showBanditHouse", name = "Highlight Bandit house",
+            description = "Mark the supported northern house while a Bandit target is selected", position = 4, section = setupSection)
+    default boolean showBanditHouse()
+    {
+        return true;
     }
 
     @ConfigItem(

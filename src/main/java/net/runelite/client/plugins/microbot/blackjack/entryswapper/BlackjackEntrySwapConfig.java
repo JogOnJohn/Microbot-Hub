@@ -17,7 +17,8 @@ public interface BlackjackEntrySwapConfig extends Config
     )
     default String requirements()
     {
-        return "Enable this plugin together with [JOJ] Blackjack. It makes Knock-Out the left-click " +
-                "option while a supported target is standing or attacking, and Pickpocket while the target is unconscious.";
+        return "Both this plugin AND [JOJ] Blackjack must be enabled for automated blackjacking. " +
+                "This helper only changes menu priority: Knock-Out while a supported NPC stands or attacks, Pickpocket while unconscious. " +
+                "[JOJ] Blackjack performs the clicks, healing, movement and wine runs. No shift binding or manual menu swap is required.";
     }
 }

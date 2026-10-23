@@ -4048,6 +4048,17 @@ public class BlackjackScript extends Script
                 : BANDIT_HOUSE_CENTRE;
     }
 
+    public boolean shouldHighlightBanditHouse()
+    {
+        return config != null && config.showBanditHouse()
+                && selectedTarget() != BlackjackTarget.MENAPHITE_THUG;
+    }
+
+    static WorldArea banditHouseArea()
+    {
+        return BANDIT_HOUSE;
+    }
+
     private WorldPoint activeCombatStagingTile()
     {
         return selectedTarget() == BlackjackTarget.MENAPHITE_THUG
