@@ -67,6 +67,9 @@ public class TitheFarmingScript extends Script {
     public static boolean init = true;
 
     private boolean allPlanted = false;
+    // One ordered pass for planting/first water, two watering passes, then harvest.
+    private int cropPass = 0;
+    private int cropCursor = 0;
     private boolean breakLockHeldByTithe = false;
     private boolean loginReconciliationPending = false;
     private long loginReconciliationReadyAt = 0L;
@@ -99,8 +102,8 @@ public class TitheFarmingScript extends Script {
                         new TitheFarmPlant(40, 28, 18),
                         new TitheFarmPlant(35, 31, 19),
                         new TitheFarmPlant(40, 31, 20),
-                        new TitheFarmPlant(35, 34, 1),
-                        new TitheFarmPlant(40, 34, 2),
+                        new TitheFarmPlant(35, 34, 2),
+                        new TitheFarmPlant(40, 34, 1),
                         new TitheFarmPlant(35, 40, 3),
                         new TitheFarmPlant(40, 40, 4),
                         new TitheFarmPlant(35, 43, 5),
@@ -182,7 +185,7 @@ public class TitheFarmingScript extends Script {
                 break;
         }
 
-        // The current client input path cannot complete the old 20-plot route
+        // The current natural-input path cannot complete the old 20-plot route
         // before the first crop expires. Keep the contiguous part of each lane;
         // this also avoids the long cross-field jump at the end of that segment.
         plants.sort(Comparator.comparingInt(TitheFarmPlant::getIndex));
@@ -197,6 +200,8 @@ public class TitheFarmingScript extends Script {
         plants = new ArrayList<>();
         state = STARTING;
         allPlanted = false;
+        cropPass = 0;
+        cropCursor = 0;
         breakLockHeldByTithe = false;
         loginReconciliationPending = false;
         loginReconciliationReadyAt = 0L;
@@ -212,6 +217,7 @@ public class TitheFarmingScript extends Script {
                 }
                 if (!super.run()) return;
                 if (BreakHandlerScript.isBreakActive()) return;
+                TitheFarmPlant.beginLoopSnapshot();
 
                 if (loginReconciliationPending) {
                     if (loginReconciliationReadyAt == 0L) {
@@ -263,7 +269,8 @@ public class TitheFarmingScript extends Script {
                     state = TitheFarmState.LEAVE;
                 }
 
-                if (Rs2Inventory.hasItemAmount(TitheFarmMaterial.getSeedForLevel().getFruitId(), config.storeFruitThreshold())) {
+                if (isSafeBetweenCropCycles()
+                        && Rs2Inventory.hasItemAmount(TitheFarmMaterial.getSeedForLevel().getFruitId(), config.storeFruitThreshold())) {
                     depositSack();
                     return;
                 }
@@ -318,6 +325,8 @@ public class TitheFarmingScript extends Script {
 
             } catch (Exception ex) {
                 Microbot.logStackTrace(this.getClass().getSimpleName(), ex);
+            } finally {
+                TitheFarmPlant.endLoopSnapshot();
             }
 
         }, 0, 100, TimeUnit.MILLISECONDS);
@@ -341,55 +350,42 @@ public class TitheFarmingScript extends Script {
             return;
         }
 
-        if (Rs2Player.isMoving()) return;
-        Comparator<TitheFarmPlant> sortByIndex = Comparator.comparingInt(TitheFarmPlant::getIndex);
-        TitheFarmPlant plant = null;
-        if (state != HARVEST) {
-            if (!allPlanted) {
-                plant = plants.stream()
-                        .sorted(sortByIndex)
-                        .filter(TitheFarmPlant::isEmptyPatchOrSeedling) //empty patch and seedling first
-                        .findFirst().orElse(null);
-            }
-            if (plant == null)
-                plant = plants.stream()
-                        .sorted(sortByIndex)
-                        .filter(TitheFarmPlant::isStage1) // then stage1 plants
-                        .findFirst()
-                        .orElseGet(() ->
-                                plants.stream()
-                                        .sorted(sortByIndex)
-                                        .filter(TitheFarmPlant::isStage2) //then stage2 plants
-                                        .findFirst()
-                                        .orElse(null)
-                        );
-        }
-
-
-        if (state == TitheFarmState.HARVEST && hasAllEmptyPatches()) {
-            state = STARTING;
-            allPlanted = false;
-        }
-
-        // if we finished planting all patches, don't plant anything until we finish harvesting
-        // otherwise if we lag/miss a plant, and it dies, we will keep trying to plant seeds and mess up the loop
-        // require data for every patch before flipping allPlanted: when the cache hasn't loaded
-        // the patches yet, isEmptyPatch() returns false for all of them and noneMatch would
-        // erroneously trip even though we have planted nothing.
-        if (plants.stream().allMatch(p -> p.getGameObject() != null)
-                && plants.stream().noneMatch(TitheFarmPlant::isEmptyPatch))
+        if (plants.isEmpty()) return;
+        if (cropCursor >= plants.size()) {
+            cropCursor = 0;
+            cropPass++;
             allPlanted = true;
-
-        if (plant == null && plants.stream().anyMatch(TitheFarmPlant::isValidToHarvest)) {
-            state = TitheFarmState.HARVEST;
-            plant = plants.stream()
-                    .sorted(sortByIndex)
-                    .filter(TitheFarmPlant::isValidToHarvest)
-                    .findFirst()
-                    .orElse(null);
+            if (cropPass == 3) state = HARVEST;
+            if (cropPass > 3) {
+                cropPass = 0;
+                allPlanted = false;
+                state = REFILL_WATERCANS;
+                setBreakLock(false);
+            }
+            return;
         }
 
-        if (plant == null) return;
+        TitheFarmPlant plant = plants.get(cropCursor);
+        if (plant.getGameObject() == null) return;
+        // A failed crop is skipped for the remaining passes, never replanted
+        // into a batch whose watering schedule has already started.
+        if (cropPass > 0 && plant.isEmptyPatch()) {
+            cropCursor++;
+            return;
+        }
+        if (cropPass == 0 && plant.isWatered()) {
+            cropCursor++;
+            return;
+        }
+        if (cropPass == 1 && !plant.isStage1()) {
+            if (plant.isStage2() || plant.isValidToHarvest()) cropCursor++;
+            return;
+        }
+        if (cropPass == 2 && !plant.isStage2()) {
+            if (plant.isValidToHarvest()) cropCursor++;
+            return;
+        }
+        if (cropPass == 3 && !plant.isValidToHarvest()) return;
 
         WorldPoint corePlayerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
         Rs2TileObjectModel plantModel = plant.getGameObject();
@@ -413,7 +409,7 @@ public class TitheFarmingScript extends Script {
         }
 
         if (plant.isEmptyPatch() && !allPlanted) { //start planting seeds
-            if (quickUseInventoryItem(TitheFarmMaterial.getSeedForLevel().getName())) {
+            if (useInventoryItem(TitheFarmMaterial.getSeedForLevel().getName())) {
                 beginCropAction(CropAction.WAITING_FOR_SEED_SELECTION, plant, 2_000L);
             }
             return;
@@ -461,7 +457,7 @@ public class TitheFarmingScript extends Script {
                 if (plant.isValidToWater()) {
                     // Water immediately after the seedling appears. This skips the
                     // dibber animation without issuing another action prematurely.
-                    if (quickUseInventoryItem(TitheFarmMaterial.getWateringCan())) {
+                    if (useInventoryItem(TitheFarmMaterial.getWateringCan())) {
                         beginCropAction(CropAction.WAITING_FOR_WATERING_CAN_SELECTION, plant, 2_000L);
                     } else {
                         clearCropAction();
@@ -484,13 +480,17 @@ public class TitheFarmingScript extends Script {
             case WAITING_FOR_WATER:
                 if (plant.isWatered()) {
                     plant.setPlanted(Instant.now());
+                    cropCursor++;
                     clearCropAction();
                 } else if (cropActionTimedOut()) {
                     clearCropAction();
                 }
                 break;
             case WAITING_FOR_HARVEST:
-                if (plant.isEmptyPatch() || cropActionTimedOut()) {
+                if (plant.isEmptyPatch()) {
+                    cropCursor++;
+                    clearCropAction();
+                } else if (cropActionTimedOut()) {
                     clearCropAction();
                 }
                 break;
@@ -521,6 +521,8 @@ public class TitheFarmingScript extends Script {
         clearCropAction();
         plants = new ArrayList<>();
         allPlanted = false;
+        cropPass = 0;
+        cropCursor = 0;
         gricollerCanCharges = -1;
         state = isInMinigame() ? STARTING : TAKE_SEEDS;
         Microbot.log("Tithe farm login recovery: cleared stale patch cycle; state=" + state);
@@ -560,43 +562,20 @@ public class TitheFarmingScript extends Script {
 
     private static boolean clickPatch(TitheFarmPlant plant) {
         Rs2TileObjectModel model = plant.getGameObject();
-        return invokeQuickPatchClick(model, "");
+        return model != null && model.click();
     }
 
     private static boolean clickPatch(TitheFarmPlant plant, String action) {
         Rs2TileObjectModel model = plant.getGameObject();
-        return invokeQuickPatchClick(model, action);
+        return model != null && model.click(action);
     }
 
-    private static boolean quickUseInventoryItem(String itemName) {
-        try {
-            return (boolean) Rs2Inventory.class
-                    .getMethod("interactQuick", String.class, String.class)
-                    .invoke(null, itemName, "Use");
-        } catch (ReflectiveOperationException ignored) {
-            return Rs2Inventory.interact(itemName, "Use");
-        }
+    private static boolean useInventoryItem(String itemName) {
+        return Rs2Inventory.interact(itemName, "Use");
     }
 
-    private static boolean quickUseInventoryItem(int itemId) {
-        try {
-            return (boolean) Rs2Inventory.class
-                    .getMethod("interactQuick", int.class, String.class)
-                    .invoke(null, itemId, "Use");
-        } catch (ReflectiveOperationException ignored) {
-            return Rs2Inventory.interact(itemId, "Use");
-        }
-    }
-
-    private static boolean invokeQuickPatchClick(Rs2TileObjectModel model, String action) {
-        if (model == null) return false;
-        try {
-            return (boolean) model.getClass()
-                    .getMethod("clickQuick", String.class)
-                    .invoke(model, action);
-        } catch (ReflectiveOperationException ignored) {
-            return model.click(action);
-        }
+    private static boolean useInventoryItem(int itemId) {
+        return Rs2Inventory.interact(itemId, "Use");
     }
 
     private static boolean interactWithObject(int id, String action) {

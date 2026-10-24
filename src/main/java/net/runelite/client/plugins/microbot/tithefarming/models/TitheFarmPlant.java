@@ -39,8 +39,18 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.List;
 
 public class TitheFarmPlant {
+    private static final ThreadLocal<List<Rs2TileObjectModel>> loopSnapshot = new ThreadLocal<>();
+
+    public static void beginLoopSnapshot() {
+        loopSnapshot.set(Microbot.getRs2TileObjectCache().query().toListOnClientThread());
+    }
+
+    public static void endLoopSnapshot() {
+        loopSnapshot.remove();
+    }
     private static final Duration PLANT_TIME = Duration.ofMinutes(1);
 
     @Getter
@@ -66,6 +76,15 @@ public class TitheFarmPlant {
     }
 
     public Rs2TileObjectModel getGameObject() {
+        List<Rs2TileObjectModel> snapshot = loopSnapshot.get();
+        if (snapshot != null) {
+            return snapshot.stream().filter(o -> {
+                if (!isTithePatchId(o.getId())) return false;
+                WorldPoint wp = o.getWorldLocation();
+                return wp != null && Math.abs(wp.getRegionX() - regionX) <= 1
+                        && Math.abs(wp.getRegionY() - regionY) <= 1;
+            }).findFirst().orElse(null);
+        }
         // The hardcoded lane definitions are off by 1 from the actual instance patch
         // tiles (verified via the agent server: lane defines (35,25) but the cache has
         // a tithe patch at local (34,24), and so on for every patch). Allow a 1-tile
