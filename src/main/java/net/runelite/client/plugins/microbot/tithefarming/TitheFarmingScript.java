@@ -1,7 +1,6 @@
 package net.runelite.client.plugins.microbot.tithefarming;
 
 import net.runelite.api.coords.WorldPoint;
-import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.ObjectID;
 import net.runelite.client.plugins.microbot.Microbot;
@@ -59,6 +58,7 @@ public class TitheFarmingScript extends Script {
     public static int fruits = 0;
 
     public static final int WATERING_CANS_AMOUNT = 8;
+    private static final int ACTIVE_PATCH_COUNT = 14;
 
     public static final int DISTANCE_THRESHOLD_MINIMAP_WALK = 8;
 
@@ -70,6 +70,18 @@ public class TitheFarmingScript extends Script {
     private boolean breakLockHeldByTithe = false;
     private boolean loginReconciliationPending = false;
     private long loginReconciliationReadyAt = 0L;
+    private CropAction cropAction = CropAction.IDLE;
+    private int cropActionPlantIndex = Integer.MIN_VALUE;
+    private long cropActionDeadline = 0L;
+
+    private enum CropAction {
+        IDLE,
+        WAITING_FOR_SEED_SELECTION,
+        WAITING_FOR_PLANT,
+        WAITING_FOR_WATERING_CAN_SELECTION,
+        WAITING_FOR_WATER,
+        WAITING_FOR_HARVEST
+    }
 
     public void init(TitheFarmingConfig config) {
         TitheFarmLanes lane = config.Lanes();
@@ -169,6 +181,14 @@ public class TitheFarmingScript extends Script {
                         new TitheFarmPlant(55, 49, 18)));
                 break;
         }
+
+        // The current client input path cannot complete the old 20-plot route
+        // before the first crop expires. Keep the contiguous part of each lane;
+        // this also avoids the long cross-field jump at the end of that segment.
+        plants.sort(Comparator.comparingInt(TitheFarmPlant::getIndex));
+        if (plants.size() > ACTIVE_PATCH_COUNT) {
+            plants = new ArrayList<>(plants.subList(0, ACTIVE_PATCH_COUNT));
+        }
     }
 
 
@@ -180,6 +200,7 @@ public class TitheFarmingScript extends Script {
         breakLockHeldByTithe = false;
         loginReconciliationPending = false;
         loginReconciliationReadyAt = 0L;
+        clearCropAction();
         Microbot.log("Tithe farming script started");
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
             try {
@@ -306,6 +327,7 @@ public class TitheFarmingScript extends Script {
     @Override
     public void shutdown() {
         setBreakLock(false);
+        clearCropAction();
         super.shutdown();
     }
 
@@ -314,6 +336,11 @@ public class TitheFarmingScript extends Script {
      */
 
     private void coreLoop(TitheFarmingConfig config) {
+        if (cropAction != CropAction.IDLE) {
+            continueCropAction();
+            return;
+        }
+
         if (Rs2Player.isMoving()) return;
         Comparator<TitheFarmPlant> sortByIndex = Comparator.comparingInt(TitheFarmPlant::getIndex);
         TitheFarmPlant plant = null;
@@ -364,8 +391,6 @@ public class TitheFarmingScript extends Script {
 
         if (plant == null) return;
 
-        final TitheFarmPlant finalPlant = plant;
-
         WorldPoint corePlayerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
         Rs2TileObjectModel plantModel = plant.getGameObject();
         if (plantModel == null) {
@@ -382,40 +407,118 @@ public class TitheFarmingScript extends Script {
             return;
         }
 
+        if (!Rs2Camera.isTileOnScreen(plantModel.getLocalLocation())) {
+            Rs2Camera.turnTo(plantModel);
+            return;
+        }
+
         if (plant.isEmptyPatch() && !allPlanted) { //start planting seeds
-            Rs2Inventory.interact(TitheFarmMaterial.getSeedForLevel().getName(), "Use");
-            clickPatch(plant);
-            // save 1 tick by manually clicking watering can immediately after planting seed
-            sleepUntil(finalPlant::isValidToWater, 3_000);
-            if (!finalPlant.isValidToWater()) {
-                return;
+            if (quickUseInventoryItem(TitheFarmMaterial.getSeedForLevel().getName())) {
+                beginCropAction(CropAction.WAITING_FOR_SEED_SELECTION, plant, 2_000L);
             }
-            Rs2Inventory.interact(TitheFarmMaterial.getWateringCan(), "Use");
-            clickPatch(plant);
-            sleepUntil(finalPlant::isWatered, config.sleepAfterWateringSeed());
+            return;
         }
 
         if (plant.isValidToWater()) {
-            clickPatch(plant, "water");
-            sleepUntil(() -> Rs2Player.getAnimation() == AnimationID.FARMING_WATERING, config.sleepAfterWateringSeed());
-            plant.setPlanted(Instant.now());
-            if (Rs2Player.isAnimating()){
-                sleepUntil(finalPlant::isWatered);
+            if (clickPatch(plant, "water")) {
+                beginCropAction(CropAction.WAITING_FOR_WATER, plant, 6_000L);
             }
+            return;
         }
 
 
         if (plant.isValidToHarvest()) {
-            clickPatch(plant, "harvest");
-            sleepUntil(() -> Rs2Player.getAnimation() == AnimationID.HUMAN_DIG, config.sleepAfterHarvestingSeed());
-            if (Rs2Player.isAnimating()) {
-                sleepUntil(() -> plants.stream().anyMatch(x -> x.getIndex() == finalPlant.getIndex() && x.isEmptyPatch()));
+            if (clickPatch(plant, "harvest")) {
+                beginCropAction(CropAction.WAITING_FOR_HARVEST, plant, 6_000L);
             }
         }
     }
 
+    private void continueCropAction() {
+        TitheFarmPlant plant = plants.stream()
+                .filter(p -> p.getIndex() == cropActionPlantIndex)
+                .findFirst()
+                .orElse(null);
+
+        if (plant == null || plant.getGameObject() == null) {
+            if (cropActionTimedOut()) clearCropAction();
+            return;
+        }
+
+        switch (cropAction) {
+            case WAITING_FOR_SEED_SELECTION:
+                if (Rs2Inventory.isItemSelected()) {
+                    if (clickPatch(plant)) {
+                        beginCropAction(CropAction.WAITING_FOR_PLANT, plant, 6_000L);
+                    } else {
+                        clearCropAction();
+                    }
+                } else if (cropActionTimedOut()) {
+                    clearCropAction();
+                }
+                break;
+            case WAITING_FOR_PLANT:
+                if (plant.isValidToWater()) {
+                    // Water immediately after the seedling appears. This skips the
+                    // dibber animation without issuing another action prematurely.
+                    if (quickUseInventoryItem(TitheFarmMaterial.getWateringCan())) {
+                        beginCropAction(CropAction.WAITING_FOR_WATERING_CAN_SELECTION, plant, 2_000L);
+                    } else {
+                        clearCropAction();
+                    }
+                } else if (cropActionTimedOut()) {
+                    clearCropAction();
+                }
+                break;
+            case WAITING_FOR_WATERING_CAN_SELECTION:
+                if (Rs2Inventory.isItemSelected()) {
+                    if (clickPatch(plant)) {
+                        beginCropAction(CropAction.WAITING_FOR_WATER, plant, 6_000L);
+                    } else {
+                        clearCropAction();
+                    }
+                } else if (cropActionTimedOut()) {
+                    clearCropAction();
+                }
+                break;
+            case WAITING_FOR_WATER:
+                if (plant.isWatered()) {
+                    plant.setPlanted(Instant.now());
+                    clearCropAction();
+                } else if (cropActionTimedOut()) {
+                    clearCropAction();
+                }
+                break;
+            case WAITING_FOR_HARVEST:
+                if (plant.isEmptyPatch() || cropActionTimedOut()) {
+                    clearCropAction();
+                }
+                break;
+            default:
+                clearCropAction();
+                break;
+        }
+    }
+
+    private void beginCropAction(CropAction action, TitheFarmPlant plant, long timeoutMillis) {
+        cropAction = action;
+        cropActionPlantIndex = plant.getIndex();
+        cropActionDeadline = System.currentTimeMillis() + timeoutMillis;
+    }
+
+    private boolean cropActionTimedOut() {
+        return System.currentTimeMillis() >= cropActionDeadline;
+    }
+
+    private void clearCropAction() {
+        cropAction = CropAction.IDLE;
+        cropActionPlantIndex = Integer.MIN_VALUE;
+        cropActionDeadline = 0L;
+    }
+
     private void reconcileAfterLogin() {
         setBreakLock(false);
+        clearCropAction();
         plants = new ArrayList<>();
         allPlanted = false;
         gricollerCanCharges = -1;
@@ -455,16 +558,45 @@ public class TitheFarmingScript extends Script {
 
 
 
-    private static void clickPatch(TitheFarmPlant plant) {
+    private static boolean clickPatch(TitheFarmPlant plant) {
         Rs2TileObjectModel model = plant.getGameObject();
-        if (model == null) return;
-        model.click();
+        return invokeQuickPatchClick(model, "");
     }
 
-    private static void clickPatch(TitheFarmPlant plant, String action) {
+    private static boolean clickPatch(TitheFarmPlant plant, String action) {
         Rs2TileObjectModel model = plant.getGameObject();
-        if (model == null) return;
-        model.click(action);
+        return invokeQuickPatchClick(model, action);
+    }
+
+    private static boolean quickUseInventoryItem(String itemName) {
+        try {
+            return (boolean) Rs2Inventory.class
+                    .getMethod("interactQuick", String.class, String.class)
+                    .invoke(null, itemName, "Use");
+        } catch (ReflectiveOperationException ignored) {
+            return Rs2Inventory.interact(itemName, "Use");
+        }
+    }
+
+    private static boolean quickUseInventoryItem(int itemId) {
+        try {
+            return (boolean) Rs2Inventory.class
+                    .getMethod("interactQuick", int.class, String.class)
+                    .invoke(null, itemId, "Use");
+        } catch (ReflectiveOperationException ignored) {
+            return Rs2Inventory.interact(itemId, "Use");
+        }
+    }
+
+    private static boolean invokeQuickPatchClick(Rs2TileObjectModel model, String action) {
+        if (model == null) return false;
+        try {
+            return (boolean) model.getClass()
+                    .getMethod("clickQuick", String.class)
+                    .invoke(model, action);
+        } catch (ReflectiveOperationException ignored) {
+            return model.click(action);
+        }
     }
 
     private static boolean interactWithObject(int id, String action) {
