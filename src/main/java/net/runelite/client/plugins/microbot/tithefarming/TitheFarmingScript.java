@@ -58,7 +58,7 @@ public class TitheFarmingScript extends Script {
     public static int fruits = 0;
 
     public static final int WATERING_CANS_AMOUNT = 8;
-    private static final int ACTIVE_PATCH_COUNT = 14;
+    private List<TitheFarmPlant> routePlants = new ArrayList<>();
 
     public static final int DISTANCE_THRESHOLD_MINIMAP_WALK = 8;
 
@@ -83,7 +83,8 @@ public class TitheFarmingScript extends Script {
         WAITING_FOR_PLANT,
         WAITING_FOR_WATERING_CAN_SELECTION,
         WAITING_FOR_WATER,
-        WAITING_FOR_HARVEST
+        WAITING_FOR_HARVEST,
+        WAITING_FOR_CLEAR
     }
 
     public void init(TitheFarmingConfig config) {
@@ -95,27 +96,29 @@ public class TitheFarmingScript extends Script {
 
         switch (lane) {
             case LANE_1_2:
+                // Wiki clockwise 20 route, anchored to the live plot-1 capture.
+                // Coordinates are exact scene-min region tiles, not object centres.
                 plants = new ArrayList<>(Arrays.asList(
-                        new TitheFarmPlant(35, 25, 15),
-                        new TitheFarmPlant(40, 25, 16),
-                        new TitheFarmPlant(35, 28, 17),
-                        new TitheFarmPlant(40, 28, 18),
-                        new TitheFarmPlant(35, 31, 19),
-                        new TitheFarmPlant(40, 31, 20),
-                        new TitheFarmPlant(35, 34, 2),
-                        new TitheFarmPlant(40, 34, 1),
-                        new TitheFarmPlant(35, 40, 3),
-                        new TitheFarmPlant(40, 40, 4),
-                        new TitheFarmPlant(35, 43, 5),
-                        new TitheFarmPlant(40, 43, 6),
-                        new TitheFarmPlant(35, 46, 7),
-                        new TitheFarmPlant(40, 46, 8),
-                        new TitheFarmPlant(35, 49, 9),
-                        new TitheFarmPlant(40, 49, 10),
-                        new TitheFarmPlant(45, 49, 11),
-                        new TitheFarmPlant(45, 46, 12),
-                        new TitheFarmPlant(45, 43, 13),
-                        new TitheFarmPlant(45, 40, 14)));
+                        new TitheFarmPlant(39, 24, 1),
+                        new TitheFarmPlant(34, 24, 2),
+                        new TitheFarmPlant(39, 27, 3),
+                        new TitheFarmPlant(34, 27, 4),
+                        new TitheFarmPlant(39, 30, 5),
+                        new TitheFarmPlant(34, 30, 6),
+                        new TitheFarmPlant(39, 33, 7),
+                        new TitheFarmPlant(34, 33, 8),
+                        new TitheFarmPlant(34, 39, 9),
+                        new TitheFarmPlant(34, 42, 10),
+                        new TitheFarmPlant(34, 45, 11),
+                        new TitheFarmPlant(34, 48, 12),
+                        new TitheFarmPlant(39, 48, 13),
+                        new TitheFarmPlant(39, 45, 14),
+                        new TitheFarmPlant(39, 42, 15),
+                        new TitheFarmPlant(39, 39, 16),
+                        new TitheFarmPlant(44, 33, 17),
+                        new TitheFarmPlant(44, 30, 18),
+                        new TitheFarmPlant(44, 27, 19),
+                        new TitheFarmPlant(44, 24, 20)));
                 break;
             case LANE_2_3:
                 plants = new ArrayList<>(Arrays.asList(
@@ -185,13 +188,19 @@ public class TitheFarmingScript extends Script {
                 break;
         }
 
-        // The current natural-input path cannot complete the old 20-plot route
-        // before the first crop expires. Keep the contiguous part of each lane;
-        // this also avoids the long cross-field jump at the end of that segment.
-        plants.sort(Comparator.comparingInt(TitheFarmPlant::getIndex));
-        if (plants.size() > ACTIVE_PATCH_COUNT) {
-            plants = new ArrayList<>(plants.subList(0, ACTIVE_PATCH_COUNT));
+        if (lane != TitheFarmLanes.LANE_1_2) {
+            // Legacy lane lists use centres one tile above/right of scene minima.
+            plants.forEach(p -> { p.regionX--; p.regionY--; });
         }
+        plants.sort(Comparator.comparingInt(TitheFarmPlant::getIndex));
+        routePlants = new ArrayList<>(plants);
+        selectActivePlants(config);
+    }
+
+    private void selectActivePlants(TitheFarmingConfig config) {
+        int count = Math.min(routePlants.size(), Math.max(1, Math.min(20, config.plantsPerCycle())));
+        plants = new ArrayList<>(routePlants.subList(0, count));
+        Microbot.log("Tithe cycle configured for " + count + " plants");
     }
 
 
@@ -359,6 +368,7 @@ public class TitheFarmingScript extends Script {
             if (cropPass > 3) {
                 cropPass = 0;
                 allPlanted = false;
+                selectActivePlants(config);
                 state = REFILL_WATERCANS;
                 setBreakLock(false);
             }
@@ -367,6 +377,14 @@ public class TitheFarmingScript extends Script {
 
         TitheFarmPlant plant = plants.get(cropCursor);
         if (plant.getGameObject() == null) return;
+        if (plant.isDead()) {
+            if (cropPass == 0 || cropPass == 3) {
+                if (clickPatch(plant)) beginCropAction(CropAction.WAITING_FOR_CLEAR, plant, 6_000L);
+            } else {
+                cropCursor++;
+            }
+            return;
+        }
         // A failed crop is skipped for the remaining passes, never replanted
         // into a batch whose watering schedule has already started.
         if (cropPass > 0 && plant.isEmptyPatch()) {
@@ -487,6 +505,7 @@ public class TitheFarmingScript extends Script {
                 }
                 break;
             case WAITING_FOR_HARVEST:
+            case WAITING_FOR_CLEAR:
                 if (plant.isEmptyPatch()) {
                     cropCursor++;
                     clearCropAction();

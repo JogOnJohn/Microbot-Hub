@@ -81,29 +81,22 @@ public class TitheFarmPlant {
             return snapshot.stream().filter(o -> {
                 if (!isTithePatchId(o.getId())) return false;
                 WorldPoint wp = o.getWorldLocation();
-                return wp != null && Math.abs(wp.getRegionX() - regionX) <= 1
-                        && Math.abs(wp.getRegionY() - regionY) <= 1;
+                return wp != null && wp.getRegionX() == regionX && wp.getRegionY() == regionY;
             }).findFirst().orElse(null);
         }
-        // The hardcoded lane definitions are off by 1 from the actual instance patch
-        // tiles (verified via the agent server: lane defines (35,25) but the cache has
-        // a tithe patch at local (34,24), and so on for every patch). Allow a 1-tile
-        // tolerance match so the lookup is robust to this without rewriting all four
-        // lane lists. Patches are 3 tiles apart so the tolerance can't match the
-        // wrong neighbour.
+        // Lane definitions use validated scene-min tiles, so match exactly.
         return Microbot.getRs2TileObjectCache().query()
                 .where(o -> {
                     if (!isTithePatchId(o.getId())) return false;
                     WorldPoint wp = o.getWorldLocation();
                     if (wp == null) return false;
-                    int dx = Math.abs(wp.getRegionX() - regionX);
-                    int dy = Math.abs(wp.getRegionY() - regionY);
-                    return dx <= 1 && dy <= 1;
+                    return wp.getRegionX() == regionX && wp.getRegionY() == regionY;
                 })
                 .first();
     }
 
     private static boolean isTithePatchId(int id) {
+        if (isDeadPatchId(id)) return true;
         switch (id) {
             case ObjectID.HOSIDIUS_TITHE_EMPTY:
             case ObjectID.HOSIDIUS_TITHE_A_1_DRY:
@@ -131,6 +124,20 @@ public class TitheFarmPlant {
             default:
                 return false;
         }
+    }
+
+    private static boolean isDeadPatchId(int id) {
+        return id == ObjectID.HOSIDIUS_TITHE_A_1_DEAD || id == ObjectID.HOSIDIUS_TITHE_A_2_DEAD
+                || id == ObjectID.HOSIDIUS_TITHE_A_3_DEAD || id == ObjectID.HOSIDIUS_TITHE_A_4_DEAD
+                || id == ObjectID.HOSIDIUS_TITHE_B_1_DEAD || id == ObjectID.HOSIDIUS_TITHE_B_2_DEAD
+                || id == ObjectID.HOSIDIUS_TITHE_B_3_DEAD || id == ObjectID.HOSIDIUS_TITHE_B_4_DEAD
+                || id == ObjectID.HOSIDIUS_TITHE_C_1_DEAD || id == ObjectID.HOSIDIUS_TITHE_C_2_DEAD
+                || id == ObjectID.HOSIDIUS_TITHE_C_3_DEAD || id == ObjectID.HOSIDIUS_TITHE_C_4_DEAD;
+    }
+
+    public boolean isDead() {
+        Rs2TileObjectModel obj = getGameObject();
+        return obj != null && isDeadPatchId(obj.getId());
     }
 
     public int[] expectedPatchGameObject() {

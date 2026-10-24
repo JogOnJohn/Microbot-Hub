@@ -1,0 +1,469 @@
+{
+  "note": "Read-only live capture while user stood at wiki position 1. Player API is template coordinates; patch API is instance scene coordinates. Do not compare these directly. No movement, plugin start, or source-route change performed.",
+  "playerTemplate": {
+    "x": 1814,
+    "y": 3489,
+    "plane": 0
+  },
+  "positionOne": {
+    "id": 27383,
+    "instanceX": 12263,
+    "instanceY": 664,
+    "regionX": 39,
+    "regionY": 24,
+    "verified": "Only Tithe patch within one tile in live proximity query"
+  },
+  "patches": [
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12258,
+        "y": 664,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12258,
+        "y": 667,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12258,
+        "y": 670,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12258,
+        "y": 673,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12258,
+        "y": 679,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12258,
+        "y": 682,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12258,
+        "y": 685,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12258,
+        "y": 688,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12263,
+        "y": 664,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12263,
+        "y": 667,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12263,
+        "y": 670,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12263,
+        "y": 673,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12263,
+        "y": 679,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12263,
+        "y": 682,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12263,
+        "y": 685,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12263,
+        "y": 688,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 658,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 664,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 667,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 670,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 673,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 679,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 682,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 685,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12268,
+        "y": 688,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12273,
+        "y": 664,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12273,
+        "y": 667,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12273,
+        "y": 670,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12273,
+        "y": 673,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12273,
+        "y": 679,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12273,
+        "y": 682,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12273,
+        "y": 685,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12273,
+        "y": 688,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12278,
+        "y": 664,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12278,
+        "y": 667,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12278,
+        "y": 670,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12278,
+        "y": 673,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12278,
+        "y": 679,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12278,
+        "y": 682,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12278,
+        "y": 685,
+        "plane": 0
+      }
+    },
+    {
+      "id": 27383,
+      "name": "Tithe patch",
+      "type": "GAME",
+      "reachable": true,
+      "position": {
+        "x": 12278,
+        "y": 688,
+        "plane": 0
+      }
+    }
+  ]
+}

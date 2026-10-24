@@ -48,6 +48,18 @@ public interface TitheFarmingConfig extends Config {
         return TitheFarmLanes.LANE_1_2;
     }
 
+    @Range(min = 1, max = 20)
+    @ConfigItem(
+            keyName = "plantsPerCycle",
+            name = "Plants per cycle",
+            description = "Number of patches in the selected route (1-20). Changes apply to the next crop cycle; 14 is the tested default.",
+            position = 7,
+            section = scriptSettings
+    )
+    default int plantsPerCycle() {
+        return 14;
+    }
+
     @ConfigItem(
             keyName = "Gricoller's can refill threshold",
             name = "Gricoller's can refill threshold",
