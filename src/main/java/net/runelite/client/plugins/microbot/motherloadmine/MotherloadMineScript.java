@@ -18,6 +18,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.EquipmentInventorySlot;
 import net.runelite.api.GameObject;
 import net.runelite.api.Perspective;
+import net.runelite.api.Player;
 import net.runelite.api.Skill;
 import net.runelite.api.TileObject;
 import net.runelite.api.WallObject;
@@ -39,6 +40,7 @@ import net.runelite.client.plugins.microbot.util.Rs2InventorySetup;
 import net.runelite.client.plugins.microbot.util.antiban.AntibanPlugin;
 import net.runelite.client.plugins.microbot.util.antiban.Rs2Antiban;
 import net.runelite.client.plugins.microbot.util.antiban.Rs2AntibanSettings;
+import net.runelite.client.plugins.microbot.util.antiban.enums.Activity;
 import net.runelite.client.plugins.microbot.util.antiban.enums.ActivityIntensity;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
 import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
@@ -158,7 +160,7 @@ public class MotherloadMineScript extends Script
             case IDLE:
                 break;
             case MINING:
-                Rs2Antiban.setActivityIntensity(Rs2Antiban.getActivity().getActivityIntensity());
+                Rs2Antiban.setActivityIntensity(miningIntensity(Rs2Antiban.getActivity()));
                 handleMining();
                 break;
             case EMPTY_SACK:
@@ -180,6 +182,17 @@ public class MotherloadMineScript extends Script
                 break;
         }
     }
+
+    static ActivityIntensity miningIntensity(Activity activity)
+    {
+        return (activity != null ? activity : Activity.GENERAL_MINING).getActivityIntensity();
+    }
+
+    static WorldPoint worldLocationOf(Player player)
+    {
+        return player != null ? player.getWorldLocation() : null;
+    }
+
     private String[] SPEC_PICKAXES = {"dragon pickaxe", "crystal pickaxe", "infernal pickaxe"};
 
     private void handlePickaxeSpec() {
@@ -659,7 +672,7 @@ public class MotherloadMineScript extends Script
 		return sleepUntil(() -> {
 			Rs2TileObjectModel _vein = rs2TileObjectCache.query().where(o -> Objects.equals(o.getWorldLocation(), veinLocation)).nearest();
 			if (_vein == null || !isValidVein(_vein)) return false;
-			WorldPoint playerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
+			WorldPoint playerLoc = Microbot.getClientThread().invoke(() -> worldLocationOf(Microbot.getClient().getLocalPlayer()));
 			return AntibanPlugin.isMining() && playerLoc != null && _vein.getWorldLocation().distanceTo(playerLoc) <= 2;
 		}, 10_000);
 	}

@@ -5,9 +5,11 @@ import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.NpcChanged;
 import net.runelite.api.events.NpcDespawned;
 import net.runelite.api.events.NpcSpawned;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.ObjectID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.client.util.Text;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.Script;
@@ -29,6 +31,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class WintertodtScript extends Script {
+    private static final Pattern DIGITS = Pattern.compile("\\d+");
     public static QoLConfig config;
     public static Rs2TileObjectModel unlitBrazier;
     public static Rs2TileObjectModel brokenBrazier;
@@ -64,11 +67,10 @@ public class WintertodtScript extends Script {
                     return;
                 }
 
-                Widget wintertodtHealthbar = Rs2Widget.getWidget(25952276);
+                Widget wintertodtHealthbar = Rs2Widget.getWidget(InterfaceID.WintStatus.ENERGY_TITLE);
                 isWintertodtAlive = Rs2Widget.hasWidget("Wintertodt's Energy");
                 if (wintertodtHealthbar != null && isWintertodtAlive) {
-                    String widgetText = wintertodtHealthbar.getText();
-                    wintertodtHp = Integer.parseInt(widgetText.split("\\D+")[1]);
+                    wintertodtHp = parseWintertodtHp(wintertodtHealthbar.getText());
                 } else {
                     wintertodtHp = -1;
                 }
@@ -238,11 +240,26 @@ public class WintertodtScript extends Script {
         }
     }
 
+    static int parseWintertodtHp(String widgetText) {
+        if (widgetText == null) {
+            return -1;
+        }
+        Matcher matcher = DIGITS.matcher(Text.removeTags(widgetText));
+        if (matcher.find()) {
+            try {
+                int hp = Integer.parseInt(matcher.group());
+                return hp <= 100 ? hp : -1;
+            } catch (NumberFormatException e) {
+                return -1;
+            }
+        }
+        return -1;
+    }
+
     public int getWarmthLevel() {
         String warmthWidgetText = Rs2Widget.getChildWidgetText(396, 20);
 
-        Pattern pattern = Pattern.compile("\\d+");
-        Matcher matcher = pattern.matcher(warmthWidgetText);
+        Matcher matcher = DIGITS.matcher(warmthWidgetText);
 
         if (matcher.find()) {
             return Integer.parseInt(matcher.group());
