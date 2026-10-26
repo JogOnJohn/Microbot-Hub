@@ -1,6 +1,7 @@
 package net.runelite.client.plugins.microbot.agility;
 
 import net.runelite.api.Skill;
+import net.runelite.api.Player;
 import net.runelite.api.TileObject;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.MenuAction;
@@ -170,12 +171,13 @@ public class AgilityScript extends Script
 				{
 					return;
 				}
+				final WorldPoint playerWorldLocation = snapshotPlayerLocation();
+				if (playerWorldLocation == null) return;
 				if (!super.run())
 				{
 					return;
 				}
 				AgilityCourseHandler courseHandler = getActiveHandler();
-				final WorldPoint playerWorldLocation = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
 
 				if (startPoint == null)
 				{
@@ -360,8 +362,10 @@ public class AgilityScript extends Script
 				if (interactWithObstacle(gameObject)) {
 					beginPrehover(gameObject, courseHandler);
 					// Wait for completion - this now returns quickly on XP drop
+					WorldPoint completionLocation = snapshotPlayerLocation();
+					if (completionLocation == null) { prehover.cancel(); return; }
 					boolean completed = courseHandler.waitForCompletion(agilityExp,
-						Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation()).getPlane());
+						completionLocation.getPlane());
 					
 					if (!completed) {
 						prehover.cancel();
@@ -829,7 +833,8 @@ public class AgilityScript extends Script
 
 	private boolean performEfficientAlch(TileObject gameObject, String alchItem, int agilityExp)
 	{
-		WorldPoint playerLocation = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
+		WorldPoint playerLocation = snapshotPlayerLocation();
+		if (playerLocation == null) return false;
 
 		if (gameObject.getWorldLocation().distanceTo(playerLocation) >= 5)
 		{
@@ -840,8 +845,10 @@ public class AgilityScript extends Script
 				Rs2Magic.alch(alchItem, 50, 75);
 				if (interactWithObstacle(gameObject))
 					beginPrehover(gameObject, getActiveHandler());
+				WorldPoint completionLocation = snapshotPlayerLocation();
+				if (completionLocation == null) { prehover.cancel(); return false; }
 				boolean completed = getActiveHandler().waitForCompletion(agilityExp,
-					Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation()).getPlane());
+					completionLocation.getPlane());
 
 				if (!completed) {
 					// Timeout during efficient alching - log warning
@@ -879,6 +886,14 @@ public class AgilityScript extends Script
 		alchDecisionObstacleLocation = null;
 		alchDecisionObstacleId = -1;
 		alchDecisionShouldAlch = false;
+	}
+
+	static WorldPoint snapshotPlayerLocation()
+	{
+		return Microbot.getClientThread().invoke(() -> {
+			Player player = Microbot.getClient().getLocalPlayer();
+			return player == null ? null : player.getWorldLocation();
+		});
 	}
 
 	private boolean interactWithObstacle(TileObject gameObject)
