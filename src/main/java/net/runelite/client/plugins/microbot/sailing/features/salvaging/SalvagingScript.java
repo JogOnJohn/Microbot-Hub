@@ -40,6 +40,7 @@ import net.runelite.client.util.Text;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import java.awt.event.KeyEvent;
+import java.awt.Rectangle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -49,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -809,10 +811,19 @@ public class SalvagingScript {
     }
 
     private boolean clickDepositInventoryInOpenCargoHold() {
-        Widget target = Microbot.getClientThread()
-                .runOnClientThreadOptional(this::findDepositInventoryInOpenCargoHold)
-                .orElse(null);
-        return Rs2Widget.clickWidget(target);
+        return clickCargoHoldWidget(this::findDepositInventoryInOpenCargoHold);
+    }
+
+    private boolean clickCargoHoldWidget(Supplier<Widget> target) {
+        Rectangle bounds = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Widget widget = target.get();
+            if (widget == null || widget.isHidden()) return null;
+            Rectangle area = widget.getBounds();
+            return area == null || area.isEmpty() ? null : new Rectangle(area);
+        }).orElse(null);
+        if (bounds == null) return false;
+        Microbot.getMouse().click(bounds);
+        return true;
     }
 
     private Widget findDepositInventoryInOpenCargoHold() {
@@ -1113,14 +1124,11 @@ public class SalvagingScript {
     }
 
     /**
-     * Left-clicks the salvage stack widget in the open cargo-hold item grid ({@code Rs2Widget.clickWidget}).
+     * Left-clicks a client-thread bounds snapshot of the salvage stack widget.
      * Real widget click (same pattern as other hub plugins), not a synthesized menu entry.
      */
     private boolean invokeWithdrawOneSalvageStackFromCargoHoldUi() {
-        Widget salvageSlot = Microbot.getClientThread()
-                .runOnClientThreadOptional(SalvagingScript::findFirstSalvageStackWidget)
-                .orElse(null);
-        return Rs2Widget.clickWidget(salvageSlot);
+        return clickCargoHoldWidget(SalvagingScript::findFirstSalvageStackWidget);
     }
 
     private static Widget findFirstSalvageStackWidget() {
