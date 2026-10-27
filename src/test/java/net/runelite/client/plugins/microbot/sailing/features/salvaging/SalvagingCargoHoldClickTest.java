@@ -6,16 +6,18 @@ import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.plugins.microbot.Microbot;
-import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
+import net.runelite.client.plugins.microbot.util.mouse.Mouse;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.MockedStatic;
 
 import java.lang.reflect.Field;
+import java.awt.Rectangle;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.IdentityHashMap;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -29,7 +31,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 class SalvagingCargoHoldClickTest {
@@ -42,7 +43,9 @@ class SalvagingCargoHoldClickTest {
     private ClientThread clientThreadMock;
     private final List<Thread> widgetLookupThreads = new ArrayList<>();
     private final List<Thread> clickThreads = new ArrayList<>();
-    private final List<Widget> clickedWidgets = new ArrayList<>();
+    private final List<Rectangle> clickedBounds = new ArrayList<>();
+    private final Map<Widget, Rectangle> boundsByWidget = new IdentityHashMap<>();
+    private Mouse mouse;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -50,6 +53,12 @@ class SalvagingCargoHoldClickTest {
         clientThread = clientExecutor.submit(Thread::currentThread).get(5, TimeUnit.SECONDS);
         client = mock(Client.class);
         clientThreadMock = mock(ClientThread.class);
+        mouse = mock(Mouse.class);
+        when(mouse.click(any(Rectangle.class))).thenAnswer(call -> {
+            clickThreads.add(Thread.currentThread());
+            clickedBounds.add(call.getArgument(0));
+            return mouse;
+        });
         when(clientThreadMock.runOnClientThreadOptional(any(Callable.class))).thenAnswer(invocation -> {
             Callable<?> callable = invocation.getArgument(0);
             return Optional.ofNullable(clientExecutor.submit(callable).get(5, TimeUnit.SECONDS));
@@ -75,8 +84,8 @@ class SalvagingCargoHoldClickTest {
         boolean clicked = runWithMocks("clickDepositInventoryInOpenCargoHold");
 
         assertTrue(clicked);
-        assertEquals(1, clickedWidgets.size());
-        assertSame(deposit, clickedWidgets.get(0));
+        assertEquals(1, clickedBounds.size());
+        assertEquals(boundsByWidget.get(deposit), clickedBounds.get(0));
         assertSame(Thread.currentThread(), clickThreads.get(0));
         assertFalse(widgetLookupThreads.isEmpty());
         widgetLookupThreads.forEach(thread -> assertSame(clientThread, thread));
@@ -91,7 +100,7 @@ class SalvagingCargoHoldClickTest {
         boolean clicked = runWithMocks("clickDepositInventoryInOpenCargoHold");
 
         assertFalse(clicked);
-        assertTrue(clickedWidgets.stream().allMatch(w -> w == null));
+        assertTrue(clickedBounds.isEmpty());
     }
 
     @Test
@@ -108,8 +117,8 @@ class SalvagingCargoHoldClickTest {
         boolean clicked = runWithMocks("invokeWithdrawOneSalvageStackFromCargoHoldUi");
 
         assertTrue(clicked);
-        assertEquals(1, clickedWidgets.size());
-        assertSame(salvageSlot, clickedWidgets.get(0));
+        assertEquals(1, clickedBounds.size());
+        assertEquals(boundsByWidget.get(salvageSlot), clickedBounds.get(0));
         assertSame(Thread.currentThread(), clickThreads.get(0));
         widgetLookupThreads.forEach(thread -> assertSame(clientThread, thread));
     }
@@ -121,7 +130,29 @@ class SalvagingCargoHoldClickTest {
         boolean clicked = runWithMocks("invokeWithdrawOneSalvageStackFromCargoHoldUi");
 
         assertFalse(clicked);
-        assertTrue(clickedWidgets.stream().allMatch(w -> w == null));
+        assertTrue(clickedBounds.isEmpty());
+    }
+
+    @Test
+    void missingBoundsNeverDispatchesInput() throws Exception {
+        Widget universe = visibleWidget();
+        Widget deposit = visibleWidget();
+        when(deposit.getBounds()).thenReturn(null);
+        stubWidget(InterfaceID.SailingBoatCargohold.UNIVERSE, universe);
+        stubWidget(InterfaceID.SailingBoatCargohold.DEPOSITALL_INVENTORY, deposit);
+        assertFalse(runWithMocks("clickDepositInventoryInOpenCargoHold"));
+        assertTrue(clickedBounds.isEmpty());
+    }
+
+    @Test
+    void emptyBoundsNeverDispatchesInput() throws Exception {
+        Widget universe = visibleWidget();
+        Widget deposit = visibleWidget();
+        when(deposit.getBounds()).thenReturn(new Rectangle());
+        stubWidget(InterfaceID.SailingBoatCargohold.UNIVERSE, universe);
+        stubWidget(InterfaceID.SailingBoatCargohold.DEPOSITALL_INVENTORY, deposit);
+        assertFalse(runWithMocks("clickDepositInventoryInOpenCargoHold"));
+        assertTrue(clickedBounds.isEmpty());
     }
 
     private boolean runWithMocks(String methodName) throws Exception {
@@ -131,13 +162,13 @@ class SalvagingCargoHoldClickTest {
         widgetLookupThreads.clear();
         Object previousClient = swapMicrobotField("client", client);
         Object previousClientThread = swapMicrobotField("clientThread", clientThreadMock);
-        try (MockedStatic<Rs2Widget> widgets = mockStatic(Rs2Widget.class)) {
-            widgets.when(() -> Rs2Widget.clickWidget(any(Widget.class))).thenAnswer(invocation -> record(invocation.getArgument(0)));
-            widgets.when(() -> Rs2Widget.clickWidget((Widget) null)).thenAnswer(invocation -> record(null));
+        Object previousMouse = swapMicrobotField("mouse", mouse);
+        try {
             return (boolean) method.invoke(script);
         } finally {
             swapMicrobotField("client", previousClient);
             swapMicrobotField("clientThread", previousClientThread);
+            swapMicrobotField("mouse", previousMouse);
         }
     }
 
@@ -149,12 +180,6 @@ class SalvagingCargoHoldClickTest {
         return previous;
     }
 
-    private boolean record(Widget widget) {
-        clickThreads.add(Thread.currentThread());
-        clickedWidgets.add(widget);
-        return widget != null;
-    }
-
     private void stubWidget(int componentId, Widget widget) {
         when(client.getWidget(componentId)).thenAnswer(invocation -> {
             widgetLookupThreads.add(Thread.currentThread());
@@ -162,9 +187,15 @@ class SalvagingCargoHoldClickTest {
         });
     }
 
-    private static Widget visibleWidget() {
+    private Widget visibleWidget() {
         Widget widget = mock(Widget.class);
         when(widget.isHidden()).thenReturn(false);
+        Rectangle bounds = new Rectangle(10 + boundsByWidget.size() * 20, 20, 15, 10);
+        boundsByWidget.put(widget, bounds);
+        when(widget.getBounds()).thenAnswer(call -> {
+            widgetLookupThreads.add(Thread.currentThread());
+            return bounds;
+        });
         return widget;
     }
 }
