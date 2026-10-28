@@ -50,8 +50,8 @@ public class AutoChompyKillerScript extends Script {
         return toadCount > 0;
     }
 
-    private boolean isDeadChompyNearby() {
-        long deadChompyCount = Microbot.getRs2NpcCache().query().withId(NpcID.CHOMPYBIRD_DEAD).where(element -> Rs2Player.getWorldLocation().distanceTo(element.getWorldLocation()) <= 5).count();
+    private boolean isDeadChompyNearby(WorldPoint playerLocation) {
+        long deadChompyCount = Microbot.getRs2NpcCache().query().withId(NpcID.CHOMPYBIRD_DEAD).where(element -> playerLocation.distanceTo(element.getWorldLocation()) <= 5).count();
 
         return deadChompyCount > 0;
     }
@@ -277,6 +277,10 @@ public class AutoChompyKillerScript extends Script {
                     log.info("Not logged in");
                     return;
                 }
+                WorldPoint playerLocation = Rs2Player.getWorldLocation();
+                if (playerLocation == null) {
+                    return;
+                }
 
                 long startTime = System.currentTimeMillis();
 
@@ -369,7 +373,7 @@ public class AutoChompyKillerScript extends Script {
                         }
 
                         WorldPoint bubbleLocation = bubble.getWorldLocation();
-                        if (Rs2Player.getWorldLocation().distanceTo(bubbleLocation) > BELLOWS_INTERACT_DISTANCE) {
+                        if (playerLocation.distanceTo(bubbleLocation) > BELLOWS_INTERACT_DISTANCE) {
                             // Non-blocking single-step approach; subsequent loop ticks continue the walk.
                             WalkerState walkState = Rs2Walker.walkStep(bubbleLocation, BELLOWS_INTERACT_DISTANCE - 1);
                             if (walkState == WalkerState.UNREACHABLE) {
@@ -404,7 +408,7 @@ public class AutoChompyKillerScript extends Script {
                             break; // inflate/drop still resolving
                         }
 
-                        if (config.pluckChompys() && isDeadChompyNearby()) {
+                        if (config.pluckChompys() && isDeadChompyNearby(playerLocation)) {
                             log.info("Dead chompy nearby - switching to plucking");
                             changeState(AutoChompyKillerState.PLUCKING);
                             break;
@@ -461,7 +465,7 @@ public class AutoChompyKillerScript extends Script {
                             break; // attack still resolving
                         }
 
-                        if (config.pluckChompys() && isDeadChompyNearby()) {
+                        if (config.pluckChompys() && isDeadChompyNearby(playerLocation)) {
                             log.info("Dead chompy nearby - switching to plucking");
                             changeState(AutoChompyKillerState.PLUCKING);
                             break;
