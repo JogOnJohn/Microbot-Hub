@@ -12,6 +12,7 @@ import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectM
 import net.runelite.client.plugins.microbot.tithefarming.enums.TitheFarmState;
 import net.runelite.client.plugins.microbot.tithefarming.models.TitheFarmPlant;
 import net.runelite.client.plugins.microbot.util.Global;
+import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
@@ -79,6 +80,7 @@ class TitheFarmingCoreLoopTest {
 
             walker.verify(() -> Rs2Walker.walkMiniMap(any(WorldPoint.class), anyDouble()), never());
             inventory.verifyNoInteractions();
+            verify(client).getLocalPlayer();
             verify(plant, never()).isValidToWater();
             verify(plant, never()).isValidToHarvest();
         }
@@ -98,6 +100,7 @@ class TitheFarmingCoreLoopTest {
         try (MockedStatic<Microbot> microbot = mockStatic(Microbot.class);
              MockedStatic<Rs2Player> player = mockStatic(Rs2Player.class);
              MockedStatic<Rs2Walker> walker = mockStatic(Rs2Walker.class);
+             MockedStatic<Rs2Camera> camera = mockStatic(Rs2Camera.class);
              MockedStatic<Rs2Inventory> inventory = mockStatic(Rs2Inventory.class)) {
             microbot.when(Microbot::getClientThread).thenReturn(clientThread);
             microbot.when(Microbot::getClient).thenReturn(client);
@@ -193,6 +196,7 @@ class TitheFarmingCoreLoopTest {
 
     private static TitheFarmPlant plantToVisit() {
         TitheFarmPlant plant = mock(TitheFarmPlant.class);
+        when(plant.getGameObject()).thenReturn(objectAt(FAR_AWAY));
         when(plant.isEmptyPatchOrSeedling()).thenReturn(true);
         TitheFarmingScript.plants = new ArrayList<>(List.of(plant));
         TitheFarmingScript.state = TitheFarmState.PLANTING_SEEDS;
