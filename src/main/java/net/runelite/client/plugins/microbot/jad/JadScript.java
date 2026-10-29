@@ -1,5 +1,6 @@
 package net.runelite.client.plugins.microbot.jad;
 
+import net.runelite.api.Actor;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.api.npc.models.Rs2NpcModel;
@@ -23,7 +24,8 @@ public class JadScript extends Script {
     private static final int JAD_RANGE_ANIMATION_2 = 2652;
     private static final int MAGE_IMPACT_DELAY_TICKS = 4;
     private static final int RANGE_IMPACT_DELAY_TICKS = 3;
-    private static final int PRAYER_SWITCH_LEAD_TICKS = 1;
+    private static final int PRAYER_SWITCH_LEAD_TICKS = 4;
+    private static final int STALE_ATTACK_GRACE_TICKS = 1;
 
     public static final Map<Integer, Long> npcAttackCooldowns = new HashMap<>();
     private final Map<Integer, Integer> npcLastAttackAnimations = new HashMap<>();
@@ -40,7 +42,7 @@ public class JadScript extends Script {
                 int currentTick = Microbot.getClient().getTickCount();
 
                 List<Rs2NpcModel> jadNpcs = Microbot.getRs2NpcCache().query()
-                        .where(n -> n.getName() != null && n.getName().toLowerCase().contains("jad"))
+                        .where(n -> nameContains(n, "jad"))
                         .toList();
                 Set<Integer> activeJadIndexes = new HashSet<>();
 
@@ -51,28 +53,30 @@ public class JadScript extends Script {
                     int npcIndex = jadNpc.getIndex();
                     activeJadIndexes.add(npcIndex);
 
-                    if (npcAttackCooldowns.containsKey(npcIndex)) {
-                        if (currentTimeMillis - npcAttackCooldowns.get(npcIndex) < 4600) {
-                            continue;
-                        } else {
-                            npcAttackCooldowns.remove(npcIndex);
-                        }
-                    }
-
                     int npcAnimation = jadNpc.getNpc().getAnimation();
                     if (shouldHandleAttackAnimation(npcIndex, npcAnimation)) {
                         queueJadAttack(npcIndex, npcAnimation, currentTick);
                     }
-                    if (config.shouldAttackHealers()) {
-                        handleHealerInteraction();
-                        npcAttackCooldowns.put(npcIndex, currentTimeMillis);
+
+                    if (!config.shouldAttackHealers()) {
+                        continue;
                     }
+
+                    if (npcAttackCooldowns.containsKey(npcIndex)) {
+                        if (currentTimeMillis - npcAttackCooldowns.get(npcIndex) < 4600) {
+                            continue;
+                        }
+                        npcAttackCooldowns.remove(npcIndex);
+                    }
+
+                    handleHealerInteraction();
+                    npcAttackCooldowns.put(npcIndex, currentTimeMillis);
                 }
 
                 removeStaleNpcData(activeJadIndexes);
                 processAttackQueue(currentTick);
             } catch (Exception ex) {
-                System.out.println(ex.getMessage());
+                Microbot.logStackTrace(this.getClass().getSimpleName(), ex);
             }
         }, 0, 10, TimeUnit.MILLISECONDS);
         return true;
@@ -80,16 +84,17 @@ public class JadScript extends Script {
 
     private void handleHealerInteraction() {
         var healer = Microbot.getRs2NpcCache().query()
-                .where(n -> n.getName() != null && n.getName().toLowerCase().contains("hurkot") && !n.isInteractingWithPlayer())
+                .where(n -> nameContains(n, "hurkot") && !n.isInteractingWithPlayer())
                 .nearest();
 
         if (healer != null) {
             healer.click("Attack");
         } else {
             var npc = Rs2Player.getInteracting();
-            if (npc == null || npc.getName().contains("hurkot")) {
+            String npcName = npc == null ? null : npc.getName();
+            if (npc == null || (npcName != null && npcName.contains("hurkot"))) {
                 var jad = Microbot.getRs2NpcCache().query()
-                        .where(n -> n.getName() != null && n.getName().toLowerCase().contains("jad"))
+                        .where(n -> nameContains(n, "jad"))
                         .nearest();
                 if (jad != null) {
                     jad.click("Attack");
@@ -97,6 +102,11 @@ public class JadScript extends Script {
             }
         }
 
+    }
+
+    static boolean nameContains(Actor actor, String part) {
+        String name = actor.getName();
+        return name != null && name.toLowerCase().contains(part);
     }
 
     @Override
@@ -160,6 +170,12 @@ public class JadScript extends Script {
     private void processAttackQueue(int currentTick) {
         synchronized (this) {
             QueuedJadAttack nextAttack = attackQueue.peek();
+            while (nextAttack != null && currentTick > nextAttack.impactTick + STALE_ATTACK_GRACE_TICKS) {
+                attackQueue.poll();
+                queuedPrayerStyle = null;
+                nextAttack = attackQueue.peek();
+            }
+
             if (nextAttack == null) {
                 queuedPrayerStyle = null;
                 return;
@@ -198,7 +214,7 @@ public class JadScript extends Script {
 
     boolean isInJadFight() {
         var jad = Microbot.getRs2NpcCache().query()
-                .where(n -> n.getName() != null && n.getName().toLowerCase().contains("jad"))
+                .where(n -> nameContains(n, "jad"))
                 .nearest();
         return jad != null;
     }

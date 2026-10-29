@@ -110,9 +110,11 @@ public class SlayerScript extends Script {
     // Crash detection / world hop tracking
     private long crashDetectionStartTime = 0;
     private long lastWorldHopTime = 0;
+    private long lastHopRefusedAt = 0;
     private boolean isSearchingForTargets = false;
     private static final int CRASH_HOP_DELAY_MS = 20000; // 20 seconds before hopping
     private static final int WORLD_HOP_COOLDOWN_MS = 60000; // 1 minute cooldown between hops
+    private static final int REFUSED_HOP_RETRY_MS = 10000;
 
     // Task completion loot delay
     private long taskCompletedTime = 0;
@@ -1813,7 +1815,8 @@ public class SlayerScript extends Script {
             return;
         }
 
-        if (taskDestination == null) {
+        WorldPoint destination = taskDestination;
+        if (destination == null) {
             log.warn("No destination set, returning to DETECTING_TASK");
             SlayerPlugin.setState(SlayerState.DETECTING_TASK);
             return;
@@ -1821,7 +1824,7 @@ public class SlayerScript extends Script {
 
         // Check if we've arrived
         WorldPoint playerLocation = Rs2Player.getWorldLocation();
-        if (playerLocation != null && playerLocation.distanceTo(taskDestination) <= ARRIVAL_DISTANCE) {
+        if (playerLocation != null && playerLocation.distanceTo(destination) <= ARRIVAL_DISTANCE) {
             log.info("Arrived at task location: {}", taskLocationName);
             SlayerPlugin.setState(SlayerState.AT_LOCATION);
             return;
@@ -1830,7 +1833,7 @@ public class SlayerScript extends Script {
         // Walk to destination if not already moving
         if (!Rs2Player.isMoving()) {
             log.info("Walking to task location: {}", taskLocationName);
-            Rs2Walker.walkTo(taskDestination);
+            Rs2Walker.walkTo(destination);
         }
     }
 
@@ -1867,11 +1870,12 @@ public class SlayerScript extends Script {
         }
 
         // Place cannon if using cannon and not yet placed
-        if (isUsingCannon && !cannonPlaced && cannonSpot != null) {
+        WorldPoint spot = cannonSpot;
+        if (isUsingCannon && !cannonPlaced && spot != null) {
             WorldPoint playerLocation = Rs2Player.getWorldLocation();
-            if (playerLocation != null && playerLocation.distanceTo(cannonSpot) <= 2) {
+            if (playerLocation != null && playerLocation.distanceTo(spot) <= 2) {
                 if (hasCannonParts()) {
-                    log.info("Placing cannon at {}", cannonSpot);
+                    log.info("Placing cannon at {}", spot);
                     if (setupCannon()) {
                         // Wait for cannon assembly animation to complete (takes several seconds)
                         log.info("Waiting for cannon assembly...");
@@ -1900,9 +1904,9 @@ public class SlayerScript extends Script {
                 }
             } else {
                 // Walk closer to cannon spot
-                log.debug("Walking to cannon spot, distance: {}", playerLocation != null ? playerLocation.distanceTo(cannonSpot) : "unknown");
+                log.debug("Walking to cannon spot, distance: {}", playerLocation != null ? playerLocation.distanceTo(spot) : "unknown");
                 if (!Rs2Player.isMoving()) {
-                    Rs2Walker.walkTo(cannonSpot);
+                    Rs2Walker.walkTo(spot);
                 }
                 return;
             }
@@ -2761,6 +2765,8 @@ public class SlayerScript extends Script {
             return;
         }
 
+        WorldPoint destination = taskDestination;
+
         // Get target monster names (use variant if specified, otherwise use slayer task monsters)
         List<String> targetMonsters = getTargetMonsterNames();
 
@@ -2771,9 +2777,9 @@ public class SlayerScript extends Script {
                     activeJsonProfile != null ? "found" : "null");
 
             // Fallback: try to attack anything that's attacking us ONLY at task location
-            if (taskDestination != null) {
+            if (destination != null) {
                 WorldPoint playerLocation = Rs2Player.getWorldLocation();
-                if (playerLocation != null && playerLocation.distanceTo(taskDestination) <= config.attackRadius()) {
+                if (playerLocation != null && playerLocation.distanceTo(destination) <= config.attackRadius()) {
                     Rs2NpcModel anyAttacker = findAnyNpcAttackingUs();
                     if (anyAttacker != null) {
                         log.info("Fallback: Attacking {} that is attacking us (at task location)", anyAttacker.getName());
@@ -2806,7 +2812,7 @@ public class SlayerScript extends Script {
             boolean targetAlive = true;
             if (currentInteracting instanceof net.runelite.api.NPC) {
                 net.runelite.api.NPC npc = (net.runelite.api.NPC) currentInteracting;
-                targetAlive = !npc.isDead() && npc.getHealthRatio() != 0;
+                targetAlive = isLivingTarget(npc);
             }
             if (targetAlive) {
                 log.debug("In combat with: {}", currentInteracting.getName());
@@ -2829,9 +2835,9 @@ public class SlayerScript extends Script {
             }
 
             // Fallback: attack ANY NPC that is attacking us ONLY if we're at the task location
-            if (taskDestination != null) {
+            if (destination != null) {
                 WorldPoint playerLocation = Rs2Player.getWorldLocation();
-                if (playerLocation != null && playerLocation.distanceTo(taskDestination) <= config.attackRadius()) {
+                if (playerLocation != null && playerLocation.distanceTo(destination) <= config.attackRadius()) {
                     Rs2NpcModel anyAttacker = findAnyNpcAttackingUs();
                     if (anyAttacker != null) {
                         log.info("Fallback: Retaliating against {} (at task location, not in target list)", anyAttacker.getName());
@@ -2848,12 +2854,12 @@ public class SlayerScript extends Script {
         // Find attackable NPCs matching target monsters
         // Prioritize NPCs that are already attacking us (interacting with player)
         List<Rs2NpcModel> attackableNpcs = Microbot.getRs2NpcCache().query()
-                .where(npc -> !npc.isDead())
+                .where(SlayerScript::isLivingTarget)
                 .where(npc -> npc.getName() != null)
                 .where(npc -> targetMonsters.stream()
                         .anyMatch(monster -> matchesTargetMonster(npc.getName(), monster)))
-                .where(npc -> taskDestination == null ||
-                        npc.getWorldLocation().distanceTo(taskDestination) <= config.attackRadius())
+                .where(npc -> destination == null ||
+                        npc.getWorldLocation().distanceTo(destination) <= config.attackRadius())
                 .toListOnClientThread()
                 .stream()
                 .sorted(Comparator
@@ -2868,10 +2874,10 @@ public class SlayerScript extends Script {
 
             // Debug: log nearby NPCs to help diagnose
             List<String> nearbyNpcNames = Microbot.getRs2NpcCache().query()
-                    .where(npc -> !npc.isDead())
+                    .where(SlayerScript::isLivingTarget)
                     .where(npc -> npc.getName() != null)
-                    .where(npc -> taskDestination == null ||
-                            npc.getWorldLocation().distanceTo(taskDestination) <= config.attackRadius())
+                    .where(npc -> destination == null ||
+                            npc.getWorldLocation().distanceTo(destination) <= config.attackRadius())
                     .toListOnClientThread()
                     .stream()
                     .map(Rs2NpcModel::getName)
@@ -2882,10 +2888,10 @@ public class SlayerScript extends Script {
             }
 
             // Crash detection - check if we've been unable to find targets for too long
-            if (config.hopWhenCrashed() && taskDestination != null) {
+            if (config.hopWhenCrashed() && destination != null) {
                 WorldPoint playerLocation = Rs2Player.getWorldLocation();
                 boolean atTaskLocation = playerLocation != null &&
-                        playerLocation.distanceTo(taskDestination) <= config.attackRadius();
+                        playerLocation.distanceTo(destination) <= config.attackRadius();
 
                 if (atTaskLocation) {
                     // Start or check crash detection timer
@@ -2898,7 +2904,11 @@ public class SlayerScript extends Script {
                         if (timeSinceStart >= CRASH_HOP_DELAY_MS) {
                             // Check cooldown
                             long timeSinceLastHop = System.currentTimeMillis() - lastWorldHopTime;
-                            if (timeSinceLastHop >= WORLD_HOP_COOLDOWN_MS) {
+                            long timeSinceRefusedHop = System.currentTimeMillis() - lastHopRefusedAt;
+                            if (timeSinceRefusedHop < REFUSED_HOP_RETRY_MS) {
+                                log.debug("Last world hop was refused, retrying in {} seconds",
+                                        (REFUSED_HOP_RETRY_MS - timeSinceRefusedHop) / 1000);
+                            } else if (timeSinceLastHop >= WORLD_HOP_COOLDOWN_MS) {
                                 log.info("No targets found for {} seconds - hopping worlds (likely crashed)",
                                         CRASH_HOP_DELAY_MS / 1000);
                                 hopToNewWorld();
@@ -2935,26 +2945,31 @@ public class SlayerScript extends Script {
      */
     private void hopToNewWorld() {
         try {
-            // Disable prayers before hopping
-            deactivateProfilePrayer();
-            deactivateOffensivePrayers();
+            if (Rs2Combat.inCombat()) {
+                lastHopRefusedAt = System.currentTimeMillis();
+                log.info("In combat, delaying world hop");
+                return;
+            }
 
             // Get world from config list or random
             int world = getHopWorld();
             if (world <= 0) {
+                lastHopRefusedAt = System.currentTimeMillis();
                 log.warn("Could not determine a valid world to hop to");
                 return;
             }
+
+            // Disable prayers before hopping
+            deactivateProfilePrayer();
+            deactivateOffensivePrayers();
             log.info("Hopping to world {}", world);
 
-            Microbot.hopToWorld(world);
+            if (!Microbot.hopToWorld(world)) {
+                lastHopRefusedAt = System.currentTimeMillis();
+                log.warn("World hop to {} refused, retrying in {} seconds", world, REFUSED_HOP_RETRY_MS / 1000);
+                return;
+            }
 
-            // Wait for switch world confirmation dialog
-            sleepUntil(() -> Rs2Widget.findWidget("Switch World") != null, 5000);
-            Rs2Keyboard.keyPress(KeyEvent.VK_SPACE);
-
-            // Wait for hop to complete
-            sleepUntil(() -> Microbot.getClient().getGameState() == GameState.HOPPING, 5000);
             sleepUntil(() -> Microbot.getClient().getGameState() == GameState.LOGGED_IN, 10000);
 
             // Brief pause after hopping
@@ -3012,12 +3027,23 @@ public class SlayerScript extends Script {
     }
 
     /**
-     * Checks if any NPC is currently attacking the player.
+     * Dying NPCs can keep interacting during their death animation. Unknown health (-1)
+     * is still eligible, but zero health must not block switching to another target.
+     */
+    private static boolean isLivingTarget(Actor target) {
+        if (target == null) return false;
+        return Microbot.getClientThread().runOnClientThreadOptional(() ->
+                !target.isDead() && target.getHealthRatio() != 0).orElse(false);
+    }
+
+    /**
+     * Checks if any living NPC is currently attacking the player.
      */
     private boolean isBeingAttacked() {
         return Microbot.getRs2NpcCache().query()
+                .where(SlayerScript::isLivingTarget)
                 .where(npc -> npc.getInteracting() == Microbot.getClient().getLocalPlayer())
-                .count() > 0;
+                .firstOnClientThread() != null;
     }
 
     /**
@@ -3025,14 +3051,16 @@ public class SlayerScript extends Script {
      * Used when we're "in combat" (being attacked) but not attacking back.
      */
     private Rs2NpcModel findNpcAttackingUs(List<String> targetMonsters) {
+        WorldPoint destination = taskDestination;
         return Microbot.getRs2NpcCache().query()
+                .where(SlayerScript::isLivingTarget)
                 .where(npc -> npc.getName() != null)
                 .where(npc -> npc.getInteracting() == Microbot.getClient().getLocalPlayer())
                 .where(npc -> targetMonsters.stream()
                         .anyMatch(monster -> matchesTargetMonster(npc.getName(), monster)))
-                .where(npc -> taskDestination == null ||
-                        npc.getWorldLocation().distanceTo(taskDestination) <= config.attackRadius() + 5)
-                .first();
+                .where(npc -> destination == null ||
+                        npc.getWorldLocation().distanceTo(destination) <= config.attackRadius() + 5)
+                .firstOnClientThread();
     }
 
     /**
@@ -3043,8 +3071,8 @@ public class SlayerScript extends Script {
         return Microbot.getRs2NpcCache().query()
                 .where(npc -> npc.getName() != null)
                 .where(npc -> npc.getInteracting() == Microbot.getClient().getLocalPlayer())
-                .where(npc -> !npc.isDead())
-                .first();
+                .where(SlayerScript::isLivingTarget)
+                .firstOnClientThread();
     }
 
     /**
@@ -3089,7 +3117,7 @@ public class SlayerScript extends Script {
         // If already in combat with a valid target, let autocast handle it
         if (Rs2Player.isInteracting()) {
             Actor currentTarget = Rs2Player.getInteracting();
-            if (currentTarget != null && !currentTarget.isDead()) {
+            if (isLivingTarget(currentTarget)) {
                 log.debug("Already in combat with {} - autocast will continue", currentTarget.getName());
                 return;
             }
@@ -3108,15 +3136,16 @@ public class SlayerScript extends Script {
             return;
         }
 
+        WorldPoint destination = taskDestination;
         List<Rs2NpcModel> nearbyMonsters = Microbot.getRs2NpcCache().query()
                 .where(npc -> npc.getInteracting() == Microbot.getClient().getLocalPlayer())
                 .where(npc -> npc.getName() != null)
                 .where(npc -> targetMonsters.stream()
                         .anyMatch(monster -> npc.getName().equalsIgnoreCase(monster)))
-                .where(npc -> !npc.isDead())
-                .where(npc -> taskDestination == null ||
-                        npc.getWorldLocation().distanceTo(taskDestination) <= config.attackRadius())
-                .toList();
+                .where(SlayerScript::isLivingTarget)
+                .where(npc -> destination == null ||
+                        npc.getWorldLocation().distanceTo(destination) <= config.attackRadius())
+                .toListOnClientThread();
 
         if (nearbyMonsters.isEmpty()) {
             log.debug("No target monsters found nearby for AoE combat");
@@ -3285,13 +3314,14 @@ public class SlayerScript extends Script {
      * @return The superior NPC if found, null otherwise
      */
     private Rs2NpcModel findNearbySuperior() {
+        WorldPoint destination = taskDestination;
         return Microbot.getRs2NpcCache().query()
-                .where(npc -> !npc.isDead())
+                .where(SlayerScript::isLivingTarget)
                 .where(npc -> npc.getName() != null)
                 .where(npc -> SUPERIOR_MONSTERS.contains(npc.getName()))
-                .where(npc -> taskDestination == null ||
-                        npc.getWorldLocation().distanceTo(taskDestination) <= config.attackRadius() + 5)
-                .toList()
+                .where(npc -> destination == null ||
+                        npc.getWorldLocation().distanceTo(destination) <= config.attackRadius() + 5)
+                .toListOnClientThread()
                 .stream()
                 .min(Comparator.comparingInt(npc ->
                         Rs2Player.getWorldLocation().distanceTo(npc.getWorldLocation())))

@@ -9,7 +9,7 @@ import net.runelite.api.Player;
 import net.runelite.api.Tile;
 import net.runelite.api.TileObject;
 import net.runelite.api.coords.WorldPoint;
-import net.runelite.api.GameState;
+import net.runelite.api.gameval.ItemID;
 import net.runelite.api.Skill;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.client.plugins.microbot.Microbot;
@@ -83,10 +83,13 @@ public class ThievingScript extends Script {
 
     private static final int DOOR_CHECK_RADIUS = 10;
     private static final ActionTimer DOOR_TIMER = new ActionTimer();
+    static final Set<Integer> SELF_DROPPED_ITEM_IDS = Set.of(ItemID.JUG_EMPTY, ItemID.VIAL_EMPTY);
     private final long[] doorCloseTime = new long[3];
     private int doorCloseIndex = 0;
     private long lastAction = Long.MAX_VALUE;
     private long lastHopAt = 0;
+    private long escapeHopUntil = 0;
+    private static final long ESCAPE_HOP_WINDOW_MS = 60_000;
 
     protected static int getCloseDoorTime() {
         return DOOR_TIMER.getRemainingTime();
@@ -157,9 +160,24 @@ ThievingNpcStrategy getActiveStrategy() {
         return thievingNpc;
     }
 
+    static boolean usesHighlightedNpcs(ThievingNpc target, boolean hasHighlights) {
+        return hasHighlights && target != ThievingNpc.VYRES;
+    }
+
+    private boolean hasHighlightedVyre() {
+        final var highlighted = net.runelite.client.plugins.npchighlight.NpcIndicatorsPlugin.getHighlightedNpcs();
+        if (highlighted.isEmpty()) return false;
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> highlighted.keySet().stream()
+                .anyMatch(npc -> npc != null && ThievingData.VYRES.contains(npc.getName()))).orElse(false);
+    }
+
     private Predicate<Rs2NpcModel> getThievingNpcFilter() {
         Predicate<Rs2NpcModel> filter = npc -> true;
-        if (net.runelite.client.plugins.npchighlight.NpcIndicatorsPlugin.getHighlightedNpcs().isEmpty()) {
+        final var highlighted = net.runelite.client.plugins.npchighlight.NpcIndicatorsPlugin.getHighlightedNpcs();
+        final Predicate<Rs2NpcModel> isHighlighted = npc -> npc != null && highlighted.containsKey(npc.getNpc());
+        if (usesHighlightedNpcs(config.THIEVING_NPC(), !highlighted.isEmpty())) {
+            filter = isHighlighted;
+        } else {
             final ThievingNpc finalNpc = config.THIEVING_NPC();
             if (finalNpc == null) {
                 log.error("Config Thieving NPC is null");
@@ -173,6 +191,7 @@ ThievingNpcStrategy getActiveStrategy() {
             switch (finalNpc) {
                 case VYRES:
                     filter = validateName(ThievingData.VYRES::contains);
+                    if (hasHighlightedVyre()) filter = filter.and(isHighlighted);
                     break;
                 case ARDOUGNE_KNIGHT:
                     filter = validateName("knight of ardougne"::equalsIgnoreCase);
@@ -182,11 +201,17 @@ ThievingNpcStrategy getActiveStrategy() {
                     filter = validateName(ThievingData.ELVES::contains);
                     break;
                 default:
-                    filter = validateName(name -> name.toLowerCase().contains(finalNpc.getName()));
+                    filter = validateName(name -> matchesNpcName(finalNpc, name));
                     break;
             }
         }
         return filter;
+    }
+
+    static boolean matchesNpcName(ThievingNpc target, String name) {
+        if (target == null || name == null) return false;
+        if (target == ThievingNpc.WARRIOR) return name.toLowerCase().contains(target.getName());
+        return name.equalsIgnoreCase(target.getName());
     }
 
     private Rs2NpcModel getThievingNpcCache() {
@@ -215,10 +240,23 @@ ThievingNpcStrategy getActiveStrategy() {
         if (startingNpc == null && config.THIEVING_NPC() == ThievingNpc.VYRES) {
             startingNpc = getNpcName(npc);
             log.debug("Set starting npc to {}", startingNpc);
+            if (!net.runelite.client.plugins.npchighlight.NpcIndicatorsPlugin.getHighlightedNpcs().isEmpty() && !hasHighlightedVyre()) {
+                log.info("None of your highlighted NPCs is a supported vyre, targeting the nearest vyre {}", startingNpc);
+            }
         }
         
         log.debug("Found new NPC={} to thieve @ {}", getNpcName(npc), toString(npc.getWorldLocation()));
         return npc;
+    }
+
+    private WorldPoint[] getVyreHouseOrReset(String name) {
+        final WorldPoint[] house = ThievingData.getVyreHouse(name);
+        if (house == null) {
+            log.warn("'{}' is not a supported vyre for Vyres mode, picking another vyre nearby", name);
+            thievingNpc = null;
+            startingNpc = null;
+        }
+        return house;
     }
 
     private <T> T getAttackingNpcs(Function<Stream<Rs2NpcModel>, T> consumer, T defaultValue) {
@@ -247,15 +285,6 @@ ThievingNpcStrategy getActiveStrategy() {
         return getAttackingNpcs(npcs -> npcs.findAny().isPresent(), false);
     }
 
-    private Rs2NpcModel getAttackingNpc() {
-        final WorldPoint myLoc = Rs2Player.getWorldLocation();
-        if (myLoc == null) return null;
-        return getAttackingNpcs(npcs ->
-                npcs.min(Comparator.comparingInt(npc -> myLoc.distanceTo(npc.getWorldLocation())))
-                        .orElse(null), null
-        );
-    }
-
     private int getMostExpensiveGroundItemId() {
         final int minPrice = config.keepItemsAboveValue();
         // takes long of client thread if there are a lot of dropped items
@@ -264,12 +293,13 @@ ThievingNpcStrategy getActiveStrategy() {
                 .stream()
                 .filter(Rs2TileItemModel::isOwned)
                 .map(Rs2TileItemModel::getId)
+                .filter(id -> !SELF_DROPPED_ITEM_IDS.contains(id))
                 .distinct()
                 .map(id -> {
-                    final int price = Microbot.getItemManager().getItemPrice(id);
+                    final long price = Microbot.getItemManager().getItemPrice(id);
                     return Map.entry(id, price);
                 }).filter(entry -> entry.getValue() >= minPrice)
-                .max(Comparator.comparingInt(Map.Entry::getValue))
+                .max(Comparator.comparingLong(Map.Entry::getValue))
                 .map(Map.Entry::getKey).orElse(-1)).orElse(-1);
     }
 
@@ -284,13 +314,15 @@ ThievingNpcStrategy getActiveStrategy() {
             return applyOverride(State.ESCAPE);
         }
 
+        if (isEscapeHopPending()) {
+            if (needsToEat() && hasFoodToEat()) return applyOverride(State.EAT);
+            return applyOverride(State.ESCAPE);
+        }
+
         if (!hasReqs()) return applyOverride(State.BANK);
 
         if (config.useFood()) {
-            boolean needToEat = Rs2Player.getHealthPercentage() <= config.hitpoints();
-            boolean needToDrink = config.food() == ThievingFood.ANCIENT_BREW && !Rs2Player.hasPrayerPoints();
-
-            if (needToEat || needToDrink) {
+            if (needsToEat()) {
                 return applyOverride(State.EAT);
             }
 
@@ -306,7 +338,8 @@ ThievingNpcStrategy getActiveStrategy() {
         if (isNpcNull(thievingNpc) && (thievingNpc = getThievingNpcCache()) == null && shouldHop()) return applyOverride(State.HOP);
 
         if (config.THIEVING_NPC() == ThievingNpc.VYRES) {
-            final WorldPoint[] housePolygon = ThievingData.getVyreHouse(getNpcName(thievingNpc));
+            final WorldPoint[] housePolygon = getVyreHouseOrReset(getNpcName(thievingNpc));
+            if (housePolygon == null) return State.IDLE;
 
             if (Microbot.getRs2NpcCache().query()
                     .where(Rs2NpcModel.matches(true, "Vyrewatch Sentinel"))
@@ -440,6 +473,10 @@ ThievingNpcStrategy getActiveStrategy() {
                 item.click("Take");
                 return;
             case ESCAPE:
+                if (!underAttack && isEscapeHopPending()) {
+                    if (attemptEscapeHop()) returnToStartAfterEscape();
+                    return;
+                }
                 WorldPoint escape = null;
                 final String escapeLocationString = config.customEscapeLocation();
                 if (!escapeLocationString.isBlank()) {
@@ -465,16 +502,14 @@ ThievingNpcStrategy getActiveStrategy() {
                             underAttack = false;
                             if (!isRunning()) return;
                             if (shouldHop()) {
-                                hopWorld();
+                                requestEscapeHop();
                             } else {
                                 log.debug("Skipping world hop (Wealthy Citizen)");
                             }
                         }
 
-                        if (walkTo("Walk to start", startingLocation, 3)) {
-                            sleepUntilWithInterrupt(() -> !Rs2Player.isMoving(), 1_200);
-                        }
-                        DOOR_TIMER.set();
+                        if (isEscapeHopPending() && !attemptEscapeHop()) return;
+                        returnToStartAfterEscape();
                         return;
                     } else {
                         log.error("Failed to use escape route defaulting to bank escape");
@@ -486,12 +521,12 @@ ThievingNpcStrategy getActiveStrategy() {
             case EAT:
                 if (config.food() == ThievingFood.ANCIENT_BREW) {
                     drinkAncientBrew();
-                    Rs2Inventory.dropAll(true, "vial");
+                    Rs2Inventory.dropAll(invItem -> SELF_DROPPED_ITEM_IDS.contains(invItem.getId()));
                     sleepUntil(() -> Rs2Player.hasPrayerPoints(), 800);
                 } else {
                     final double hp = Rs2Player.getHealthPercentage();
                     Rs2Player.useFood();
-                    Rs2Inventory.dropAll(true, "jug");
+                    Rs2Inventory.dropAll(invItem -> SELF_DROPPED_ITEM_IDS.contains(invItem.getId()));
                     sleepUntil(() -> Rs2Player.getHealthPercentage() > hp, 800);
                 }
                 return;
@@ -533,7 +568,8 @@ ThievingNpcStrategy getActiveStrategy() {
             case CLOSE_DOOR:
                 if (isNpcNull(thievingNpc)) return;
                 final String name = getNpcName(thievingNpc);
-                final WorldPoint[] house = ThievingData.getVyreHouse(name);
+                final WorldPoint[] house = getVyreHouseOrReset(name);
+                if (house == null) return;
                 final WorldPoint myLoc2 = Rs2Player.getWorldLocation();
                 if (isPointInPolygon(house, myLoc2)) {
                     log.debug("Closing door {} in {} house", toString(myLoc2), name);
@@ -591,7 +627,7 @@ ThievingNpcStrategy getActiveStrategy() {
                 if ((timeSince / 30_000d) > rand) sleep(300, 700); // around every 30s
 
                 var highlighted = net.runelite.client.plugins.npchighlight.NpcIndicatorsPlugin.getHighlightedNpcs();
-                if (highlighted.isEmpty()) {
+                if (highlighted.isEmpty() || config.THIEVING_NPC() == ThievingNpc.VYRES) {
                     if (isNpcNull(thievingNpc)) return;
                     Rs2Npc.pickpocket(thievingNpc.getNpc());
                 } else {
@@ -610,6 +646,7 @@ ThievingNpcStrategy getActiveStrategy() {
         lastAction = System.currentTimeMillis();
         nextShadowVeil = System.currentTimeMillis()+60_000;
         underAttack = false;
+        escapeHopUntil = 0;
         startupGraceUntil = System.currentTimeMillis() + 4_000;
         startTime = Instant.now();
         mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
@@ -624,6 +661,17 @@ ThievingNpcStrategy getActiveStrategy() {
             }
         }, 0, 20, TimeUnit.MILLISECONDS);
         return true;
+    }
+
+    private boolean needsToEat() {
+        if (!config.useFood()) return false;
+        if (Rs2Player.getHealthPercentage() <= config.hitpoints()) return true;
+        return config.food() == ThievingFood.ANCIENT_BREW && !Rs2Player.hasPrayerPoints();
+    }
+
+    private boolean hasFoodToEat() {
+        if (config.food() == ThievingFood.ANCIENT_BREW) return hasAncientBrew();
+        return !Rs2Inventory.getInventoryFood().isEmpty();
     }
 
     private boolean hasReqs() {
@@ -784,7 +832,9 @@ ThievingNpcStrategy getActiveStrategy() {
 
             final WorldPoint doorWp = door.getWorldLocation();
             if (!door.click("Close")) return false;
-            if (door.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) > 1) {
+            final WorldPoint locAfterClick = Rs2Player.getWorldLocation();
+            if (locAfterClick == null) return false;
+            if (door.getWorldLocation().distanceTo(locAfterClick) > 1) {
                 if (!sleepUntilWithInterrupt(() -> Rs2Player.isMoving() || Rs2Player.isStunned(), 1_200)) return false;
                 if (Rs2Player.isStunned()) return false;
                 sleepUntilWithInterrupt(() -> !Rs2Player.isMoving(), 5_000);
@@ -911,8 +961,13 @@ ThievingNpcStrategy getActiveStrategy() {
 
     private void bankAndEquip() {
         if (!Rs2Bank.isOpen()) {
+            final WorldPoint myLoc = Rs2Player.getWorldLocation();
+            if (myLoc == null) {
+                log.warn("Player Location is null");
+                return;
+            }
             BankLocation bank;
-            if (config.THIEVING_NPC() == ThievingNpc.VYRES && ThievingData.OUTSIDE_HALLOWED_BANK.distanceTo(Rs2Player.getWorldLocation()) < 20) {
+            if (config.THIEVING_NPC() == ThievingNpc.VYRES && ThievingData.OUTSIDE_HALLOWED_BANK.distanceTo(myLoc) < 20) {
                 log.debug("Near Hallowed");
                 bank = BankLocation.HALLOWED_SEPULCHRE;
                 // it's not needed for banking, but if we have it in inv we should equip it
@@ -922,7 +977,8 @@ ThievingNpcStrategy getActiveStrategy() {
                 bank = Rs2Bank.getNearestBank();
                 if (bank == BankLocation.DARKMEYER) {
                     if (!equip(ThievingData.VYRE_SET)) {
-                        log.error("Did not equip vyre set cannot go to darkmeyer bank");
+                        showMessage("Vyre noble set (top, legs and shoes) is needed to bank at Darkmeyer. Carry or wear it and start the script again.");
+                        shutdown();
                         return;
                     }
                 }
@@ -1014,16 +1070,46 @@ ThievingNpcStrategy getActiveStrategy() {
         if (underAttack) {
             underAttack = false;
             if (shouldHop()) {
-                hopWorld();
+                requestEscapeHop();
             } else {
                 log.debug("Skipping world hop (Wealthy Citizen)");
             }
         }
 
-        if (walkTo("Return to npc", startingLocation, 3)) {
+        if (isEscapeHopPending() && !attemptEscapeHop()) return;
+        returnToStartAfterEscape();
+    }
+
+    private void returnToStartAfterEscape() {
+        if (walkTo("Walk to start", startingLocation, 3)) {
             sleepUntilWithInterrupt(() -> !Rs2Player.isMoving(), 1_200);
         }
         DOOR_TIMER.set();
+    }
+
+    private boolean isEscapeHopPending() {
+        return escapeHopUntil != 0;
+    }
+
+    private void requestEscapeHop() {
+        if (escapeHopUntil == 0) escapeHopUntil = System.currentTimeMillis() + ESCAPE_HOP_WINDOW_MS;
+    }
+
+    private boolean attemptEscapeHop() {
+        if (!config.escapeAttacking() || !shouldHop()) {
+            escapeHopUntil = 0;
+            return true;
+        }
+        if (hopWorld()) {
+            escapeHopUntil = 0;
+            return true;
+        }
+        if (System.currentTimeMillis() >= escapeHopUntil) {
+            log.warn("Escape hop did not succeed within {}s, returning without hopping", ESCAPE_HOP_WINDOW_MS / 1000);
+            escapeHopUntil = 0;
+            return true;
+        }
+        return false;
     }
 
     private void dropAllExceptImportant() {
@@ -1041,46 +1127,24 @@ ThievingNpcStrategy getActiveStrategy() {
     }
 
 
-    private void hopWorld() {
+    private boolean hopWorld() {
         final long now = System.currentTimeMillis();
         if (now - lastHopAt < 15000) {
             log.debug("Skipping hop; last hop was {}ms ago", now - lastHopAt);
-            return;
+            return false;
         }
         lastHopAt = now;
-        DOOR_TIMER.unset();
-        final int maxAttempts = 5;
         log.debug("Hopping world, please wait");
 
-        for (int attempt = 0; attempt < maxAttempts; attempt++) {
-            final int currentWorld = Microbot.getClient().getWorld();
-            Microbot.hopToWorld(Login.getRandomWorld(true, null));
-
-            BooleanSupplier attackedInterrupt = () -> {
-                final Rs2NpcModel attacking = getAttackingNpc();
-                if (attacking == null) return false;
-                final WorldPoint me = Rs2Player.getWorldLocation();
-                final WorldPoint npc = attacking.getWorldLocation();
-                if (me != null && npc != null && me.distanceTo(npc) <= 2) {
-                    log.warn("Getting attacked while hopping");
-                    return true;
-                }
-                return false;
-            };
-            
-            sleepUntilWithInterrupt(() -> Microbot.getClient().getGameState() == GameState.HOPPING, attackedInterrupt, 15_000);
-            sleepUntilWithInterrupt(() -> Microbot.getClient().getGameState() == GameState.LOGGED_IN, attackedInterrupt, 15_000);
-            boolean changed = sleepUntilWithInterrupt(() -> Microbot.getClient().getWorld() != currentWorld, attackedInterrupt, 15_000);
-
-            if (changed) {
-                log.debug("Successful hop world");
-                thievingNpc = null; // force fresh lookup after hop
-                return;
-            }
-            sleep(250, 350);
-            log.warn("Hop attempt {}/{} failed, retrying...", attempt + 1, maxAttempts);
+        final int world = Login.getRandomWorld(true, null);
+        if (!Microbot.hopToWorld(world)) {
+            log.warn("World hop to {} refused, retrying later", world);
+            return false;
         }
-        log.error("Failed to hop world");
+        DOOR_TIMER.unset();
+        log.debug("Successful hop world");
+        thievingNpc = null; // force fresh lookup after hop
+        return true;
     }
 
     private void drinkAncientBrew() {

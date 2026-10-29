@@ -2,6 +2,7 @@ package net.runelite.client.plugins.microbot.qualityoflife;
 
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Player;
+import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
 import net.runelite.client.plugins.microbot.util.Rs2InventorySetup;
@@ -15,7 +16,6 @@ import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.widget.Rs2Widget;
 
 import java.awt.*;
-import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -75,6 +75,10 @@ public class QoLScript extends Script {
 
                 if (config.useQuestDialogueOptions() && Rs2Dialogue.isInDialogue()) {
                     Rs2Dialogue.handleQuestOptionDialogueSelection();
+                }
+
+                if (config.autoPayTreeRemoval() && Rs2Dialogue.isInDialogue()) {
+                    handleTreeRemovalPayment();
                 }
 
 
@@ -155,6 +159,16 @@ public class QoLScript extends Script {
         Rs2Player.drinkPrayerPotionAt(points);
     }
 
+    // Auto-confirm the farming "Pay X Coins to have your tree chopped down?" prompt (tree removal
+    // after a check-health) so farm runs don't wait on a manual 'Yes.'. Matched on the question
+    // title so it never fires on unrelated Yes/No dialogues; amount-agnostic on purpose.
+    private void handleTreeRemovalPayment() {
+        if (Rs2Dialogue.hasQuestion("to have your tree chopped down")
+                && Rs2Dialogue.hasDialogueOption("Yes")) {
+            Rs2Dialogue.clickOption("Yes");
+        }
+    }
+
     // handle dialogue continue
     private void handleDialogueContinue() {
         Rs2Dialogue.clickContinue();
@@ -180,10 +194,13 @@ public class QoLScript extends Script {
             return;
         }
 
-        for (NewMenuEntry menuEntry : QoLPlugin.bankMenuEntries) {
-            processBankMenuEntry(menuEntry);
+        try {
+            for (NewMenuEntry menuEntry : QoLPlugin.bankMenuEntries) {
+                processBankMenuEntry(menuEntry);
+            }
+        } finally {
+            QoLPlugin.executeBankActions = false;
         }
-        QoLPlugin.executeBankActions = false;
     }
 
     private boolean openBank() {
@@ -211,7 +228,7 @@ public class QoLScript extends Script {
                 }
             }
         }
-        Microbot.doInvoke(menuEntry, Objects.requireNonNull(menuEntry.getWidget()).getBounds());
+        Microbot.doInvoke(menuEntry, invokeBounds(menuEntry));
         //Rs2Random.wait(200, 500);
     }
 
@@ -234,10 +251,13 @@ public class QoLScript extends Script {
             return;
         }
 
-        for (NewMenuEntry menuEntry : QoLPlugin.furnaceMenuEntries) {
-            processFurnaceMenuEntry(menuEntry);
+        try {
+            for (NewMenuEntry menuEntry : QoLPlugin.furnaceMenuEntries) {
+                processFurnaceMenuEntry(menuEntry);
+            }
+        } finally {
+            QoLPlugin.executeFurnaceActions = false;
         }
-        QoLPlugin.executeFurnaceActions = false;
     }
 
     private boolean openFurnace() {
@@ -253,7 +273,7 @@ public class QoLScript extends Script {
 
     private void processFurnaceMenuEntry(NewMenuEntry menuEntry) {
         log.info("Executing action: {} {}", menuEntry.getOption(), menuEntry.getTarget());
-        Microbot.doInvoke(menuEntry, Objects.requireNonNull(menuEntry.getWidget()).getBounds());
+        Microbot.doInvoke(menuEntry, invokeBounds(menuEntry));
         Rs2Random.wait(200, 500);
     }
 
@@ -264,16 +284,24 @@ public class QoLScript extends Script {
             return;
         }
 
-        for (NewMenuEntry menuEntry : QoLPlugin.anvilMenuEntries) {
-            processAnvilMenuEntry(menuEntry);
+        try {
+            for (NewMenuEntry menuEntry : QoLPlugin.anvilMenuEntries) {
+                processAnvilMenuEntry(menuEntry);
+            }
+        } finally {
+            QoLPlugin.executeAnvilActions = false;
         }
-        QoLPlugin.executeAnvilActions = false;
     }
 
     private void processAnvilMenuEntry(NewMenuEntry menuEntry) {
         log.info("Executing action: {} {}", menuEntry.getOption(), menuEntry.getTarget());
-        Microbot.doInvoke(menuEntry, Objects.requireNonNull(menuEntry.getWidget()).getBounds());
+        Microbot.doInvoke(menuEntry, invokeBounds(menuEntry));
         Rs2Random.wait(200, 500);
+    }
+
+    static Rectangle invokeBounds(NewMenuEntry menuEntry) {
+        Widget widget = menuEntry.getWidget();
+        return widget != null ? widget.getBounds() : new Rectangle(1, 1);
     }
 
     // reset all stored menu entries

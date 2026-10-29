@@ -40,6 +40,7 @@ import net.runelite.client.util.Text;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import java.awt.event.KeyEvent;
+import java.awt.Rectangle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -48,8 +49,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -270,6 +271,11 @@ public class SalvagingScript {
             if (isPlayerAnimating(player)) {
                 log.info("Currently salvaging, waiting...");
                 sleep(WAIT_TIME, WAIT_TIME_MAX);
+                return;
+            }
+
+            if (player.getWorldLocation() == null) {
+                log.info("Player location unavailable, skipping salvaging tick");
                 return;
             }
 
@@ -685,9 +691,7 @@ public class SalvagingScript {
             closeCargoHoldInterface();
             return;
         }
-        AtomicBoolean clicked = new AtomicBoolean(false);
-        Microbot.getClientThread().invoke(() -> clicked.set(clickDepositInventoryInOpenCargoHold()));
-        if (!clicked.get()) {
+        if (!clickDepositInventoryInOpenCargoHold()) {
             log.warn("Cargo hold: Deposit inventory control not found in interface");
             closeCargoHoldInterface();
             return;
@@ -807,25 +811,35 @@ public class SalvagingScript {
     }
 
     private boolean clickDepositInventoryInOpenCargoHold() {
+        return clickCargoHoldWidget(this::findDepositInventoryInOpenCargoHold);
+    }
+
+    private boolean clickCargoHoldWidget(Supplier<Widget> target) {
+        Rectangle bounds = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            Widget widget = target.get();
+            if (widget == null || widget.isHidden()) return null;
+            Rectangle area = widget.getBounds();
+            return area == null || area.isEmpty() ? null : new Rectangle(area);
+        }).orElse(null);
+        if (bounds == null) return false;
+        Microbot.getMouse().click(bounds);
+        return true;
+    }
+
+    private Widget findDepositInventoryInOpenCargoHold() {
         Client client = Microbot.getClient();
         if (client == null) {
-            return false;
+            return null;
         }
         Widget universe = client.getWidget(InterfaceID.SailingBoatCargohold.UNIVERSE);
         if (universe == null || universe.isHidden()) {
-            return false;
+            return null;
         }
         Widget deposit = client.getWidget(InterfaceID.SailingBoatCargohold.DEPOSITALL_INVENTORY);
         if (deposit != null && !deposit.isHidden()) {
-            Rs2Widget.clickWidget(deposit);
-            return true;
+            return deposit;
         }
-        Widget target = findDepositInventoryWidget(universe);
-        if (target == null) {
-            return false;
-        }
-        Rs2Widget.clickWidget(target);
-        return true;
+        return findDepositInventoryWidget(universe);
     }
 
     private static Widget findDepositInventoryWidget(Widget w) {
@@ -1047,9 +1061,7 @@ public class SalvagingScript {
         }
 
         int salvageBefore = Rs2Inventory.count("salvage");
-        AtomicBoolean invoked = new AtomicBoolean(false);
-        Microbot.getClientThread().invoke(() -> invoked.set(invokeWithdrawOneSalvageStackFromCargoHoldUi()));
-        if (!invoked.get()) {
+        if (!invokeWithdrawOneSalvageStackFromCargoHoldUi()) {
             log.info("Cargo hold: no salvage stack in hold UI; re-reading occupied count from open interface");
             readOccupiedCountFromOpenHoldInterface();
             closeCargoHoldInterface();
@@ -1112,23 +1124,18 @@ public class SalvagingScript {
     }
 
     /**
-     * Left-clicks the salvage stack widget in the open cargo-hold item grid ({@code Rs2Widget.clickWidget}).
+     * Left-clicks a client-thread bounds snapshot of the salvage stack widget.
      * Real widget click (same pattern as other hub plugins), not a synthesized menu entry.
      */
     private boolean invokeWithdrawOneSalvageStackFromCargoHoldUi() {
-        Client client = Microbot.getClient();
-        if (client == null) {
-            return false;
-        }
-        Widget salvageSlot = findFirstSalvageStackWidget(client);
-        if (salvageSlot == null) {
-            return false;
-        }
-        Rs2Widget.clickWidget(salvageSlot);
-        return true;
+        return clickCargoHoldWidget(SalvagingScript::findFirstSalvageStackWidget);
     }
 
-    private static Widget findFirstSalvageStackWidget(Client client) {
+    private static Widget findFirstSalvageStackWidget() {
+        Client client = Microbot.getClient();
+        if (client == null) {
+            return null;
+        }
         Widget items = client.getWidget(InterfaceID.SailingBoatCargohold.ITEMS);
         if (items == null) {
             return null;
@@ -1230,7 +1237,11 @@ public class SalvagingScript {
     }
 
     private boolean isWithinSalvageArea(WorldPoint playerLocation, Rs2TileObjectModel wreck) {
-        return playerLocation.distanceTo(wreck.getWorldLocation()) <= SIZE_SALVAGEABLE_AREA;
+        WorldPoint wreckLocation = wreck.getWorldLocation();
+        if (playerLocation == null || wreckLocation == null) {
+            return false;
+        }
+        return playerLocation.distanceTo(wreckLocation) <= SIZE_SALVAGEABLE_AREA;
     }
 
     /**

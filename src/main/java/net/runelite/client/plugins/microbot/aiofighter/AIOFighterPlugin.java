@@ -17,6 +17,8 @@ import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.PluginDependency;
+import net.runelite.client.plugins.microbot.inventorysetups.MInventorySetupsPlugin;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.PluginConstants;
 import net.runelite.client.plugins.microbot.aiofighter.bank.BankerScript;
@@ -60,9 +62,10 @@ import java.util.stream.Collectors;
         enabledByDefault = PluginConstants.DEFAULT_ENABLED,
         isExternal = PluginConstants.IS_EXTERNAL
 )
+@PluginDependency(MInventorySetupsPlugin.class)
 @Slf4j
 public class AIOFighterPlugin extends Plugin {
-    public static final String version = "2.2.0";
+    public static final String version = "2.2.14";
     public static boolean needShopping = false;
     private static final String SET = "Set";
     private static final String CENTER_TILE = ColorUtil.wrapWithColorTag("Center Tile", JagexColors.MENU_TARGET);
@@ -211,6 +214,9 @@ public class AIOFighterPlugin extends Plugin {
     }
 
     private static <T> void setConfig(String key, T value) {
+        if (value == null) {
+            return;
+        }
         Microbot.getConfigManager().setConfiguration(AIOFighterConfig.GROUP, key, value);
     }
 
@@ -251,6 +257,10 @@ public class AIOFighterPlugin extends Plugin {
     }
 
     public static void setCurrentSlayerInventorySetup(InventorySetup currentInventorySetup) {
+        if (currentInventorySetup == null) {
+            Microbot.log("Inventory setup not found; keeping current inventory setup");
+            return;
+        }
         Microbot.log("Setting current inventory setup to: " + currentInventorySetup.getName());
         setConfig("currentInventorySetup", currentInventorySetup);
     }
@@ -467,7 +477,8 @@ public class AIOFighterPlugin extends Plugin {
             if (event.getActor() != Microbot.getClient().getLocalPlayer()) return;
             final Hitsplat hitsplat = event.getHitsplat();
 
-            if ((hitsplat.isMine()) && event.getActor().getInteracting() instanceof NPC && config.togglePrayer() && (config.prayerStyle() == PrayerStyle.LAZY_FLICK) || (config.prayerStyle() == PrayerStyle.PERFECT_LAZY_FLICK) || (config.prayerStyle() == PrayerStyle.MIXED_LAZY_FLICK)) {
+            if (hitsplat.isMine() && event.getActor().getInteracting() instanceof NPC && config.togglePrayer()
+                    && (config.prayerStyle() == PrayerStyle.LAZY_FLICK || config.prayerStyle() == PrayerStyle.PERFECT_LAZY_FLICK || config.prayerStyle() == PrayerStyle.MIXED_LAZY_FLICK)) {
                 flickerScript.resetLastAttack(true);
                 Rs2Prayer.disableAllPrayers();
                 if (config.toggleQuickPray())

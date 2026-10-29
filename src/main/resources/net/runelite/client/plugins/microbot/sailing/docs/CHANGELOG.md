@@ -5,6 +5,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [2.2.61]
+
+### Fixed
+- Cargo-hold widget bounds are captured on the client thread before script-thread mouse input; missing or empty bounds cancel the click.
+- **Cargo hold deposit and withdraw**: The script now waits for the Deposit inventory and salvage stack clicks to finish before deciding whether they worked, so it no longer closes the cargo hold while the click is still on its way and repeats the click on the next loop.
+
+---
+
+## [2.2.58]
+
+### Added
+- **Barracuda Trials start**: Auto Navigate starts the configured Target Rank from Rum-dashed Ralph's trial selection.
+- **Trials camera**: Auto Navigate turns the camera toward the next waypoint while sailing.
+
+### Fixed
+- **Tempor Tantrum Marlin supplies**: Supply waypoints, including the final lap supply point at 3037, 2761, must be reached within one tile and are never skipped.
+- **Trials stability**: Boat location lookups tolerate missing world views, decorations are removed only from their own scene, and salvaging is paused while Trials is enabled.
+
+---
+
+## [2.2.57]
+
+### Added
+- **Tempor Tantrum rum automation**: Auto Navigate now collects and delivers rum as the boat passes each Barracuda boat.
+
+### Fixed
+- **Tempor Tantrum course recovery**: Auto Navigate limits rum retries until the HUD state changes and follows the remaining forward route after a rum action changes the boat heading.
+
+---
+
 ## [2.2.34]
 
 ### Fixed

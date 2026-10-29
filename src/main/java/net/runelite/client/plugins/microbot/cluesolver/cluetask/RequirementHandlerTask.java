@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.client.callback.ClientThread;
@@ -15,11 +16,13 @@ import net.runelite.client.plugins.cluescrolls.clues.item.ItemRequirement;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.cluesolver.ClueSolverPlugin;
 import net.runelite.client.plugins.microbot.util.bank.Rs2Bank;
+import net.runelite.client.plugins.microbot.util.bank.enums.BankLocation;
 
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -28,8 +31,11 @@ public class RequirementHandlerTask extends ClueTask {
     private final EventBus eventBus;
     private final ExecutorService backgroundExecutor;
     private Iterator<ItemRequirement> requirementIterator;
-    private CompletableFuture<Boolean> itemReceivedFuture;
-    private ItemRequirement currentRequirement;
+    private volatile CompletableFuture<Boolean> itemReceivedFuture;
+    private volatile ItemRequirement currentRequirement;
+    private volatile BankLocation targetBank;
+    private final AtomicBoolean bankStepRunning = new AtomicBoolean(false);
+    private final AtomicBoolean completed = new AtomicBoolean(false);
 
     @Inject
     private ClientThread clientThread;
@@ -43,24 +49,58 @@ public class RequirementHandlerTask extends ClueTask {
 
     @Override
     protected boolean executeTask() {
+        if (completed.get()) return false;
         eventBus.register(this);
+        if (completed.get()) {
+            eventBus.unregister(this);
+            return false;
+        }
         log.info("Checking for missing items.");
-        checkForMissingItemsAsync();
+        runBankStep(this::checkForMissingItems);
         return true;
     }
 
-    /**
-     * Retrieves a list of missing items based on the requirements asynchronously on the client thread.
-     */
-    private void checkForMissingItemsAsync() {
-        Microbot.getClientThread().invokeLater(() -> {
-            List<ItemRequirement> missingItems = getMissingItems(requirements);
-            if (missingItems.isEmpty()) {
-                completeTask(true);
-            } else {
-                fetchMissingItemsFromBank(missingItems);
-            }
-        });
+    private void runBankStep(Runnable step) {
+        if (completed.get() || !bankStepRunning.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            backgroundExecutor.submit(() -> {
+                try {
+                    if (!completed.get()) {
+                        step.run();
+                    }
+                } catch (Exception e) {
+                    log.warn("Requirement bank step failed: {}", e.getMessage(), e);
+                    completeTask(false);
+                } finally {
+                    bankStepRunning.set(false);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            bankStepRunning.set(false);
+            completeTask(false);
+        }
+    }
+
+    private void checkForMissingItems() {
+        List<ItemRequirement> missingItems = Microbot.getClientThread()
+                .runOnClientThreadOptional(() -> getMissingItems(requirements))
+                .orElse(null);
+        if (missingItems == null) {
+            log.warn("Unable to read inventory and equipment for item requirements.");
+            completeTask(false);
+        } else if (missingItems.isEmpty()) {
+            completeTask(true);
+        } else {
+            fetchMissingItemsFromBank(missingItems);
+        }
+    }
+
+    private String getItemName(ItemRequirement requirement) {
+        return Microbot.getClientThread()
+                .runOnClientThreadOptional(() -> requirement.getCollectiveName(client))
+                .orElse("N/A");
     }
 
     private List<ItemRequirement> getMissingItems(List<ItemRequirement> requirements) {
@@ -78,7 +118,7 @@ public class RequirementHandlerTask extends ClueTask {
 
     private void fetchMissingItemsFromBank(List<ItemRequirement> missingItems) {
         this.requirementIterator = missingItems.iterator();
-        log.info("Missing items: {}", missingItems.stream().map(e -> e.getCollectiveName(client)).collect(Collectors.joining(", ")));
+        log.info("Missing items: {}", missingItems.stream().map(this::getItemName).collect(Collectors.joining(", ")));
 
         if (requirementIterator == null || !requirementIterator.hasNext()) {
             completeTask(true);
@@ -96,13 +136,24 @@ public class RequirementHandlerTask extends ClueTask {
         // be called from off-client-thread code paths (executeTask flow). Direct
         // client.getLocalPlayer().getWorldLocation() throws IllegalStateException, which
         // cascaded into "Failed to open the bank" + walker deadlock.
-        net.runelite.api.coords.WorldPoint playerLocation = getPlayerLocationSafe();
+        WorldPoint playerLocation = getPlayerLocationSafe();
         if (playerLocation == null) {
-            log.debug("Player location unavailable in walkToBank; will retry next tick");
+            log.warn("Player location unavailable in walkToBank.");
+            completeTask(false);
             return;
         }
-        if (playerLocation.distanceTo(Rs2Bank.getNearestBank().getWorldPoint()) > 10) {
-            Rs2Bank.walkToBankAndUseBank();
+        BankLocation nearestBank = Rs2Bank.getNearestBank();
+        if (nearestBank == null) {
+            log.warn("No reachable bank found.");
+            completeTask(false);
+            return;
+        }
+        targetBank = nearestBank;
+        if (playerLocation.distanceTo(nearestBank.getWorldPoint()) > 10) {
+            if (!Rs2Bank.walkToBankAndUseBank()) {
+                log.warn("Failed to walk to the bank.");
+                completeTask(false);
+            }
         } else {
             openBank();
         }
@@ -123,7 +174,7 @@ public class RequirementHandlerTask extends ClueTask {
         }
 
         currentRequirement = requirementIterator.next();
-        String itemName = currentRequirement.getCollectiveName(client);
+        String itemName = getItemName(currentRequirement);
 
         if (!Rs2Bank.hasItem(itemName)) {
             log.warn("Item {} not found in bank.", itemName);
@@ -132,12 +183,14 @@ public class RequirementHandlerTask extends ClueTask {
             return;
         }
 
+        CompletableFuture<Boolean> receivedFuture = new CompletableFuture<>();
+        itemReceivedFuture = receivedFuture;
         Rs2Bank.withdrawAndEquip(itemName);
-        itemReceivedFuture = new CompletableFuture<>();
 
         backgroundExecutor.submit(() -> {
             try {
-                boolean received = itemReceivedFuture.get(5, TimeUnit.SECONDS);
+                boolean received = receivedFuture.get(5, TimeUnit.SECONDS);
+                if (completed.get()) return;
 
                 if (received) {
                     Microbot.log("Item " + itemName + " received: " + received);
@@ -148,7 +201,11 @@ public class RequirementHandlerTask extends ClueTask {
                     Rs2Bank.closeBank();
                     completeTask(false);
                 }
-            } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                completeTask(false);
+            } catch (ExecutionException | TimeoutException e) {
+                if (completed.get()) return;
                 log.warn("Error waiting for item {}: {}", itemName, e.getMessage());
                 Rs2Bank.closeBank();
                 completeTask(false);
@@ -158,32 +215,47 @@ public class RequirementHandlerTask extends ClueTask {
 
     @Subscribe
     public void onGameTick(GameTick event) {
+        if (completed.get() || bankStepRunning.get()) {
+            return;
+        }
         if (Rs2Bank.isOpen() && currentRequirement == null) {
-            fetchNextItem();
+            runBankStep(this::fetchNextItem);
             return;
         }
         // v1.0.4 fix: defensive client-thread-safe read. onGameTick is @Subscribe-annotated so
         // it normally runs on the client thread, but using the helper is harmless and consistent.
-        net.runelite.api.coords.WorldPoint playerLocation = getPlayerLocationSafe();
-        if (playerLocation == null) return;
-        if (!Rs2Bank.isOpen() && playerLocation.distanceTo(Rs2Bank.getNearestBank().getWorldPoint()) <= 5) {
-            openBank();
+        WorldPoint playerLocation = getPlayerLocationSafe();
+        BankLocation bank = targetBank;
+        if (playerLocation == null || bank == null) return;
+        if (!Rs2Bank.isOpen() && playerLocation.distanceTo(bank.getWorldPoint()) <= 5) {
+            runBankStep(this::openBank);
         }
     }
 
     @Subscribe
     public void onItemContainerChanged(ItemContainerChanged event) {
-        if (event.getContainerId() == InventoryID.INVENTORY.getId() && currentRequirement != null && itemReceivedFuture != null && !itemReceivedFuture.isDone()) {
-            if (currentRequirement.fulfilledBy(event.getItemContainer().getItems())) {
-                itemReceivedFuture.complete(true);
+        ItemRequirement requirement = currentRequirement;
+        CompletableFuture<Boolean> pending = itemReceivedFuture;
+        if (!completed.get() && event.getContainerId() == InventoryID.INVENTORY.getId() && requirement != null && pending != null && !pending.isDone()) {
+            if (requirement.fulfilledBy(event.getItemContainer().getItems())) {
+                pending.complete(true);
             }
         }
     }
 
+    public void cancel() {
+        completeTask(false);
+    }
+
     @Override
     protected void completeTask(boolean success) {
-        super.completeTask(success);
+        if (!completed.compareAndSet(false, true)) return;
         eventBus.unregister(this);
+        CompletableFuture<Boolean> pending = itemReceivedFuture;
+        if (pending != null) pending.complete(false);
+        currentRequirement = null;
+        targetBank = null;
+        super.completeTask(success);
         log.info("Requirement handling task completed with status: {}", success ? "Success" : "Failure");
     }
 }
