@@ -196,7 +196,8 @@ class TitheFarmingCoreLoopTest {
 
     private static TitheFarmPlant plantToVisit() {
         TitheFarmPlant plant = mock(TitheFarmPlant.class);
-        when(plant.getGameObject()).thenReturn(objectAt(FAR_AWAY));
+        Rs2TileObjectModel patch = objectAt(FAR_AWAY);
+        when(plant.getGameObject()).thenReturn(patch);
         when(plant.isEmptyPatchOrSeedling()).thenReturn(true);
         TitheFarmingScript.plants = new ArrayList<>(List.of(plant));
         TitheFarmingScript.state = TitheFarmState.PLANTING_SEEDS;
