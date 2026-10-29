@@ -1,5 +1,6 @@
 package net.runelite.client.plugins.microbot.tithefarming;
 
+import net.runelite.api.Player;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.ObjectID;
@@ -405,7 +406,8 @@ public class TitheFarmingScript extends Script {
         }
         if (cropPass == 3 && !plant.isValidToHarvest()) return;
 
-        WorldPoint corePlayerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
+        WorldPoint corePlayerLoc = playerLocation();
+        if (corePlayerLoc == null) return;
         Rs2TileObjectModel plantModel = plant.getGameObject();
         if (plantModel == null) {
             return;
@@ -654,12 +656,23 @@ public class TitheFarmingScript extends Script {
                 .nearest();
         if (barrel == null) return;
         WorldPoint barrelLoc = barrel.getWorldLocation();
-        WorldPoint barrelPlayerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
+        WorldPoint barrelPlayerLoc = playerLocation();
+        if (barrelPlayerLoc == null) return;
         if (barrelLoc.distanceTo2D(barrelPlayerLoc) > DISTANCE_THRESHOLD_MINIMAP_WALK) {
             Rs2Walker.walkMiniMap(barrelLoc, 1);
             sleepUntil(Rs2Player::isMoving);
         }
-        sleepUntil(() -> barrelLoc.distanceTo2D(Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation())) < DISTANCE_THRESHOLD_MINIMAP_WALK);
+        sleepUntil(() -> {
+            WorldPoint loc = playerLocation();
+            return loc != null && barrelLoc.distanceTo2D(loc) < DISTANCE_THRESHOLD_MINIMAP_WALK;
+        });
+    }
+
+    private static WorldPoint playerLocation() {
+        return Microbot.getClientThread().invoke(() -> {
+            Player localPlayer = Microbot.getClient().getLocalPlayer();
+            return localPlayer == null ? null : localPlayer.getWorldLocation();
+        });
     }
 
     private void checkGricollerCharges() {
@@ -699,11 +712,15 @@ public class TitheFarmingScript extends Script {
                 return true;
             }
             WorldPoint sackLoc = sack.getWorldLocation();
-            WorldPoint playerLoc = Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation());
+            WorldPoint playerLoc = playerLocation();
+            if (playerLoc == null) return true;
             if (sackLoc.distanceTo2D(playerLoc) > DISTANCE_THRESHOLD_MINIMAP_WALK) {
                 Rs2Walker.walkMiniMap(sackLoc, 1);
                 sleepUntil(Rs2Player::isMoving);
-                sleepUntil(() -> sackLoc.distanceTo2D(Microbot.getClientThread().invoke(() -> Microbot.getClient().getLocalPlayer().getWorldLocation())) < DISTANCE_THRESHOLD_MINIMAP_WALK);
+                sleepUntil(() -> {
+                    WorldPoint loc = playerLocation();
+                    return loc != null && sackLoc.distanceTo2D(loc) < DISTANCE_THRESHOLD_MINIMAP_WALK;
+                });
             }
             sack.click();
             Rs2Player.waitForAnimation();
