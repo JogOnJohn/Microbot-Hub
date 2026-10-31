@@ -29,9 +29,13 @@ edits are deliberately excluded, including Shared Automation's existing docs.
 2. The private `codex/mahogany-interaction-api-20261020` snapshot
    `97be5d6d627e6e525535bb2f3341a0bfb2ea92d0` uses InteractionRequest factories and
    cancelInteraction, available on runtime/data-sync but not canonical playable.
-   Its walkTo(WorldPoint,InteractionRequest) can appear arity-compatible with
-   canonical walkTo(WorldPoint,int). It is not compatible. Homes is historical
-   source evidence only: do not launch it for validation.
+   Its actual caller uses walkWithBankedTransportsAndState(WorldPoint,int,InteractionRequest)
+   returning InteractionResult; canonical instead accepts a boolean third argument
+   and returns WalkerState. The arity audit still reports candidate-present.
+   The separate two-argument walkTo overload collision exists at the API level,
+   but is not this snapshot's call. Public request fields and lifecycle methods are
+   also source dependencies. Homes is historical source evidence only: do not
+   launch it for validation.
 3. Reconcile client interaction API before rewriting shared callers. Retain one
    request per operation, cancel abandoned requests and require observed interaction
    effects, not just coordinate arrival/readiness.
@@ -50,3 +54,22 @@ Test caller cancellation/stop, ownership changes, banked routes and interactions
 No Hub application build or gameplay smoke was performed for these report-only
 changes. Build, installation, enablement, restart and publication are separate steps.
 The running client and active Ardougne Agility workload remain untouched.
+
+## Independent Review Follow-Up
+
+Read-only subagent review confirmed the inventory counts and identified these
+future validation slices. None of these builds or gameplay tests has run here.
+
+| Slice | Compare against | Behaviour or linkage to preserve |
+| --- | --- | --- |
+| Main Hunter Rumours, Barrows, HSBlackJack, Agility | Canonical baseline then candidate | Owned banked targets; predicate yield before coordinate arrival; dispatch/fallback booleans; shutdown cancellation |
+| Private Blackjack, Agility, both Tithe branches | Existing compatible baseline then candidate | Full selected source set, not changed files alone; run-permitted fallback, exact coordinates/plane/minimap tolerance |
+| Private AutoHunter | Existing compatible baseline then candidate | Branch compile guard; zero direct walker delta rows do not prove compatibility |
+| Historical Homes interaction branch | Runtime baseline then candidate; canonical failure expected | Actual banked interaction overload, factories, anchor/lifecycle fields, retained identity, cancellation and effect-confirmed results |
+| Previously compiled representative plugins | Candidate linkage check | JVM descriptors, return types and public fields, not just source recompilation |
+
+Use explicit `-PmicrobotClientPath=<exact-candidate.jar>` with matching pluginList.
+Separate baseline failures from candidate regressions and disable remote fallback.
+Representative sources: Hunter Rumours `WalkerAccess.java:38`, Barrows
+`BarrowsScript.java:3155`, HSBlackJack `HSBlackJackScript.java:507`, Agility
+`AgilityScript.java:107`; pinned private Homes `MahoganyHomesScript.java:1987,2001`.
