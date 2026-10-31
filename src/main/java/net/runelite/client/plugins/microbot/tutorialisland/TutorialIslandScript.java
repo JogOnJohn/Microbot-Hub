@@ -781,8 +781,8 @@ public class TutorialIslandScript extends Script {
                 Rs2Inventory.combine("Bucket of water", "Pot of flour");
                 sleepUntil(() -> Rs2Inventory.contains("Dough"), 2000);
             } else if (Rs2Inventory.contains("Bread dough")) {
-                Rs2Inventory.interact("Bread dough");
-                Rs2Random.waitEx(1200, 300);
+                if (!Rs2Inventory.interact("Bread dough")
+                        || !sleepUntil(Rs2Inventory::isItemSelected, 1200)) return;
                 Microbot.getRs2TileObjectCache().query().interact(9736, "Cook");
                 sleepUntil(() -> Rs2Inventory.contains("Bread"));
             } else if (Rs2Inventory.contains("Bread")) {
