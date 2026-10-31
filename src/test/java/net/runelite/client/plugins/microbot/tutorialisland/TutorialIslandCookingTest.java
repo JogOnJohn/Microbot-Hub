@@ -16,6 +16,7 @@ class TutorialIslandCookingTest {
     private MockedStatic<Microbot> microbot;
     private MockedStatic<Rs2Inventory> inventory;
     private Rs2TileObjectCache objects;
+    private TutorialIslandScript script;
 
     @BeforeEach
     void setUp() {
@@ -28,6 +29,7 @@ class TutorialIslandCookingTest {
         microbot.when(Microbot::getRs2TileObjectCache).thenReturn(objects);
         inventory.when(() -> Rs2Inventory.contains("Bread dough")).thenReturn(true);
         inventory.when(() -> Rs2Inventory.contains("Bread")).thenReturn(true);
+        script = new TutorialIslandScript(mock(TutorialIslandPlugin.class));
     }
 
     @AfterEach
@@ -40,14 +42,14 @@ class TutorialIslandCookingTest {
     void cooksOnlyAfterSelectionIsObserved() {
         inventory.when(() -> Rs2Inventory.interact("Bread dough")).thenReturn(true);
         inventory.when(Rs2Inventory::isItemSelected).thenReturn(true);
-        new TutorialIslandScript().CookingGuide();
+        script.CookingGuide();
         verify(objects.query()).interact(9736, "Cook");
     }
 
     @Test
     void rejectedDoughInteractionDoesNotCook() {
         inventory.when(() -> Rs2Inventory.interact("Bread dough")).thenReturn(false);
-        new TutorialIslandScript().CookingGuide();
+        script.CookingGuide();
         verifyNoInteractions(objects);
     }
 
@@ -55,7 +57,7 @@ class TutorialIslandCookingTest {
     void unobservedSelectionDoesNotCook() {
         inventory.when(() -> Rs2Inventory.interact("Bread dough")).thenReturn(true);
         inventory.when(Rs2Inventory::isItemSelected).thenReturn(false);
-        new TutorialIslandScript().CookingGuide();
+        script.CookingGuide();
         verifyNoInteractions(objects);
     }
 }
