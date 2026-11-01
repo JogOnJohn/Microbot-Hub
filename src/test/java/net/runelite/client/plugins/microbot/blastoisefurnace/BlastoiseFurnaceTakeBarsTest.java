@@ -1,6 +1,8 @@
 package net.runelite.client.plugins.microbot.blastoisefurnace;
 
 import net.runelite.api.Client;
+import net.runelite.api.ObjectComposition;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.api.tileobject.Rs2TileObjectCache;
@@ -17,6 +19,9 @@ import org.mockito.MockedStatic;
 
 import java.awt.event.KeyEvent;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.Optional;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -25,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.RETURNS_SELF;
 import static org.mockito.Mockito.atLeastOnce;
@@ -34,11 +40,15 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doReturn;
 
 class BlastoiseFurnaceTakeBarsTest {
 
     private Object previousClient;
     private Object previousCache;
+    private Object previousClientThread;
+    private ClientThread clientThread;
+    private boolean inClientRead;
     private Rs2TileObjectQueryable query;
     private MockedStatic<Rs2Widget> widgets;
     private MockedStatic<Rs2Keyboard> keyboard;
@@ -51,6 +61,13 @@ class BlastoiseFurnaceTakeBarsTest {
     @BeforeEach
     void setUp() throws Exception {
         previousClient = swapMicrobotField("client", mock(Client.class));
+        clientThread = mock(ClientThread.class);
+        when(clientThread.runOnClientThreadOptional(any())).thenAnswer(call -> {
+            inClientRead = true;
+            try { return Optional.ofNullable(((Callable<?>) call.getArgument(0)).call()); }
+            finally { inClientRead = false; }
+        });
+        previousClientThread = swapMicrobotField("clientThread", clientThread);
         Rs2TileObjectCache cache = mock(Rs2TileObjectCache.class);
         query = mock(Rs2TileObjectQueryable.class, RETURNS_SELF);
         when(cache.query()).thenReturn(query);
@@ -77,6 +94,7 @@ class BlastoiseFurnaceTakeBarsTest {
         widgets.close();
         swapMicrobotField("client", previousClient);
         swapMicrobotField("rs2TileObjectCache", previousCache);
+        swapMicrobotField("clientThread", previousClientThread);
     }
 
     @Test
@@ -118,7 +136,8 @@ class BlastoiseFurnaceTakeBarsTest {
     @Test
     void clicksTheDispenserOnceItOffersTake() {
         AtomicInteger checks = new AtomicInteger();
-        when(query.first()).thenAnswer(invocation -> checks.incrementAndGet() > 2 ? mock(Rs2TileObjectModel.class) : null);
+        Rs2TileObjectModel dispenser = readyDispenser();
+        when(query.first()).thenAnswer(invocation -> checks.incrementAndGet() > 2 ? dispenser : null);
         when(query.interact(BLAST_FURNACE_DISPENSER, "Take")).thenAnswer(invocation -> {
             promptOpen.set(true);
             return true;
@@ -127,7 +146,7 @@ class BlastoiseFurnaceTakeBarsTest {
         assertTrue(script().takeBarsFromDispenser());
 
         assertEquals(1, presses.get());
-        verify(query, atLeastOnce()).withAction("Take");
+        verify(query, atLeastOnce()).withId(BLAST_FURNACE_DISPENSER);
     }
 
     @Test
@@ -152,7 +171,30 @@ class BlastoiseFurnaceTakeBarsTest {
     }
 
     private void dispenserOffersTake() {
-        when(query.first()).thenReturn(mock(Rs2TileObjectModel.class));
+        Rs2TileObjectModel dispenser = readyDispenser();
+        when(query.first()).thenReturn(dispenser);
+    }
+
+    private Rs2TileObjectModel readyDispenser() {
+        Rs2TileObjectModel object = mock(Rs2TileObjectModel.class);
+        ObjectComposition composition = mock(ObjectComposition.class);
+        when(composition.getActions()).thenReturn(new String[]{"Take"});
+        when(object.getObjectComposition()).thenAnswer(call -> {
+            assertTrue(inClientRead, "composition must be read on the client thread");
+            return composition;
+        });
+        return object;
+    }
+
+    @Test
+    void readinessRejectsMissingCompositionAndUnavailableClientRead() throws Exception {
+        Rs2TileObjectModel missing = mock(Rs2TileObjectModel.class);
+        when(query.first()).thenReturn(missing);
+        Method readiness = BlastoiseFurnaceScript.class.getDeclaredMethod("dispenserOffersTake");
+        readiness.setAccessible(true);
+        assertFalse((boolean) readiness.invoke(script()));
+        doReturn(Optional.empty()).when(clientThread).runOnClientThreadOptional(any());
+        assertFalse((boolean) readiness.invoke(script()));
     }
 
     private static BlastoiseFurnaceScript script() {

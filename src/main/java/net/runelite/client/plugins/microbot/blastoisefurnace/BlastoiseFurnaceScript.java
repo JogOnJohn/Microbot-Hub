@@ -2,10 +2,12 @@ package net.runelite.client.plugins.microbot.blastoisefurnace;
 
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Skill;
+import net.runelite.api.ObjectComposition;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.Script;
+import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
 import net.runelite.client.plugins.microbot.blastoisefurnace.enums.Bars;
 import net.runelite.client.plugins.microbot.blastoisefurnace.enums.State;
 import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
@@ -300,10 +302,19 @@ public class BlastoiseFurnaceScript extends Script {
     }
 
     private boolean dispenserOffersTake() {
-        return Microbot.getRs2TileObjectCache().query()
-                .withId(BLAST_FURNACE_DISPENSER)
-                .withAction("Take")
-                .first() != null;
+        if (Microbot.getClientThread() == null) return false;
+        return Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            if (Microbot.getRs2TileObjectCache() == null) return false;
+            Rs2TileObjectModel object = Microbot.getRs2TileObjectCache().query()
+                    .withId(BLAST_FURNACE_DISPENSER).first();
+            if (object == null) return false;
+            ObjectComposition composition = object.getObjectComposition();
+            for (int i = 0; composition != null && composition.getImpostorIds() != null && i < 4; i++) {
+                composition = composition.getImpostor();
+            }
+            String[] actions = composition == null ? null : composition.getActions();
+            return actions != null && Arrays.stream(actions).anyMatch("Take"::equalsIgnoreCase);
+        }).orElse(false);
     }
 
     private void retrievePrimary() {
