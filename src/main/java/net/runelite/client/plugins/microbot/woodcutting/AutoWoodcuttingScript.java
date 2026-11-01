@@ -257,7 +257,7 @@ public class AutoWoodcuttingScript extends Script {
 
         updateActiveTree(config);
 
-        if (config.progressiveMode() && ensureProgressiveLocation(config)) {
+        if (shouldEnsureProgressiveLocation(config) && ensureProgressiveLocation(config)) {
             return true;
         }
 
@@ -320,6 +320,10 @@ public class AutoWoodcuttingScript extends Script {
                 }
                 break;
         }
+    }
+
+    boolean shouldEnsureProgressiveLocation(AutoWoodcuttingConfig config) {
+        return config.progressiveMode() && woodcuttingScriptState == WoodcuttingScriptState.WOODCUTTING;
     }
 
     private boolean ensureProgressiveLocation(AutoWoodcuttingConfig config) {
