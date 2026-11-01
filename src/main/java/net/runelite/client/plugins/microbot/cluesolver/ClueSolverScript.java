@@ -23,7 +23,9 @@ import java.util.function.Supplier;
 public class ClueSolverScript extends Script {
     private Future<?> currentTask;
     private volatile Future<?> itemRequirementsTask;
+    private volatile ClueTask activeTask;
     private volatile ClueScroll currentClue;
+    private volatile ClueScroll failedClue;
     private final ScheduledExecutorService executorService = newExecutorService();
 
     @Inject
@@ -63,7 +65,7 @@ public class ClueSolverScript extends Script {
         taskFactoryMap.put(SkillChallengeClue.class, () -> new SkillChallengeClueTask(client, (SkillChallengeClue) currentClue, clueScrollPlugin, clueSolverPlugin, eventBus, executorService));
         taskFactoryMap.put(AnagramClue.class, () -> new AnagramClueTask(client, (AnagramClue) currentClue, clueScrollPlugin, clueSolverPlugin, eventBus, executorService));
         taskFactoryMap.put(ThreeStepCrypticClue.class, () -> new ThreeStepCrypticClueTask(client, (ThreeStepCrypticClue) currentClue, clueScrollPlugin, clueSolverPlugin, eventBus, executorService));
-        taskFactoryMap.put(HotColdClue.class, () -> new HotColdClueTask(client, (HotColdClue) currentClue, clueScrollPlugin, clueSolverPlugin, eventBus, executorService));
+        taskFactoryMap.put(HotColdClue.class, () -> new HotColdClueTask(client, (HotColdClue) currentClue, clueScrollPlugin, clueSolverPlugin, eventBus, executorService, overlay::updateTaskStatus));
         taskFactoryMap.put(CipherClue.class, () -> new CipherClueTask(client, (CipherClue) currentClue, clueScrollPlugin, clueSolverPlugin, eventBus, executorService));
     }
 
@@ -81,13 +83,20 @@ public class ClueSolverScript extends Script {
 
 
 
-    private void processClues() {
+    void processClues() {
         if (executorService.isShutdown()) {
             log.warn("Executor service is shut down; skipping task submission.");
             return;
         }
 
         ClueScroll clue = clueScrollPlugin.getClue();
+        ClueScroll failed = failedClue;
+        if (failed != null) {
+            if (failed.equals(clue)) {
+                return;
+            }
+            failedClue = null;
+        }
         if (clue != null && !clue.equals(currentClue)) {
             if (itemRequirementsTask != null && !itemRequirementsTask.isDone()) {
                 return;
@@ -188,6 +197,7 @@ public class ClueSolverScript extends Script {
             return;
         }
 
+        activeTask = task;
         currentTask = executorService.submit(() -> {
             CompletableFuture<Boolean> future = new CompletableFuture<>();
             task.setFuture(future);
@@ -201,7 +211,13 @@ public class ClueSolverScript extends Script {
                 log.error("Error executing clue task", e);
                 return false;
             } finally {
-                resetCurrentClue();
+                if (task instanceof HotColdClueTask && ((HotColdClueTask) task).hasFailedWithError()) {
+                    failedClue = currentClue;
+                    currentClue = null;
+                    overlay.updateTaskStatus(HotColdClueTask.STATUS_STOPPED_AFTER_ERROR);
+                } else {
+                    resetCurrentClue();
+                }
             }
         });
     }
@@ -221,6 +237,12 @@ public class ClueSolverScript extends Script {
         if (itemRequirementsTask != null && !itemRequirementsTask.isDone()) {
             itemRequirementsTask.cancel(true);
         }
+        ClueTask task = activeTask;
+        activeTask = null;
+        if (task instanceof HotColdClueTask) {
+            ((HotColdClueTask) task).stop();
+        }
+        failedClue = null;
         eventBus.unregister(this);
 
         overlay.updateTaskStatus("Clue Solver Script stopped");
