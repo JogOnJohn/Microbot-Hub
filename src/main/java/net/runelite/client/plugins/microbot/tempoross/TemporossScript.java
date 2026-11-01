@@ -648,11 +648,11 @@ public class TemporossScript extends Script {
         if (actor == null) {
             return;
         }
-        LocalPoint lp = actor.getLocalLocation();
-        if (lp != null && Rs2Camera.isTileOnScreen(lp)) {
-            return;
-        }
-        Rs2Camera.turnTo(actor, 70);
+        LocalPoint offScreen = Microbot.getClientThread().runOnClientThreadOptional(() -> {
+            LocalPoint location = actor.getLocalLocation();
+            return location != null && !Rs2Camera.isTileOnScreen(location) ? location : null;
+        }).orElse(null);
+        if (offScreen != null) Rs2Camera.turnTo(offScreen, 70);
     }
 
     /**

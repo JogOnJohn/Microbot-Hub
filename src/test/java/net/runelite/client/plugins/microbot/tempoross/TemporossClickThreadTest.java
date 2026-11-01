@@ -18,6 +18,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -55,6 +57,10 @@ class TemporossClickThreadTest
             Supplier<?> supplier = invocation.getArgument(0);
             return clientExecutor.submit(supplier::get).get(5, TimeUnit.SECONDS);
         });
+        when(clientThreadMock.runOnClientThreadOptional(any())).thenAnswer(invocation -> {
+            Callable<?> read = invocation.getArgument(0);
+            return Optional.ofNullable(clientExecutor.submit(read).get(5, TimeUnit.SECONDS));
+        });
         swapMicrobotField("clientThread", clientThreadMock);
     }
 
@@ -69,6 +75,21 @@ class TemporossClickThreadTest
             field.set(null, entry[1]);
         }
         clientExecutor.shutdownNow();
+    }
+
+    @Test
+    void facingReadsActorLocationOnClientThreadAndSkipsUnavailableLocation() throws Exception
+    {
+        NPC actor = mock(NPC.class);
+        List<Thread> reads = new ArrayList<>();
+        when(actor.getLocalLocation()).thenAnswer(invocation -> {
+            reads.add(Thread.currentThread());
+            return null;
+        });
+        Method method = TemporossScript.class.getDeclaredMethod("faceIfNeeded", net.runelite.api.Actor.class);
+        method.setAccessible(true);
+        method.invoke(null, actor);
+        assertEquals(List.of(clientThread), reads);
     }
 
     @Test
