@@ -245,3 +245,23 @@ set in Gradle and PowerShell, without weakening input checks. Rerun under a fres
 label. Parent's first binary-helper attempt failed javac at V17 because bundled
 ASM was older; tool/inspected classpaths are now separated as described above.
 Corrected Gradle and binary-tool runs remain for parent after file freeze.
+
+## Final Execution (2026-11-01)
+
+The corrected strict matrix completed: seven main plugins and six isolated private
+snapshots compiled against both exact baseline and candidate JARs (26 plugin
+configurations). All source/classpath guards passed. All temporary validation
+checkouts were retired; existing active worktrees were not built or changed.
+
+Sixteen old-binary/compiled-fixture cases passed paired baseline and candidate
+symbolic-linkage checks (32 runs), following 24 verifier self-tests including
+negative controls. The direct interaction fixture was compiled against the old
+runtime and never executed. Historical Homes was compile/linkage only, never live.
+
+Candidate SHA-256:
+`ab0694827b1d461185fe9bf59adbd915cb5df86e047d9def88f6f9bcc7d0ea38`.
+Evidence: `operator-work/output/audits/walker-api-synthesis-20261031/`
+in the host workspace, including `hub-matrix-20261101/completed.json` and
+`binary-linkage-completed-20261101.json`. See the sibling client prep checkout's
+`docs/walker-api-synthesis/FINAL-HANDOFF.md` for source pins, packaging corrections,
+limits and artifact location. No Hub plugin was installed, enabled or pushed.
