@@ -1,0 +1,110 @@
+import groovy.json.JsonOutput
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+import org.gradle.api.artifacts.FileCollectionDependency
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.tasks.compile.JavaCompile
+
+// External guard: never change the Hub's normal dependency/build configuration.
+gradle.beforeProject { p ->
+    if (p != p.rootProject) return
+    def props = gradle.startParameter.projectProperties
+    ['microbotClientPath', 'walkerAuditSha256', 'walkerAuditOutput', 'pluginList'].each {
+        if (!props[it]) throw new GradleException("Missing required exact-client property: ${it}")
+    }
+    if (props.microbotClientDir || props.microbotClientVersion != 'exact-local') {
+        throw new GradleException('Directory discovery/latest/published client selection is forbidden')
+    }
+    def candidate = p.file(props.microbotClientPath).canonicalFile
+    def sha256 = { File f ->
+        def digest = MessageDigest.getInstance('SHA-256')
+        f.withInputStream { stream ->
+            byte[] buffer = new byte[65536]
+            int n
+            while ((n = stream.read(buffer)) != -1) digest.update(buffer, 0, n)
+        }
+        digest.digest().encodeHex().toString()
+    }
+    def verifyHash = {
+        if (!candidate.isFile() || sha256(candidate) != props.walkerAuditSha256.toLowerCase(Locale.ROOT)) {
+            throw new GradleException('Exact client artifact missing/changed')
+        }
+    }
+    verifyHash()
+    def output = p.file(props.walkerAuditOutput).canonicalFile
+    if (!output.toPath().startsWith(new File(p.rootDir, 'build/walker-api-validation').canonicalFile.toPath())) {
+        throw new GradleException('Audit output must be inside this checkout build/walker-api-validation')
+    }
+    p.layout.buildDirectory.set(new File(output, 'classes-build'))
+    def isClient = { String group, String name ->
+        group in ['com.microbot', 'net.runelite'] && name in ['client', 'microbot', 'runelite-client', 'runelite-api']
+    }
+    p.configurations.configureEach { cfg ->
+        cfg.resolutionStrategy.eachDependency { d ->
+            if (isClient(d.requested.group, d.requested.name) || isClient(d.target.group, d.target.name)) {
+                throw new GradleException("Published client dependency forbidden in ${cfg.name}: ${d.requested}")
+            }
+        }
+        cfg.incoming.afterResolve {
+            cfg.incoming.resolutionResult.allComponents.each { component ->
+                def id = component.id
+                if (id instanceof ModuleComponentIdentifier && isClient(id.group, id.module)) {
+                    throw new GradleException("Published client component forbidden: ${id}")
+                }
+            }
+        }
+    }
+    def evidence = [:]
+    gradle.projectsEvaluated {
+        def selected = props.pluginList.split(',') as List
+        def discovered = p.ext.validPlugins
+        if ((discovered*.name as Set) != (selected as Set)) {
+            throw new GradleException("Selected plugins not exactly discovered: ${selected} / ${discovered*.name}")
+        }
+        // GString and String have different hashes: Set membership must use plain Strings.
+        def allowedTasks = discovered.collect { "compile${it.sourceSetName.capitalize()}Java".toString() } as Set
+        def runtimeDeps = p.configurations.microbotRuntime.allDependencies
+        if (runtimeDeps.size() != 1 || !(runtimeDeps.first() instanceof FileCollectionDependency) ||
+            (runtimeDeps.first().files.files.collect { it.canonicalFile } as Set) != ([candidate] as Set)) {
+            throw new GradleException('microbotRuntime must contain only the exact local client file')
+        }
+        gradle.taskGraph.whenReady { graph ->
+            def compiles = graph.allTasks.findAll { it instanceof JavaCompile }
+            if ((compiles.findAll { it.project == p }*.name as Set) != allowedTasks ||
+                compiles.any { it.project == p && it.name == 'compileJava' }) {
+                throw new GradleException('Unexpected/global Java compile task; use only selected generated compile tasks')
+            }
+        }
+        p.tasks.withType(JavaCompile).configureEach { task ->
+            if (!(task.name in allowedTasks)) return
+            task.doFirst {
+                verifyHash()
+                def files = task.classpath.files.collect { it.canonicalFile }
+                if (!files.contains(candidate)) throw new GradleException("Missing candidate on ${task.path}")
+                def markers = ['net/runelite/client/plugins/microbot/util/walker/Rs2Walker.class',
+                    'net/runelite/api/coords/WorldPoint.class', 'net/runelite/client/RuneLite.class']
+                files.findAll { it != candidate }.each { f ->
+                    boolean duplicate = f.isDirectory() && markers.any { new File(f, it).isFile() }
+                    if (f.isFile() && f.name.endsWith('.jar')) {
+                        new ZipFile(f).withCloseable { z -> duplicate = markers.any { z.getEntry(it) != null } }
+                    }
+                    if (duplicate) throw new GradleException("Alternate walker classes on ${task.path}: ${f}")
+                }
+                evidence[task.path] = files.collect { f ->
+                    [path: f.path, sha256: f.isFile() ? sha256(f) : null]
+                }
+                output.mkdirs()
+                new File(output, 'classpaths.json').text = JsonOutput.prettyPrint(JsonOutput.toJson(evidence))
+                p.logger.lifecycle("EXACT-CLIENT-GUARD ${task.path} ${props.walkerAuditSha256}")
+            }
+        }
+        gradle.buildFinished { result ->
+            if (result.failure == null) {
+                def expected = allowedTasks.collect { p.path == ':' ? ":${it}".toString() : "${p.path}:${it}".toString() } as Set
+                if ((evidence.keySet() as Set) != expected) {
+                    throw new GradleException("Missing exact-client guard execution: expected ${expected}, observed ${evidence.keySet()}")
+                }
+            }
+        }
+    }
+}
