@@ -4,8 +4,8 @@ import java.awt.Rectangle;
 import net.runelite.api.MenuAction;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class CgQuickClickSafetyTest {
     @Test public void missingGeometryNeverFallsBackToRandomCanvas() {
