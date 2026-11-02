@@ -44,14 +44,14 @@ import net.runelite.client.util.HotkeyListener;
 	tags = {"gauntlet", "corrupted", "hunllef", "cg", "prep", "pvm", "boss"},
 	authors = {"Syd"},
 	version = CgPrepPlugin.version,
-	minClientVersion = "2.6.43",
+	minClientVersion = "2.6.50",
 	iconUrl = "https://chsami.github.io/Microbot-Hub/CgPrepPlugin/assets/icon.png",
 	enabledByDefault = PluginConstants.DEFAULT_ENABLED,
 	isExternal = PluginConstants.IS_EXTERNAL
 )
 public class CgPrepPlugin extends Plugin
 {
-	static final String version = "1.7.5";
+	static final String version = "1.7.6";
 
 	@Inject
 	private CgPrepConfig config;
