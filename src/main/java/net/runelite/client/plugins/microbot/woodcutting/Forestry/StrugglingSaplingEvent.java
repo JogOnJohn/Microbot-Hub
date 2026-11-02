@@ -6,7 +6,7 @@ import net.runelite.client.plugins.microbot.BlockingEvent;
 import net.runelite.client.plugins.microbot.BlockingEventPriority;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
-import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
+import net.runelite.client.plugins.microbot.woodcutting.ForestryObjectActions;
 import net.runelite.client.plugins.microbot.util.inventory.Rs2Inventory;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
@@ -43,18 +43,23 @@ public class StrugglingSaplingEvent implements BlockingEvent {
         try{
             if (plugin == null || !Microbot.isPluginEnabled(plugin)) return false;
             if (Microbot.getClient() == null || !Microbot.isLoggedIn()) return false;        
-            var strugglingSaplings = Microbot.getRs2TileObjectCache().query()
-                    .withName("Struggling sapling")
-                    .toListOnClientThread();
-            if (strugglingSaplings.isEmpty()) return false;
-            return strugglingSaplings.stream().anyMatch(obj ->
-                    Rs2GameObject.hasAction(obj.getObjectComposition(), "Add-mulch") &&
-                            obj.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= AutoWoodcuttingScript.FORESTRY_DISTANCE
-            );
+            return findSapling() != null;
         } catch (Exception e) {
             log.error("StrugglingSaplingEvent: Exception in validate method", e);
             return false;
         }
+    }
+
+    private Rs2TileObjectModel findSapling() {
+        var position = Rs2Player.getWorldLocation();
+        var cache = Microbot.getRs2TileObjectCache();
+        if (position == null || cache == null) return null;
+        return cache.query().withName("Struggling sapling")
+                .where(obj -> {
+                    var location = obj.getWorldLocation();
+                    return location != null && location.distanceTo(position) <= AutoWoodcuttingScript.FORESTRY_DISTANCE
+                            && ForestryObjectActions.hasAction(obj, "Add-mulch");
+                }).nearestOnClientThread();
     }
 
     @Override
@@ -63,23 +68,13 @@ public class StrugglingSaplingEvent implements BlockingEvent {
             Microbot.log("StrugglingSaplingEvent: Executing Struggling Sapling event");
             plugin.currentForestryEvent = ForestryEvents.STRUGGLING_SAPLING;
             // Find the struggling sapling
-            var sapling = Microbot.getRs2TileObjectCache().query()
-                    .withName("Struggling sapling")
-                    .toListOnClientThread()
-                    .stream()
-                    .filter(obj ->
-                            Rs2GameObject.hasAction(obj.getObjectComposition(), "Add-mulch") &&
-                                    obj.getWorldLocation().distanceTo(Rs2Player.getWorldLocation()) <= AutoWoodcuttingScript.FORESTRY_DISTANCE
-                    )
-                    .findFirst()
-                    .orElse(null);
+            var sapling = findSapling();
+            if (sapling == null) return true;
 
             var ingredients = Microbot.getRs2TileObjectCache().query()
                     .where(gameObject -> ingredientIds.contains(gameObject.getId()))
-                    .toList()
-                    .stream()
-                    .filter(obj -> Rs2GameObject.hasAction(obj.getObjectComposition(), "Collect"))
-                    .collect(Collectors.toList());
+                    .where(obj -> ForestryObjectActions.hasAction(obj, "Collect"))
+                    .toListOnClientThread();
 
             if (ingredients.isEmpty()) {
                 Microbot.log("StrugglingSaplingEvent: No leaf ingredients available to collect. Ending event.");
@@ -101,7 +96,9 @@ public class StrugglingSaplingEvent implements BlockingEvent {
                 // If we have mulch stage 3 in inventory, add them to the sapling
                 if (Rs2Inventory.contains(ItemID.GATHERING_EVENT_SAPLING_MULCH_STAGE3)) {
                     Microbot.log("StrugglingSaplingEvent: Adding mulch to the struggling sapling.");
-                    sapling.click("Add-mulch");
+                    var currentSapling = findSapling();
+                    if (currentSapling == null) break;
+                    currentSapling.click("Add-mulch");
                     Rs2Player.waitForAnimation();
                     continue;
                 }
