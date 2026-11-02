@@ -144,7 +144,7 @@ public final class HumanInput
 	/** Travel to a point inside the target and click it there. */
 	boolean click(QuickClicks.Target t) throws InterruptedException
 	{
-		if (t == null)
+		if (!QuickClicks.canAct(t))
 		{
 			return false;
 		}
@@ -153,9 +153,12 @@ public final class HumanInput
 		{
 			return false;
 		}
-		return gesture(emit ->
+		boolean[] sent = {false};
+		boolean completed = gesture(emit ->
 		{
 			moveTo(p.x, p.y);
+			if (!QuickClicks.validAt(t, p)) return;
+			t.entry.validWhen(() -> QuickClicks.validAt(t, p));
 			// What VirtualMouse's quick click does once the cursor is there: the menu entry rides the
 			// press, then press / short hold / release.
 			if (!net.runelite.client.plugins.microbot.util.input.PointerState.isAt(p.x, p.y))
@@ -164,11 +167,13 @@ public final class HumanInput
 			}
 			Microbot.targetMenu = t.entry;
 			emit.press(p.x, p.y, 1);
+			sent[0] = true;
 			Thread.sleep(30 + rnd.nextInt(36));
 			emit.release(p.x, p.y, 1);
 			emit.click(p.x, p.y, 1);
 			Microbot.getMouse().setLastClick(new net.runelite.api.Point(p.x, p.y));
 		});
+		return completed && sent[0];
 	}
 
 	/** A point inside the target, biased to its centre like a person aiming. */

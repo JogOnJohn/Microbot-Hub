@@ -117,7 +117,7 @@ public final class CgAntiban
 		}
 	}
 
-	/** Watchdog: if our cooldown is still holding the global pause long after it should, clear it. */
+    /** Diagnose a stale cooldown without clearing a manual or break-handler pause. */
 	public void releaseStuckCooldown(boolean force)
 	{
 		long started = cooldownStartedMs;
@@ -133,10 +133,8 @@ public final class CgAntiban
 		}
 		if (force || System.currentTimeMillis() - started > COOLDOWN_WATCHDOG_MS)
 		{
-			Rs2AntibanSettings.actionCooldownActive = false;
-			Microbot.pauseAllScripts.set(false);
 			cooldownStartedMs = 0;
-			logger.accept("cooldown watchdog: cleared a stuck global pause");
+			logger.accept("cooldown still paused; leaving shared pause controls unchanged");
 		}
 	}
 

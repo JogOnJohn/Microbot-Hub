@@ -17,6 +17,10 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.util.menu.NewMenuEntry;
 import net.runelite.client.plugins.microbot.util.misc.Rs2UiHelper;
+import net.runelite.client.plugins.microbot.util.misc.SceneClickSafety;
+import net.runelite.client.plugins.microbot.util.camera.Rs2Camera;
+import net.runelite.client.plugins.microbot.util.input.InputArbiter;
+import net.runelite.client.plugins.microbot.util.walker.WalkerSceneClickSafety;
 import net.runelite.client.plugins.microbot.util.prayer.Rs2PrayerEnum;
 import net.runelite.client.util.Text;
 
@@ -43,6 +47,7 @@ final class QuickClicks
 		Shape shape;
 		/** A point that must be clicked exactly (a walk: the entry carries it). */
 		java.awt.Point fixed;
+		java.util.function.BooleanSupplier current = () -> true;
 	}
 
 	private QuickClicks()
@@ -101,6 +106,15 @@ final class QuickClicks
 			t.entry = new NewMenuEntry().option(action).param0(slot).param1(INVENTORY).opcode(MenuAction.CC_OP.getId())
 				.identifier(idx + 1).itemId(itemId).target(w == null || w.getName() == null ? "" : w.getName());
 			t.rect = w == null || w.isHidden() ? null : shrink(w.getBounds(), 3);
+			final Widget expected = w;
+			t.current = () -> Microbot.getClientThread().runOnClientThreadOptional(() -> {
+				Widget inventory = client.getWidget(INVENTORY);
+				if (inventory == null || inventory.getChildren() == null || expected == null) return false;
+				for (Widget child : inventory.getChildren()) {
+					if (child == expected) return !child.isHidden() && child.getIndex() == slot && child.getItemId() == itemId;
+				}
+				return false;
+			}).orElse(false);
 			return t;
 		}).orElse(null);
 	}
@@ -119,6 +133,8 @@ final class QuickClicks
 				.option("Activate").target("");
 			Widget w = client.getWidget(p.getIndex());
 			t.rect = w == null || w.isHidden() ? null : shrink(w.getBounds(), 4);
+			t.current = () -> Microbot.getClientThread().runOnClientThreadOptional(() ->
+				w != null && client.getWidget(p.getIndex()) == w && !w.isHidden()).orElse(false);
 			return t;
 		}).orElse(null);
 	}
@@ -138,7 +154,7 @@ final class QuickClicks
 				return null;
 			}
 			java.awt.Point pt = null;
-			Polygon poly = Perspective.getCanvasTilePoly(client, lp);
+			Polygon poly = Rs2Camera.getCanvasTilePoly(lp).orElse(null);
 			if (poly != null)
 			{
 				Rectangle b = poly.getBounds();
@@ -154,7 +170,7 @@ final class QuickClicks
 			}
 			if (pt == null)
 			{
-				Point c = Perspective.localToCanvas(client, lp, client.getTopLevelWorldView().getPlane());
+				Point c = Rs2Camera.getCanvasTilePoint(lp).orElse(null);
 				pt = c == null ? null : new java.awt.Point(c.getX(), c.getY());
 			}
 			if (pt == null || !Rs2UiHelper.isRectangleWithinViewport(new Rectangle(pt.x, pt.y, 1, 1)))
@@ -166,6 +182,10 @@ final class QuickClicks
 			t.rect = new Rectangle(pt.x, pt.y, 1, 1);
 			t.entry = new NewMenuEntry().option("Walk here").target("").param0(pt.x).param1(pt.y)
 				.type(MenuAction.WALK).identifier(0).itemId(0);
+			final net.runelite.api.WorldView expectedView = client.getTopLevelWorldView();
+			final net.runelite.api.Scene expectedScene = expectedView.getScene();
+			t.current = () -> Microbot.getClientThread().runOnClientThreadOptional(() ->
+				client.getTopLevelWorldView() == expectedView && expectedView.getScene() == expectedScene).orElse(false);
 			return t;
 		}).orElse(null);
 	}
@@ -218,6 +238,12 @@ final class QuickClicks
 			t.shape = n.getConvexHull();
 			Rectangle box = Rs2UiHelper.getActorClickbox(n);
 			t.rect = box == null || Rs2UiHelper.isFallbackRectangle(box) ? null : Rs2UiHelper.clipToCanvas(box);
+			final NPC expectedNpc = n;
+			t.current = () -> Microbot.getClientThread().runOnClientThreadOptional(() -> {
+				if (client.getTopLevelWorldView() == null || expectedNpc.isDead()) return false;
+				for (NPC live : client.getTopLevelWorldView().npcs()) if (live == expectedNpc) return true;
+				return false;
+			}).orElse(false);
 			return t;
 		}).orElse(null);
 	}
@@ -225,12 +251,31 @@ final class QuickClicks
 	/** Send it the instant way (cursor jumps). */
 	static boolean sendQuick(Target t)
 	{
-		if (t == null)
+		if (!canAct(t))
 		{
 			return false;
 		}
-		Microbot.doInvokeQuick(t.entry, t.rect == null ? Rs2UiHelper.getDefaultRectangle() : t.rect);
+		if (SceneClickSafety.appliesTo(t.entry)) {
+			t.rect = SceneClickSafety.forEntry(t.entry, null);
+			if (t.rect == null) return false;
+		}
+		if (t.fixed != null && !validAt(t, t.fixed)) return false;
+		t.entry.validWhen(() -> canAct(t) && (t.fixed == null || validAt(t, t.fixed)));
+		Microbot.doInvokeQuick(t.entry, t.rect);
 		return true;
+	}
+
+	static boolean canAct(Target t) {
+		return t != null && t.entry != null && t.rect != null && t.rect.width > 0 && t.rect.height > 0
+			&& !Thread.currentThread().isInterrupted() && !Microbot.pauseAllScripts.get()
+			&& !InputArbiter.isHuman() && t.current.getAsBoolean();
+	}
+
+	static boolean validAt(Target t, java.awt.Point point) {
+		if (!canAct(t) || point == null) return false;
+		Point canvas = new Point(point.x, point.y);
+		if (t.entry.getType() == MenuAction.WALK) return WalkerSceneClickSafety.isSafe(canvas);
+		return SceneClickSafety.appliesTo(t.entry) ? SceneClickSafety.permits(t.entry, canvas) : t.rect.contains(point);
 	}
 
 	private static Rectangle shrink(Rectangle r, int by)

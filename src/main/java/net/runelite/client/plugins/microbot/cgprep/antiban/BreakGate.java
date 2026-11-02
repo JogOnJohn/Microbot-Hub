@@ -16,6 +16,7 @@ import net.runelite.client.plugins.microbot.breakhandler.BreakHandlerScript;
 public final class BreakGate
 {
 	private boolean locked;
+	private boolean previousLock;
 	/** Set by {@link #release} (plugin stopping): no more locking until {@link #arm} (next start). */
 	private volatile boolean stopped;
 
@@ -36,7 +37,8 @@ public final class BreakGate
 		{
 			return;
 		}
-		BreakHandlerScript.setLockState(inGauntlet);
+		if (inGauntlet) previousLock = BreakHandlerScript.lockState.get();
+		BreakHandlerScript.setLockState(inGauntlet || previousLock);
 		locked = inGauntlet;
 		log.accept(inGauntlet ? "break handler locked for the run" : "break handler unlocked (lobby)");
 	}
@@ -47,7 +49,7 @@ public final class BreakGate
 		stopped = true;
 		if (locked)
 		{
-			BreakHandlerScript.setLockState(false);
+			BreakHandlerScript.setLockState(previousLock);
 			locked = false;
 		}
 	}
