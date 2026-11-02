@@ -8,7 +8,8 @@ import net.runelite.client.plugins.microbot.BlockingEventPriority;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.util.combat.Rs2Combat;
 import net.runelite.client.plugins.microbot.util.equipment.Rs2Equipment;
-import net.runelite.client.plugins.microbot.util.gameobject.Rs2GameObject;
+import net.runelite.client.plugins.microbot.api.tileobject.models.Rs2TileObjectModel;
+import net.runelite.client.plugins.microbot.woodcutting.ForestryObjectActions;
 import net.runelite.client.plugins.microbot.util.player.Rs2Player;
 import net.runelite.client.plugins.microbot.util.walker.Rs2Walker;
 import net.runelite.client.plugins.microbot.woodcutting.AutoWoodcuttingPlugin;
@@ -28,23 +29,19 @@ public class RootEvent implements BlockingEvent {
         try{
             if (plugin == null || !Microbot.isPluginEnabled(plugin)) return false;
             if (Microbot.getClient() == null || !Microbot.isLoggedIn()) return false;
-            var root = plugin.rs2TileObjectCache.query().where(x -> x.getId() == ObjectID.GATHERING_EVENT_RISING_ROOTS).nearest();
-            var specialRoot = plugin.rs2TileObjectCache.query().where(x -> x.getId() == ObjectID.GATHERING_EVENT_RISING_ROOTS_SPECIAL).nearest();
-
-            // Is the hasAction Check needed?
-            // If special root is present
-            if (specialRoot != null)
-                return Rs2GameObject.hasAction(specialRoot.getObjectComposition(), "Chop down");
-            // If regular root is present
-            if (root != null)
-                return (Rs2GameObject.hasAction(root.getObjectComposition(), "Chop down"));
-
-            return false; // No roots found
+            return findRoot(ObjectID.GATHERING_EVENT_RISING_ROOTS_SPECIAL) != null
+                    || findRoot(ObjectID.GATHERING_EVENT_RISING_ROOTS) != null;
         } catch (Exception e) {
             log.error("RootEvent: Exception in validate method", e);
             return false;
         }
 
+    }
+
+    private Rs2TileObjectModel findRoot(int id) {
+        if (plugin.rs2TileObjectCache == null) return null;
+        return plugin.rs2TileObjectCache.query().withId(id)
+                .where(root -> ForestryObjectActions.hasAction(root, "Chop down")).nearestOnClientThread();
     }
 
     @Override
@@ -53,8 +50,9 @@ public class RootEvent implements BlockingEvent {
         plugin.currentForestryEvent = ForestryEvents.TREE_ROOT;
         Rs2Walker.setTarget(null); // stop walking, stop moving to bank for example
         while (this.validate()) {
-            var root = plugin.rs2TileObjectCache.query().where(x -> x.getId() == ObjectID.GATHERING_EVENT_RISING_ROOTS).nearest();
-            var specialRoot = plugin.rs2TileObjectCache.query().where(x -> x.getId() == ObjectID.GATHERING_EVENT_RISING_ROOTS_SPECIAL).nearest();
+            var root = findRoot(ObjectID.GATHERING_EVENT_RISING_ROOTS);
+            var specialRoot = findRoot(ObjectID.GATHERING_EVENT_RISING_ROOTS_SPECIAL);
+            if (root == null && specialRoot == null) break;
 
             // Use special attack if available
             if ( Rs2Equipment.isWearing(ItemID.DRAGON_AXE) || Rs2Equipment.isWearing(ItemID.DRAGON_AXE_2H) || Rs2Equipment.isWearing(ItemID.CRYSTAL_AXE) ||

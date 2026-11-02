@@ -44,7 +44,9 @@ class AutoWoodcuttingTreeSelectionTest {
 
     private static Rs2TileObjectModel tree(boolean hasCut) {
         Rs2TileObjectModel model = mock(Rs2TileObjectModel.class);
-        when(model.hasAction("Cut")).thenReturn(hasCut);
+        net.runelite.api.ObjectComposition composition = mock(net.runelite.api.ObjectComposition.class);
+        when(composition.getActions()).thenReturn(hasCut ? new String[]{"Cut"} : null);
+        when(model.getObjectComposition()).thenReturn(composition);
         when(model.click(anyString())).thenReturn(false);
         return model;
     }

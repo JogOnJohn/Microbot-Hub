@@ -235,7 +235,9 @@ public final class GatherAction
 		boolean clickFromHere = far <= CLICK_RANGE;
 		if (!clickFromHere && far <= 18 && clickedMs == 0)
 		{
-			Rs2TileObjectModel o = Microbot.getRs2TileObjectCache().query().withId(mode.nodeFor(r)).at(node.raw).first();
+			WorldPoint raw = node.raw;
+			Rs2TileObjectModel o = Microbot.getRs2TileObjectCache().query().withId(mode.nodeFor(r))
+				.where(candidate -> raw.equals(candidate.getWorldLocation())).firstOnClientThread();
 			clickFromHere = o != null && Aim.onScreen(o.getLocalLocation());
 		}
 		if (!clickFromHere && clickedMs > 0 && now - clickedMs < 6000 && far <= 18)
@@ -255,10 +257,11 @@ public final class GatherAction
 			return ActionResult.WALKING;
 		}
 
+		WorldPoint raw = node.raw;
 		Rs2TileObjectModel obj = Microbot.getRs2TileObjectCache().query()
 			.withId(mode.nodeFor(r))
-			.at(node.raw)
-			.first();
+			.where(candidate -> raw.equals(candidate.getWorldLocation()))
+			.firstOnClientThread();
 		if (obj == null)
 		{
 			// Live id gone from that tile = harvested out. The maze rescan confirms it next tick.
