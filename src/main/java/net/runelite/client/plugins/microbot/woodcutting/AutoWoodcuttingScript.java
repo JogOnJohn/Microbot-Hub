@@ -192,7 +192,10 @@ public class AutoWoodcuttingScript extends Script {
             tree = rs2TileObjectCache.query()
                     .within(getInitialPlayerLocation(), config.distanceToStray())
                     .withName(treeType.getName())
-                    .where(x -> x.hasAction(cutAction))
+                    .where(x -> {
+                        var composition = x.getObjectComposition();
+                        return composition != null && Rs2GameObject.hasAction(composition, cutAction);
+                    })
                     .nearestOnClientThread();
         }
 
