@@ -163,7 +163,12 @@ public class AutoWoodcuttingScript extends Script {
                     })
                     .nearest();
         } else {
-            tree = rs2TileObjectCache.query().within(getInitialPlayerLocation(), config.distanceToStray()).withName(treeType.getName()).nearestOnClientThread();
+            String cutAction = treeType.getAction();
+            tree = rs2TileObjectCache.query()
+                    .within(getInitialPlayerLocation(), config.distanceToStray())
+                    .withName(treeType.getName())
+                    .where(x -> x.hasAction(cutAction))
+                    .nearestOnClientThread();
         }
 
         if (tree != null) {
