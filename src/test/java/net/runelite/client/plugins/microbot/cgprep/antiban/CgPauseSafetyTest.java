@@ -3,8 +3,8 @@ package net.runelite.client.plugins.microbot.cgprep.antiban;
 import java.lang.reflect.Field;
 import net.runelite.client.plugins.microbot.Microbot;
 import net.runelite.client.plugins.microbot.util.antiban.Rs2AntibanSettings;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class CgPauseSafetyTest {
     @Test public void forcedCooldownWatchdogDoesNotReleaseSharedPause() throws Exception {
