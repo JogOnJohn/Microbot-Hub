@@ -15,6 +15,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RooftopPrehoverTest
 {
+    @Test void sameObstacleCannotBeRetriedAsItsAnimationStarts()
+    {
+        WorldPoint wall = new WorldPoint(2673, 3298, 0);
+        WorldPoint next = new WorldPoint(2673, 3305, 3);
+        assertTrue(AgilityScript.shouldHoldSameObstacleRetry(15608, wall, 15608, wall, 1100, false));
+        assertTrue(AgilityScript.shouldHoldSameObstacleRetry(15608, wall, 15608, wall, 3500, true));
+        assertTrue(AgilityScript.shouldHoldSameObstacleRetry(15609, next, 15609, next, 1100, false));
+        assertFalse(AgilityScript.shouldHoldSameObstacleRetry(15608, wall, 15608, wall, 3500, false));
+        assertFalse(AgilityScript.shouldHoldSameObstacleRetry(15609, next, 15608, wall, 1100, true));
+    }
+
     @Test void markOnlyWinsInsideTheImmediateUpcomingSegment()
     {
         WorldPoint clicked = new WorldPoint(100, 100, 3);

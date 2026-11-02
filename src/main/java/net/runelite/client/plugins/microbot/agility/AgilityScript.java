@@ -55,6 +55,13 @@ public class AgilityScript extends Script
 	private AgilityCourse activeCourse = null;
 	private AgilityCourseHandler activeHandler = null;
 	private static final long MAIN_LOOP_DELAY_MS = 250;
+	// The completion wait can return on early XP or a brief idle gap before the
+	// client reports movement. Keep a queued click from becoming an immediate
+	// second click on the very same obstacle.
+	private static final long SAME_OBSTACLE_RETRY_GRACE_MS = 3000;
+	private int lastClickedObstacleId = -1;
+	private WorldPoint lastClickedObstacleLocation = null;
+	private long lastClickedObstacleAt = 0;
 	// Multi-plane rooftop courses (e.g. Seers) briefly have no interactable obstacle on the player's
 	// plane during the animation/plane transition after an obstacle, and obstacle objects flicker in
 	// and out of the scene cache. Re-scan a few times before concluding there is none, so a transient
@@ -121,6 +128,9 @@ public class AgilityScript extends Script
 		lastSettledScanObstacleIndex = -1;
 		prevTickObstacleIndex = -1;
 		sectionEnteredAt = 0;
+		lastClickedObstacleId = -1;
+		lastClickedObstacleLocation = null;
+		lastClickedObstacleAt = 0;
 		supplyManager.reset();
 		clearPendingMarkOfGrace();
 		markFailureCooldownUntil.clear();
@@ -163,6 +173,9 @@ public class AgilityScript extends Script
 		AgilityCourseHandler initialHandler = getActiveHandler();
 		startPoint = initialHandler.getStartPoint();
 		lastAgilityXp = Microbot.getClient().getSkillExperience(Skill.AGILITY);
+		lastClickedObstacleId = -1;
+		lastClickedObstacleLocation = null;
+		lastClickedObstacleAt = 0;
 		mainScheduledFuture = scheduledExecutorService.scheduleWithFixedDelay(() -> {
 			prehover.cancel(); // Supplies, marks, alching and navigation retain exclusive cursor ownership.
 			try
@@ -296,6 +309,13 @@ public class AgilityScript extends Script
 				{
 					Rs2Walker.walkMiniMap(gameObject.getWorldLocation());
 				}
+				if (shouldHoldSameObstacleRetry(gameObject.getId(), gameObject.getWorldLocation(),
+					lastClickedObstacleId, lastClickedObstacleLocation,
+					System.currentTimeMillis() - lastClickedObstacleAt,
+					Rs2Player.isMoving() || Rs2Player.isAnimating()))
+				{
+					return;
+				}
 
 				// Check if we should click (handles animation/XP logic)
 				if (!courseHandler.shouldClickObstacle(currentAgilityXp, lastAgilityXp))
@@ -360,6 +380,9 @@ public class AgilityScript extends Script
 				
 				// Normal obstacle interaction
 				if (interactWithObstacle(gameObject)) {
+					lastClickedObstacleId = gameObject.getId();
+					lastClickedObstacleLocation = gameObject.getWorldLocation();
+					lastClickedObstacleAt = System.currentTimeMillis();
 					beginPrehover(gameObject, courseHandler);
 					// Wait for completion - this now returns quickly on XP drop
 					WorldPoint completionLocation = snapshotPlayerLocation();
@@ -491,6 +514,9 @@ public class AgilityScript extends Script
 			startPoint = activeHandler.getStartPoint();
 			lastAgilityXp = Microbot.getClient().getSkillExperience(Skill.AGILITY);
 			currentObstacleIndex = -1;
+			lastClickedObstacleId = -1;
+			lastClickedObstacleLocation = null;
+			lastClickedObstacleAt = 0;
 			supplyManager.reset();
 			clearAlchDecision();
 		}
@@ -899,6 +925,14 @@ public class AgilityScript extends Script
 	private boolean interactWithObstacle(TileObject gameObject)
 	{
 		return Rs2GameObject.interact(gameObject);
+	}
+
+	static boolean shouldHoldSameObstacleRetry(int candidateId, WorldPoint candidateLocation,
+		int clickedId, WorldPoint clickedLocation, long elapsedMs, boolean movingOrAnimating)
+	{
+		return candidateId == clickedId && candidateLocation != null
+			&& candidateLocation.equals(clickedLocation)
+			&& (elapsedMs < SAME_OBSTACLE_RETRY_GRACE_MS || movingOrAnimating);
 	}
 
 	private void beginPrehover(TileObject clicked, AgilityCourseHandler courseHandler)
