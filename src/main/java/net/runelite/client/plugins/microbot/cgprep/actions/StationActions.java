@@ -312,9 +312,10 @@ public final class StationActions
 			}
 			return ActionResult.WALKING;
 		}
+		WorldPoint raw = spot.raw;
 		Rs2TileObjectModel obj = Microbot.getRs2TileObjectCache().query()
 			.withIds(mode.nodeFor(net.runelite.client.plugins.microbot.cgprep.data.Resource.RAW_FISH), mode.objPondDepleted)
-			.at(spot.raw).first();
+			.where(candidate -> raw.equals(candidate.getWorldLocation())).firstOnClientThread();
 		if (obj == null)
 		{
 			spot.avoidUntilMs = System.currentTimeMillis() + 30_000;

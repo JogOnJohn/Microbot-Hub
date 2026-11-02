@@ -122,7 +122,8 @@ public final class Weaver
 		}
 		exec.execute(() ->
 		{
-			Rs2TileObjectModel obj = Microbot.getRs2TileObjectCache().query().withId(id).at(at).first();
+			Rs2TileObjectModel obj = Microbot.getRs2TileObjectCache().query().withId(id)
+				.where(candidate -> at.equals(candidate.getWorldLocation())).firstOnClientThread();
 			if (obj != null && Aim.onScreen(obj.getLocalLocation()))
 			{
 				obj.click();
