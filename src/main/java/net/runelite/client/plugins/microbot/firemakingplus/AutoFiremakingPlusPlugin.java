@@ -26,7 +26,7 @@ import java.awt.*;
 )
 @Slf4j
 public class AutoFiremakingPlusPlugin extends Plugin {
-    public static final String version = "0.2.3";
+    public static final String version = "0.2.5";
 
     @Inject
     private AutoFiremakingPlusConfig config;
