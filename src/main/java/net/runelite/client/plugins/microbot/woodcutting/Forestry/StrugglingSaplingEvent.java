@@ -1,6 +1,7 @@
 package net.runelite.client.plugins.microbot.woodcutting.Forestry;
 
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.client.plugins.microbot.BlockingEvent;
 import net.runelite.client.plugins.microbot.BlockingEventPriority;
@@ -21,6 +22,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static net.runelite.api.gameval.ObjectID.*;
+import static net.runelite.client.plugins.microbot.util.Global.sleepUntil;
 @Slf4j
 public class StrugglingSaplingEvent implements BlockingEvent {
     private final AutoWoodcuttingPlugin plugin;
@@ -141,11 +143,17 @@ public class StrugglingSaplingEvent implements BlockingEvent {
                     break;
                 }
 
+                WorldPoint currentLocation = Rs2Player.getWorldLocation();
+                if (currentLocation == null) {
+                    sleepUntil(() -> Rs2Player.getWorldLocation() != null, 1200);
+                    continue;
+                }
+
                 Microbot.log("StrugglingSaplingEvent: No known correct ingredient, collecting the closest untried one.");
                 var closestIngredient = availableIngredients.get(0);
-                int closestDist = closestIngredient.getWorldLocation().distanceTo(Rs2Player.getWorldLocation());
+                int closestDist = closestIngredient.getWorldLocation().distanceTo(currentLocation);
                 for (var ingredient : availableIngredients) {
-                    int dist = ingredient.getWorldLocation().distanceTo(Rs2Player.getWorldLocation());
+                    int dist = ingredient.getWorldLocation().distanceTo(currentLocation);
                     if (dist < closestDist) {
                         closestDist = dist;
                         closestIngredient = ingredient;
