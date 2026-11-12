@@ -162,7 +162,6 @@ class ForestryEventPlayerLocationTest {
         when(objectQuery.nearestOnClientThread()).thenReturn(sapling, sapling, sapling, null);
         Rs2TileObjectModel ingredient = mock(Rs2TileObjectModel.class);
         when(ingredient.getId()).thenReturn(1);
-        when(ingredient.hasAction("Collect")).thenReturn(true);
         when(ingredient.getWorldLocation()).thenReturn(TARGET);
         when(objectQuery.toListOnClientThread()).thenReturn(Collections.singletonList(ingredient));
         Field field = AutoWoodcuttingPlugin.class.getDeclaredField("saplingOrder");
@@ -179,7 +178,6 @@ class ForestryEventPlayerLocationTest {
 
     private Rs2TileObjectModel sapling() {
         Rs2TileObjectModel sapling = mock(Rs2TileObjectModel.class);
-        when(sapling.hasAction("Add-mulch")).thenReturn(true);
         when(sapling.getWorldLocation()).thenReturn(TARGET);
         when(objectQuery.withName("Struggling sapling")).thenReturn(objectQuery);
         when(objectQuery.nearestOnClientThread()).thenReturn(sapling);
